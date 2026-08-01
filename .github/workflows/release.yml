@@ -1,0 +1,63 @@
+# Publica o release quando uma tag vX.Y.Z sobe para o repositório.
+#
+# Cada instalador é montado na sua própria máquina: o .deb no Ubuntu e o .exe no
+# Windows. Dá para gerar o NSIS a partir do Linux, mas só com wine de 32 bits
+# instalado (o rcedit, que grava ícone e versão no executável, é um binário ia32) —
+# dependência frágil que não vale carregar quando o runner do Windows sai de graça.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Permite republicar os instaladores de uma tag que já existe, sem criar outra.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag já existente a publicar (ex.: v1.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  empacotar:
+    name: ${{ matrix.nome }}
+    runs-on: ${{ matrix.so }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nome: Linux (.deb)
+            so: ubuntu-latest
+            script: dist:linux
+            arquivos: dist/*.deb
+          - nome: Windows (.exe)
+            so: windows-latest
+            script: dist:win
+            arquivos: dist/*.exe
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm install
+
+      - run: npm run ${{ matrix.script }}
+
+      - name: Publica os instaladores no release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Os dois jobs correm em paralelo: quem chegar primeiro cria o release,
+          # o outro só anexa o instalador dele.
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" ${{ matrix.arquivos }} --clobber
