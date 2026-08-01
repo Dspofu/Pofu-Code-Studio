@@ -1844,7 +1844,12 @@ function atualizarBotaoCompactar() {
     }
   }
   btn.disabled = bytes === 0;
-  rotulo.innerText = bytes > 0 ? `Compactar (${fmtSize(bytes)})` : 'Compactar';
+  // O botão vive ao lado do clipe, sem espaço para rótulo fixo: o texto é só o tamanho a
+  // liberar (some quando não há nada) e a explicação inteira fica no title.
+  rotulo.innerText = bytes > 0 ? fmtSize(bytes) : '';
+  btn.title = bytes > 0
+    ? `Compactar contexto — libera ~${fmtSize(bytes)} encurtando os resultados antigos de ferramenta no envio ao modelo. Nada é apagado da tela.`
+    : 'Compactar contexto — nada a liberar nesta conversa por enquanto.';
   // Destaca a partir de ~40 KB, quando a economia começa a fazer diferença real
   btn.classList.toggle('vale-a-pena', bytes > 40 * 1024);
 }
@@ -2406,7 +2411,7 @@ function toApiMessages(messages) {
   // fica no indicador de contexto do cabeçalho, que não polui a conversa.
   if (compactados.size > 0 && !avisouPoda) {
     avisouPoda = true;
-    logSystem('Contexto quase cheio: resultados antigos de ferramenta passaram a ser enviados encurtados ao modelo (continuam completos aqui). Use "Compactar" ao lado do campo de texto para liberar espaço de vez.');
+    logSystem('Contexto quase cheio: resultados antigos de ferramenta passaram a ser enviados encurtados ao modelo (continuam completos aqui). Use o botão de compactar, ao lado do clipe de anexo, para liberar espaço de vez.');
   }
   ultimaPoda = compactados.size;
   return messages.map((m, i) => {

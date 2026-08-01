@@ -21,10 +21,6 @@ O pedido foi: *"os números da roleta estão tortos, conserte e confirme visualm
 4. **Editou uma linha** com `edit_file`, preservando o resto do arquivo;
 5. **Capturou de novo** e comparou antes/depois.
 
-| Antes | Depois |
-|---|---|
-| ![Números tortos](docs/img/roleta-antes.png) | ![Números retos](docs/img/roleta-depois.png) |
-
 Toda alteração vira um **diff revisável com botão de desfazer**:
 
 ![Diff e desfazer](docs/img/diff.png)
