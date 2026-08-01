@@ -47,7 +47,9 @@ jobs:
 
       - run: npm install
 
-      - run: npm run ${{ matrix.script }}
+      # --publish never: ao detectar CI, o electron-builder tenta publicar o release
+      # sozinho e aborta pedindo GH_TOKEN. Quem publica aqui é o passo abaixo, com o gh.
+      - run: npm run ${{ matrix.script }} -- --publish never
 
       - name: Publica os instaladores no release
         shell: bash
