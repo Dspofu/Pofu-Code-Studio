@@ -1,7 +1,7 @@
 {
   "name": "pofuserver-coder-studio",
   "productName": "Pofuserver Coder Studio",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Pofuserver Coder Studio — agente de código em desktop (Electron) que se conecta a qualquer API REST compatível com OpenAI (llama.cpp, Ollama, vLLM, etc.). O agente lê, escreve e apaga arquivos do workspace, executa comandos no terminal com gerenciamento inteligente de processos em segundo plano (sobe servidores/APIs sem travar o chat), aceita anexos de arquivos e renderiza respostas em Markdown com realce de código.",
   "main": "main.js",
   "scripts": {
@@ -22,6 +22,11 @@
   ],
   "author": "Dspofu",
   "githubUrl": "https://github.com/Dspofu/Pofuserver-Code",
+  "homepage": "https://github.com/Dspofu/Pofuserver-Code",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dspofu/Pofuserver-Code.git"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "dependencies": {
