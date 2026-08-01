@@ -1,4 +1,9 @@
 <!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved. -->
+<!-- Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE. -->
+<!-- Source: https://github.com/Dspofu/Pofuserver-Code -->
+
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
@@ -15,6 +20,19 @@
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
   <script src="vendor/highlight.min.js"></script>
+  <script>
+    function toggleApiKeyVisibility() {
+      const keyInput = document.getElementById('api-key');
+      const eyeIcon = document.getElementById('eye-icon');
+      if (keyInput.type === 'password') {
+        keyInput.type = 'text';
+        eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+      } else {
+        keyInput.type = 'password';
+        eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+      }
+    }
+  </script>
 
   <style>
     * {
@@ -612,8 +630,9 @@
       background: #202024;
       border: 1px solid #2e2e33;
       border-radius: 12px;
-      width: 640px;
-      max-width: 95%;
+      width: fit-content;
+      min-width: 640px;
+      max-width: 750px;
       height: 540px;
       max-height: 92vh;
       display: flex;
@@ -693,7 +712,8 @@
       color: #a1a1aa;
     }
 
-    .config-group input[type="text"] {
+    .config-group input[type="text"],
+    .config-group input[type="password"] {
       padding: 10px 12px;
       border-radius: 6px;
       border: 1px solid #3f3f46;
@@ -867,6 +887,223 @@
 
     .tool-card .tool-result.is-error {
       color: #fca5a5;
+    }
+
+    /* Botão de compactar contexto, ao lado do modo de execução */
+    .compact-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--surface-3);
+      border: 1px solid var(--border-2);
+      color: var(--muted);
+      border-radius: 7px;
+      padding: 4px 9px;
+      font-size: 0.72rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+
+    .compact-btn:hover { background: var(--surface); color: var(--text); border-color: #52525b; }
+    .compact-btn:disabled { opacity: 0.45; cursor: default; }
+    /* Fica em destaque quando há contexto de sobra para liberar */
+    .compact-btn.vale-a-pena { color: #fbbf24; border-color: #78350f; }
+
+    /* Diff da alteração + desfazer, dentro do card da ferramenta */
+    .diff-box {
+      border-top: 1px solid #23232a;
+      background: #0d1117;
+      border-radius: 0 0 8px 8px;
+    }
+
+    .diff-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 12px;
+      flex-wrap: wrap;
+    }
+
+    .diff-file {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 0.75rem;
+      color: #cbd5e1;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+
+    .diff-counts {
+      display: flex;
+      gap: 6px;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+
+    .diff-add-count { color: #4ade80; }
+    .diff-del-count { color: #f87171; }
+
+    .diff-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 6px;
+    }
+
+    .diff-btn {
+      background: #27272a;
+      border: 1px solid #3f3f46;
+      color: #d4d4d8;
+      border-radius: 5px;
+      padding: 3px 9px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .diff-btn:hover { background: #3f3f46; }
+    .diff-btn:disabled { opacity: 0.5; cursor: default; }
+    .diff-btn-undo { border-color: #7f1d1d; color: #fca5a5; }
+    .diff-btn-undo:hover { background: #450a0a; }
+
+    .diff-status {
+      padding: 4px 12px 6px;
+      font-size: 0.72rem;
+      color: #4ade80;
+    }
+
+    .diff-status.is-error { color: #fca5a5; }
+    .diff-box.desfeito .diff-file { text-decoration: line-through; opacity: 0.6; }
+
+    .diff-body {
+      max-height: 420px;
+      overflow: auto;
+      border-top: 1px solid #23232a;
+    }
+
+    .diff-table {
+      font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      font-size: 0.73rem;
+      line-height: 1.55;
+      min-width: min-content;
+    }
+
+    .diff-line {
+      display: flex;
+      align-items: baseline;
+      white-space: pre;
+      padding-right: 10px;
+    }
+
+    .diff-num {
+      flex: 0 0 42px;
+      text-align: right;
+      padding-right: 8px;
+      color: #52525b;
+      user-select: none;
+    }
+
+    .diff-sign {
+      flex: 0 0 14px;
+      text-align: center;
+      user-select: none;
+    }
+
+    .diff-text {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+
+    .diff-add { background: #052e16; color: #bbf7d0; }
+    .diff-add .diff-sign { color: #4ade80; }
+    .diff-del { background: #3f0d12; color: #fecaca; }
+    .diff-del .diff-sign { color: #f87171; }
+    .diff-ctx { color: #71717a; }
+
+    .diff-skip {
+      padding: 3px 12px;
+      font-size: 0.7rem;
+      color: #52525b;
+      background: #131318;
+      font-style: italic;
+    }
+
+    /* Erro com causa provável e passos — usado quando o modelo não responde */
+    .error-card {
+      align-self: center;
+      max-width: 78%;
+      background: #2a1416;
+      border: 1px solid #7f1d1d;
+      border-left: 3px solid #ef4444;
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 4px 0;
+      box-sizing: border-box;
+    }
+
+    .error-card-title {
+      color: #fca5a5;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+
+    .error-card-detail {
+      color: #e4a5a5;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 0.75rem;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      margin-bottom: 8px;
+    }
+
+    .error-card-steps {
+      margin: 0;
+      padding-left: 18px;
+      color: #d4d4d8;
+      font-size: 0.8rem;
+      line-height: 1.6;
+    }
+
+    /* Print capturado pelo capture_page, dentro do card da ferramenta */
+    .tool-shot {
+      padding: 9px 12px 12px;
+      border-top: 1px solid #23232a;
+    }
+
+    .tool-shot img {
+      display: block;
+      max-width: 100%;
+      border-radius: 6px;
+      border: 1px solid #3f3f46;
+      cursor: zoom-in;
+    }
+
+    .tool-shot-faltando {
+      padding: 9px 12px;
+      border-top: 1px solid #23232a;
+      font-size: 0.75rem;
+      color: #71717a;
+    }
+
+    .shot-viewer {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      cursor: zoom-out;
+    }
+
+    .shot-viewer img {
+      max-width: 100%;
+      max-height: 100%;
+      border-radius: 8px;
+      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
     }
 
     .reasoning {
@@ -1656,6 +1893,10 @@
               <button class="exec-opt" data-mode="auto">Auto</button>
               <button class="exec-opt active" data-mode="manual">Manual</button>
             </div>
+            <button id="btn-compactar" class="compact-btn" title="Encurta os resultados antigos de ferramenta no envio ao modelo, liberando contexto. Nada é apagado da tela.">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              <span id="compact-label">Compactar</span>
+            </button>
             <div class="composer-hint">Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar</div>
           </div>
         </div>
@@ -1732,7 +1973,7 @@
               <div class="config-group">
                 <label for="model-name">Modelo</label>
                 <div style="display:flex;gap:8px;align-items:center;">
-                  <select id="model-name" style="flex:1;padding:10px 12px;border-radius:8px;border:1px solid var(--border-2);background:var(--surface-3);color:var(--text);font-size:0.85rem;outline:none;">
+                  <select id="model-name" style="flex:1;min-width:0;padding:10px 12px;border-radius:8px;border:1px solid var(--border-2);background:var(--surface-3);color:var(--text);font-size:0.85rem;outline:none;text-overflow:ellipsis;">
                     <option value="">(carregando...)</option>
                   </select>
                   <button id="btn-refresh-models" class="btn-icon" style="font-size:0.75rem;padding:8px 12px;white-space:nowrap;">Recarregar</button>
@@ -1740,7 +1981,15 @@
               </div>
               <div class="config-group">
                 <label for="api-key">API Key (opcional)</label>
-                <input type="text" id="api-key" placeholder="Deixe vazio para servidores locais" value="">
+                <div style="position: relative; display: flex; align-items: center;">
+                  <input type="password" id="api-key" placeholder="Deixe vazio para servidores locais" value="" style="width: 100%; padding-right: 36px;">
+                  <button type="button" id="btn-toggle-apikey" class="btn-icon" onclick="toggleApiKeyVisibility()" style="position: absolute; right: 6px; border: none; background: transparent; padding: 4px;" title="Mostrar/Ocultar chave">
+                    <svg id="eye-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1792,6 +2041,13 @@
                   <span class="cfg-hint">Habilita as ferramentas <code>web_search</code> e <code>fetch_url</code> (via DuckDuckGo) para o agente pesquisar e ler páginas.</span>
                 </div>
                 <label class="switch"><input type="checkbox" id="check-websearch"><span class="switch-slider"></span></label>
+              </div>
+              <div class="switch-row">
+                <div class="switch-text">
+                  <span class="switch-title">Enviar prints para o modelo</span>
+                  <span class="cfg-hint">O <code>capture_page</code> devolve a imagem da tela ao modelo, e não só o texto da página. Usado apenas quando o endpoint anuncia um modelo multimodal — <span id="vision-status">verificando…</span></span>
+                </div>
+                <label class="switch"><input type="checkbox" id="check-vision"><span class="switch-slider"></span></label>
               </div>
               <div class="config-group">
                 <label for="input-cmdtimeout">Timeout de comando (segundos)</label>

@@ -22,10 +22,13 @@
   ],
   "author": "Dspofu",
   "githubUrl": "https://github.com/Dspofu/Pofuserver-Code",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "dependencies": {
-    "openai": "^6.46.0"
+    "@mozilla/readability": "^0.6.0",
+    "linkedom": "^0.18.13",
+    "openai": "^6.46.0",
+    "turndown": "^7.2.4"
   },
   "devDependencies": {
     "electron": "^43.1.0",
@@ -38,11 +41,13 @@
     "files": [
       "main.js",
       "preload.js",
-      "renderer.js",
+      "src/**/*",
       "index.html",
       "vendor/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "LICENSE",
+      "NOTICE"
     ],
     "directories": {
       "output": "dist",

@@ -1,148 +1,152 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved. -->
+
 # Pofuserver Coder Studio
 
-**Agente de código em desktop** (Electron) que se conecta a **qualquer API REST compatível com OpenAI** — como [llama.cpp](https://github.com/ggml-org/llama.cpp), [Ollama](https://ollama.com/) ou [vLLM](https://github.com/vllm-project/vllm) — e opera diretamente sobre os arquivos do seu projeto local: lê, escreve, apaga arquivos e executa comandos no terminal, tudo a partir de um chat.
+**Agente de código em desktop** (Electron) que se conecta a **qualquer API REST compatível com OpenAI** — [llama.cpp](https://github.com/ggml-org/llama.cpp), [Ollama](https://ollama.com/), [vLLM](https://github.com/vllm-project/vllm) — e trabalha direto nos arquivos do seu projeto: lê, edita, busca, roda comandos, chama APIs e **tira print das páginas que constrói**.
 
-Pense nele como um "Cursor/Claude Code" local, rodando com o **seu** modelo, **offline** e sem depender de nuvem.
+Um "Cursor/Claude Code" local, rodando com o **seu** modelo, na **sua** máquina.
+
+![Visão geral do chat](docs/img/chat.png)
+
+---
+
+## Demonstração
+
+O pedido foi: *"os números da roleta estão tortos, conserte e confirme visualmente"*. Sem sair do chat, o agente:
+
+1. **Leu** o arquivo e localizou o cálculo do posicionamento;
+2. **Recortou o print** só na roleta (`crop_selector`), porque defeito de alinhamento some quando a imagem da página inteira é reduzida;
+3. **Viu** que cada número girava junto com o setor — a segunda rotação estava no mesmo sentido da primeira;
+4. **Editou uma linha** com `edit_file`, preservando o resto do arquivo;
+5. **Capturou de novo** e comparou antes/depois.
+
+| Antes | Depois |
+|---|---|
+| ![Números tortos](docs/img/roleta-antes.png) | ![Números retos](docs/img/roleta-depois.png) |
+
+Toda alteração vira um **diff revisável com botão de desfazer**:
+
+![Diff e desfazer](docs/img/diff.png)
 
 ---
 
 ## Funcionalidades
 
-### Agente com ferramentas
-O modelo age no seu workspace através de ferramentas (function calling):
+### Ferramentas do agente
 
 | Ferramenta | O que faz |
 |---|---|
-| `list_files` | Lista arquivos e pastas do diretório de trabalho |
-| `read_file` | Lê o conteúdo de um arquivo |
-| `write_file` | Cria ou sobrescreve um arquivo |
-| `create_directory` | Cria uma pasta (e diretórios pai, se necessário) |
-| `delete_file` | Apaga um arquivo |
-| `execute_command` | Roda um comando no terminal (dentro do workspace) |
-| `read_process_output` | Lê os logs de um processo em segundo plano |
-| `list_processes` | Lista os processos em segundo plano ativos |
-| `stop_process` | Encerra um processo em segundo plano |
-| `web_search` | Busca na web (DuckDuckGo) — opcional, ative em *Ajustes → Ferramentas* |
-| `fetch_url` | Lê o conteúdo de uma página web a partir de uma URL |
+| `list_files` | Lista arquivos e pastas (com tamanho) |
+| `read_file` | Lê em janelas de linhas, com paginação por `offset` |
+| `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido |
+| `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente |
+| `search_files` | Busca por texto/regex no projeto, com filtro glob |
+| `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
+| `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
+| `wait_for_process` | **Espera** um processo demorado terminar e devolve o exit code |
+| `read_process_output` / `list_processes` / `stop_process` | Acompanha e encerra processos |
+| `http_request` | Chama uma API e devolve status, cabeçalhos e corpo separados |
+| `capture_page` | Abre a URL num navegador oculto, tira print e reporta erros de console e de rede |
+| `web_search` / `fetch_url` | Busca na web e leitura de páginas (opcional, em *Ajustes → Ferramentas*) |
 
-### Execução inteligente de processos
-- **Servidores/APIs não travam o chat.** Quando você pede para subir um servidor (`npm run dev`, `node app.js`, etc.), ele é detectado automaticamente — por padrão de log ("listening on…") ou por ociosidade — e passa a rodar **em segundo plano**, retornando um PID. O agente continua livre para rodar outros comandos (testar a API, `curl`, etc.) enquanto o servidor está de pé.
-- **Builds e tarefas longas** (que imprimem saída contínua) seguem sendo aguardadas normalmente até terminarem.
-- **`sudo` não sequestra seu terminal:** os comandos rodam desacoplados do terminal, então o `sudo` falha de forma limpa em vez de pedir senha no shell onde o app foi iniciado.
-- Você controla os processos em segundo plano: ver logs, listar e **parar** (encerra o grupo inteiro).
+### Diff e desfazer
+Cada escrita, edição ou remoção mostra **o que exatamente mudou** — colorido, numerado nas duas versões e com o contexto em volta — e um botão **Desfazer** que reverte o arquivo no disco. O desfazer também pode ser desfeito.
 
-### Streaming em tempo real
-- O **raciocínio** do modelo (ex.: Qwen3) e o **texto da resposta** aparecem sendo gerados, com cursor pulsante.
-- Ao finalizar, o texto é re-renderizado em **Markdown** com **realce de sintaxe** e **botão de copiar** nos blocos de código.
-- **Botão de Parar:** durante a geração, o botão de enviar vira um botão de parar que aborta na hora.
+### O agente enxerga o que constrói
+`capture_page` renderiza a página num navegador oculto e devolve o print. Com um modelo **multimodal**, a imagem volta para o modelo: ele descreve o que apareceu e compara com o esperado, em vez de deduzir pelo código. Use `full_page` para a página inteira e `crop_selector` para conferir detalhe em tamanho cheio.
 
-### Anexos de arquivos
-- Anexe arquivos ao chat pelo botão de clipe ou arrastando e soltando na janela.
-- Arquivos de texto/código são lidos e injetados no contexto do modelo (com truncamento sinalizado para arquivos grandes).
+### Validação de verdade
+O prompt exige evidência: teste executado, exit code lido, resposta HTTP conferida ou print observado. "Escrevi o arquivo" não conta como validação, e o que não pôde ser verificado é declarado como não verificado.
 
-### Editar e regenerar
-- **Editar** qualquer mensagem sua: devolve o texto (e anexos) ao campo de digitação e reenvia.
-- **Regenerar** qualquer resposta do agente, refazendo a partir da sua última solicitação.
+### Contexto que não estoura
+O histórico é compactado automaticamente quando se aproxima do limite do modelo: resultados antigos de ferramenta passam a ir encurtados **no envio**, e continuam completos na tela. O botão **Compactar**, ao lado do campo de texto, libera contexto na hora.
 
-### Múltiplos chats e workspaces
-- Vários chats independentes, cada um com sua **própria pasta de trabalho**.
-- Histórico **persistido localmente** (sobrevive ao fechar o app).
+### Processos sem travar o chat
+Servidores e watchers são detectados (por padrão de log ou ociosidade) e vão para segundo plano com PID. Tarefas demoradas são aguardadas com `wait_for_process`, numa chamada só.
 
-### Painel e configurações
-- **Medidor de contexto** sempre visível no cabeçalho (tokens usados / comprimento total do modelo).
-- Abas de **informações do modelo** (quantização, contexto, tamanho, parâmetros) e **uso de tokens** da sessão.
-- Ajustes: endpoint da API, API key (opcional), seleção de modelo, **temperatura**, **top-p**, **máximo de tokens**, **timeout de comando** e um interruptor `/no_think` para modelos de raciocínio.
+### Erros que dizem o que fazer
+Falha de conexão, chave inválida, modelo inexistente e erro do servidor viram mensagens com causa e passos — não uma exceção crua. Só falha transitória é repetida.
+
+![Configurações](docs/img/config.png)
 
 ### Offline
-Todas as bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos) são **vendorizadas localmente** em `vendor/` — o app não depende de CDN em tempo de execução.
+As bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos) são vendorizadas em `vendor/` — a interface não depende de CDN.
 
 ---
 
 ## Requisitos
 
-- **[Node.js](https://nodejs.org/)** 18+ (com `npm`).
-- Um **servidor de modelo compatível com OpenAI** rodando localmente (ex.: llama.cpp). Por padrão o app aponta para `http://localhost:8080/v1`.
-- Linux, Windows ou macOS. *(O script `npm start` já vem com flags voltadas para Linux — veja as notas abaixo.)*
+- **[Node.js](https://nodejs.org/)** 18+ com `npm`
+- Um **servidor de modelo compatível com OpenAI** rodando (ex.: llama.cpp)
+- Linux, Windows ou macOS
 
----
+Modelos com **function calling** são necessários (o agente depende disso). Para modelos de raciocínio (ex.: Qwen3), mantenha o raciocínio **ligado**. Um modelo **multimodal** habilita o retorno visual dos prints.
 
-## Instalação (via Node)
+## Instalação
 
 ```bash
-# 1. Clone o repositório
 git clone https://github.com/Dspofu/Pofuserver-Code.git
 cd Pofuserver-Code
-
-# 2. Instale as dependências (baixa o Electron)
 npm install
-
-# 3. Inicie o app
 npm start
 ```
 
-> **Outros sistemas / problemas com as flags:** o script `start` usa `--no-sandbox --ozone-platform=x11` (útil no Linux). Em Windows/macOS, ou se der erro, rode diretamente:
-> ```bash
-> npx electron .
-> ```
+> O script `start` usa `--no-sandbox --ozone-platform=x11` (Linux). Em Windows/macOS, rode `npx electron .`.
 
----
-
-## Configuração
-
-Abra o app e clique no ícone de engrenagem → aba **Personalização**:
-
-1. **Endpoint da API** — padrão `http://localhost:8080/v1` (formato compatível com OpenAI).
-2. **Modelo** — clique em *Recarregar modelos* para listar o que o endpoint expõe e selecione.
-3. **API Key** — opcional (deixe vazio para servidores locais).
-4. Ajuste **temperatura**, **top-p**, **máximo de tokens** e **timeout de comando** conforme necessário.
-
-### Exemplo de servidor com llama.cpp
+### Servidor de exemplo com llama.cpp
 
 ```bash
-# Sobe um servidor OpenAI-compatível na porta 8080
 llama-server -m /caminho/para/seu-modelo.gguf --port 8080 --jinja
 ```
 
-Modelos com suporte a **function calling** (chamadas de ferramenta) são recomendados, pois o agente depende disso para ler/escrever arquivos e rodar comandos. Para modelos de raciocínio (ex.: Qwen3), mantenha o raciocínio **ligado** (não use `/no_think`) para que as ferramentas funcionem bem.
+## Configuração
 
----
+Engrenagem → aba **Ajustes**:
+
+1. **Endpoint** — padrão `http://localhost:8080/v1`
+2. **Modelo** — *Recarregar* lista o que o endpoint expõe
+3. **API Key** — opcional (vazio para servidores locais)
+4. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
+5. **Busca na web**, temperatura, top-p, máximo de tokens e timeout de comando
 
 ## Como usar
 
-1. **Crie/selecione um chat** na barra lateral.
-2. **Escolha a pasta de trabalho** do chat pelo ícone de pasta no cabeçalho — é o diretório onde o agente vai ler/escrever/rodar comandos.
-3. **Converse.** Peça, por exemplo: *"liste os arquivos e crie um servidor Express simples na porta 3000 e suba ele"*.
-4. Acompanhe o raciocínio e as ações (cards de ferramenta) em tempo real. Passe o mouse sobre as mensagens para **editar** ou **regenerar**.
-5. Anexe arquivos pelo botão de clipe ou arrastando-os para a janela.
+1. Crie um chat e **escolha a pasta de trabalho** (ícone de pasta no cabeçalho)
+2. Peça o que precisa — ex.: *"crie uma API Express com testes e valide os endpoints"*
+3. Acompanhe os cards de ferramenta, os diffs e os prints em tempo real
+4. Use **Auto/Manual** para decidir se comandos pedem confirmação
+5. `@` menciona um arquivo; o clipe (ou arrastar) anexa arquivos
 
 ---
 
 ## Estrutura do projeto
 
 ```
-├── main.js        # Processo principal do Electron: janela, IPC, sistema de arquivos e execução de processos
-├── preload.js     # Ponte segura (contextBridge) entre renderer e main
-├── renderer.js    # Lógica da interface: chats, loop do agente, streaming, ferramentas, anexos
-├── index.html     # Interface e estilos
-├── vendor/        # Bibliotecas de front-end vendorizadas (offline)
-└── package.json
+├── main.js           # Processo main: IPC de arquivos, processos, HTTP, captura e busca
+├── preload.js        # Ponte contextBridge entre renderer e main
+├── index.html        # Interface e estilos
+├── src/
+│   ├── renderer.js   # Loop do agente, ferramentas, streaming, diff, render das mensagens
+│   ├── constants.js  # system_prompt, padrões e limites
+│   └── websearch.js  # Busca web (arquivo gerado — veja o cabeçalho)
+├── docs/img/         # Imagens do README
+└── vendor/           # Bibliotecas de front-end (offline)
 ```
 
 ---
 
-## Créditos
+## Créditos e licença
 
-- Ícone do aplicativo gerado com **ChatGPT (OpenAI)**.
+Licenciado sob a **[Apache License 2.0](LICENSE)** — veja também o [NOTICE](NOTICE).
+
+Você pode usar, modificar, redistribuir e criar derivados, inclusive comercialmente. Em troca, a licença pede que você **mantenha o aviso de copyright e o arquivo NOTICE**, e **sinalize os arquivos que alterou**. Se este projeto te ajudou, um link de volta para o repositório é muito bem-vindo.
+
+- Ícone do aplicativo gerado com ChatGPT (OpenAI)
+- Bibliotecas de terceiros e suas licenças estão listadas no [NOTICE](NOTICE)
 
 ## Notas
 
-- O histórico e as configurações são salvos no diretório de dados do usuário do Electron (`app-store.json`).
-- O app foi construído e testado principalmente no **Linux**, contra um servidor **llama.cpp** local.
-- A **busca na web** usa o DuckDuckGo (sem chave de API) e é opcional — ative em *Ajustes → Ferramentas*.
-- A dependência `openai` consta no `package.json`, mas a comunicação é feita via `fetch` direto ao endpoint compatível.
-
----
-
-## Licença
-
-Este é um **software livre**: qualquer pessoa pode usar, copiar, modificar, redistribuir e criar versões derivadas deste projeto, para fins pessoais ou comerciais, sem necessidade de autorização prévia. Veja o arquivo [LICENSE](LICENSE) para o texto completo.
+- Histórico e configurações ficam no diretório de dados do Electron (`app-store.json`)
+- Prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`, no mesmo diretório
+- Desenvolvido e testado principalmente no **Linux**, contra um **llama.cpp** local

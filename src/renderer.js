@@ -1,4 +1,9 @@
-import { APP_NAME, DEFAULT_SETTINGS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_TOOL_RESULT_CHARS, READ_FILE_MAX_CHARS, READ_FILE_MAX_LINES, REQUEST_RETRY_DELAY_MS, system_prompt } from "./constants.js";
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
+// Source: https://github.com/Dspofu/Pofuserver-Code
+
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_TOOL_RESULT_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt } from "./constants.js";
 
 let state = {
   chats: {},          // { id: { id, name, path, messages: [] } }
@@ -20,12 +25,26 @@ function stopAgent() {
 
 // ---- Confirmação de execução (modo manual) ----
 let pendingConfirm = null;
-const CONFIRM_TOOLS = { execute_command: true, delete_file: true };
+// O valor pode ser `true` (sempre confirma) ou um teste sobre os argumentos, para não
+// pedir confirmação onde a chamada é inofensiva.
+const CONFIRM_TOOLS = {
+  execute_command: true,
+  delete_file: true,
+  // Sem isto, um DELETE/POST via http_request escaparia do modal que o mesmo comando
+  // passando por `curl` no execute_command teria enfrentado. Leitura (GET) segue direto,
+  // que é o caso comum ao validar uma API.
+  http_request: (args) => !['GET', 'HEAD', 'OPTIONS'].includes(String(args.method || 'GET').toUpperCase())
+};
+
+function precisaConfirmar(name, args) {
+  const regra = CONFIRM_TOOLS[name];
+  return typeof regra === 'function' ? regra(args || {}) : !!regra;
+}
 
 // Retorna 'approve' | 'reject' (e pode alternar para 'auto' via "sempre permitir")
 async function maybeConfirmTool(name, args) {
   if (stopRequested) return 'reject'; // usuário já pediu para parar
-  if (!CONFIRM_TOOLS[name] || state.settings.execMode !== 'manual') return 'approve';
+  if (!precisaConfirmar(name, args) || state.settings.execMode !== 'manual') return 'approve';
   const decision = await askExecConfirm(name, args);
   if (decision === 'always') {
     state.settings.execMode = 'auto';
@@ -62,6 +81,10 @@ function showConfirmModal(name, args) {
   } else if (name === 'delete_file') {
     label.innerText = 'Apagar arquivo?';
     cmd.innerText = '🗑 ' + (args.filename || '');
+  } else if (name === 'http_request') {
+    label.innerText = 'Enviar requisição que altera dados?';
+    cmd.innerText = `${String(args.method || 'GET').toUpperCase()} ${args.url || ''}` +
+      (args.body ? `\n\n${truncate(String(args.body), 400)}` : '');
   } else {
     label.innerText = 'Confirmar ação?';
     cmd.innerText = JSON.stringify(args);
@@ -224,6 +247,20 @@ function forceScrollBottom() {
   if (cb) cb.scrollTop = cb.scrollHeight;
 }
 
+// Imagem entra no DOM com altura ZERO e só empurra o conteúdo quando termina de carregar
+// — depois do scrollChat() que rodou ao inseri-la. Sem reagir ao load, o acompanhamento
+// do fim fica preso na imagem e não segue mais a conversa.
+function seguirAposCarregarImagens(raiz) {
+  if (!raiz) return;
+  for (const img of raiz.querySelectorAll('img')) {
+    if (img.dataset.rolagemLigada) continue;
+    img.dataset.rolagemLigada = '1';
+    if (img.complete) continue; // já carregada: o layout não vai mais mudar
+    img.addEventListener('load', scrollChat, { once: true });
+    img.addEventListener('error', scrollChat, { once: true });
+  }
+}
+
 // Atualiza o título da janela: "Pofuserver Coder Studio — <status>" (ou só o nome quando ocioso)
 function setAppTitle(status) {
   const title = status ? `${APP_NAME} — ${status}` : APP_NAME;
@@ -373,6 +410,9 @@ function renameActiveChat() {
 function switchChat(id) {
   if (!state.chats[id]) return;
   state.activeChatId = id;
+  arquivosLidos = new Set(); // o que foi lido vale por conversa
+  ultimaPoda = 0;
+  avisouPoda = false;
   renderChatList();
   renderActiveChat();
   persist();
@@ -403,7 +443,7 @@ function renderActiveChat() {
   // Indexa os resultados de ferramenta por tool_call_id para parear com suas chamadas
   const toolResults = {};
   for (const m of chat.messages) {
-    if (m.role === 'tool' && m.tool_call_id) toolResults[m.tool_call_id] = m.content;
+    if (m.role === 'tool' && m.tool_call_id) toolResults[m.tool_call_id] = m;
   }
 
   for (let i = 0; i < chat.messages.length; i++) {
@@ -420,8 +460,9 @@ function renderActiveChat() {
           const name = (tc.function && tc.function.name) || 'ferramenta';
           let args = {};
           try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch (e) { args = {}; }
-          const result = tc.id != null ? toolResults[tc.id] : undefined;
-          renderToolInvocation(name, args, result ?? null);
+          const tr = tc.id != null ? toolResults[tc.id] : undefined;
+          renderToolInvocation(name, args, tr ? tr.content : null,
+            tr ? { image: tr.image, alteracao: tr.alteracao } : undefined);
         }
       }
     }
@@ -429,6 +470,7 @@ function renderActiveChat() {
   }
 
   updateInputState();
+  atualizarBotaoCompactar();
 }
 
 const SEND_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
@@ -486,6 +528,8 @@ function renderMarkdownInto(container, text) {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
   });
+
+  seguirAposCarregarImagens(container); // imagem no Markdown da resposta também empurra o conteúdo
 
   // Realça e decora cada bloco de código
   container.querySelectorAll('pre > code').forEach(codeEl => {
@@ -669,10 +713,15 @@ const TOOL_META = {
   list_files: { icon: '📁', label: 'Listar arquivos' },
   read_file: { icon: '📄', label: 'Ler arquivo' },
   write_file: { icon: '✏️', label: 'Escrever arquivo' },
+  edit_file: { icon: '🖊️', label: 'Editar arquivo' },
+  search_files: { icon: '🔍', label: 'Buscar no projeto' },
   create_directory: { icon: '📂', label: 'Criar pasta' },
   delete_file: { icon: '🗑️', label: 'Apagar arquivo' },
+  http_request: { icon: '🔌', label: 'Requisição HTTP' },
+  capture_page: { icon: '📸', label: 'Print da página' },
   execute_command: { icon: '⌘', label: 'Terminal' },
   read_process_output: { icon: '📜', label: 'Saída do processo' },
+  wait_for_process: { icon: '⏳', label: 'Aguardar processo' },
   list_processes: { icon: '📋', label: 'Processos' },
   stop_process: { icon: '⛔', label: 'Parar processo' },
   web_search: { icon: '🔎', label: 'Buscar na web' },
@@ -685,11 +734,32 @@ function summarizeToolCall(name, args) {
   switch (name) {
     case 'execute_command': return '$ ' + (args.command || '');
     case 'read_file':
+      return (args.filename || '') + (args.offset > 1 ? ` (a partir da linha ${args.offset})` : '');
     case 'write_file':
     case 'delete_file': return args.filename || '';
+    case 'edit_file': {
+      // Mostra o trecho trocado, não o arquivo inteiro — é o que o usuário precisa
+      // conferir para saber se a edição foi a esperada.
+      const corte = (s) => {
+        const t = String(s ?? '');
+        const linhas = t.split('\n');
+        return linhas.length > 6 ? linhas.slice(0, 6).join('\n') + '\n…' : t;
+      };
+      const alvo = (args.filename || '') + (args.replace_all ? '  (todas as ocorrências)' : '');
+      if (!args.old_text) return alvo;
+      return `${alvo}\n\n− ${corte(args.old_text).replace(/\n/g, '\n− ')}\n+ ${corte(args.new_text).replace(/\n/g, '\n+ ')}`;
+    }
+    case 'search_files':
+      return (args.query || '') + (args.file_pattern ? `   em ${args.file_pattern}` : '');
+    case 'http_request': return `${(args.method || 'GET').toUpperCase()} ${args.url || ''}`;
+    case 'capture_page': return (args.url || '') +
+      (args.crop_selector ? `   recorte: ${args.crop_selector}` : '') +
+      (args.full_page ? '   (página inteira)' : '') +
+      (args.selector ? `   aguardando ${args.selector}` : '');
     case 'create_directory': return (args.dirname || '') + '/';
     case 'list_files': return args.subpath ? args.subpath + '/' : './';
     case 'read_process_output':
+    case 'wait_for_process':
     case 'stop_process': return 'PID ' + (args.pid ?? '?');
     case 'list_processes': return '';
     case 'web_search': return '🔎 ' + (args.query || '');
@@ -705,6 +775,13 @@ function summarizeToolCall(name, args) {
 function summarizeToolResult(name, resultStr) {
   if (resultStr == null) return '';
   if (name === 'read_file') {
+    // Falha de leitura vem como JSON; sem isto ela seria contada como "1 linha lida"
+    if (resultStr.startsWith('{')) {
+      try {
+        const erro = JSON.parse(resultStr);
+        if (erro && erro.error) return `⚠ ${erro.error}`;
+      } catch (e) { /* não era JSON: segue como conteúdo do arquivo */ }
+    }
     const m = resultStr.match(/^\[Arquivo ".*?" — linhas (\d+)–(\d+) de (\d+)\]/);
     if (m) {
       const restam = Number(m[3]) - Number(m[2]);
@@ -717,7 +794,9 @@ function summarizeToolResult(name, resultStr) {
   }
   let data;
   try { data = JSON.parse(resultStr); } catch { return resultStr; }
-  if (data && data.error) return `⚠ ${data.error}`;
+  // A dica ("hint") diz o que fazer a seguir (releia o arquivo, suba o servidor…) —
+  // é a parte mais útil do erro e não pode ficar de fora do card.
+  if (data && data.error) return `⚠ ${data.error}${data.hint ? '\n' + data.hint : ''}`;
 
   switch (name) {
     case 'execute_command': {
@@ -735,16 +814,64 @@ function summarizeToolResult(name, resultStr) {
     }
     case 'list_files':
       return Array.isArray(data)
-        ? (data.map(f => (f.isDirectory ? '📁 ' : '📄 ') + f.name).join('\n') || '(pasta vazia)')
+        ? (data.map(f => (f.isDirectory ? '📁 ' : '📄 ') + f.name + (f.size != null ? `  (${fmtSize(f.size)})` : '')).join('\n') || '(pasta vazia)')
         : resultStr;
-    case 'write_file': return data.success ? '✓ Arquivo salvo' : (data.error || resultStr);
+    case 'write_file': {
+      if (!data.success) return data.error || resultStr;
+      const cabec = data.created ? `✓ Arquivo criado · ${data.lines} linha(s)` : `✓ Arquivo salvo · ${data.lines} linha(s)`;
+      return data.aviso ? `${cabec}\n⚠ ${data.aviso}` : cabec;
+    }
+    case 'edit_file': {
+      if (!data.success) return `⚠ ${data.error}${data.hint ? '\n' + data.hint : ''}`;
+      const onde = data.replacements > 1 ? `${data.replacements} ocorrências` : `linha ${data.line}`;
+      // Só mostra o saldo quando os dois contadores vieram: sem a guarda, um campo
+      // ausente vira "(NaN linha)" na tela.
+      const temContagem = Number.isFinite(data.linesAfter) && Number.isFinite(data.linesBefore);
+      const delta = temContagem ? data.linesAfter - data.linesBefore : 0;
+      const saldo = delta === 0 ? '' : `  (${delta > 0 ? '+' : ''}${delta} linha${Math.abs(delta) > 1 ? 's' : ''})`;
+      return `✓ Editado · ${onde}${saldo}`;
+    }
+    case 'search_files': {
+      if (!data.success) return `⚠ ${data.error}`;
+      if (!data.count) return '(nenhuma ocorrência)';
+      const linhas = data.matches.map(m => `${m.file}:${m.line}  ${m.text.trim()}`);
+      return linhas.join('\n') + (data.truncated ? `\n… (limite de ${data.count} resultados atingido)` : `\n\n${data.count} ocorrência(s)`);
+    }
+    case 'http_request': {
+      if (!data.success) return `⚠ ${data.error}${data.hint ? '\n' + data.hint : ''}`;
+      const ct = (data.headers && data.headers['content-type']) || '';
+      return `${data.status} ${data.statusText || ''} · ${data.ms}ms${ct ? ' · ' + ct.split(';')[0] : ''}\n\n${data.body || '(corpo vazio)'}`;
+    }
+    case 'capture_page': {
+      if (data.error) return `⚠ ${data.error}${data.hint ? '\n' + data.hint : ''}`;
+      const partes = [`${data.titulo || '(sem título)'} · HTTP ${data.status ?? '?'} · ${data.tamanho || ''}`];
+      if (data.seletor_encontrado === false) partes.push('⚠ seletor não apareceu');
+      if (data.erro_no_script) partes.push(`⚠ erro no script: ${data.erro_no_script}`);
+      if (data.resultado_do_script !== undefined) partes.push(`script → ${data.resultado_do_script}`);
+      if (data.erros_de_console && data.erros_de_console.length) {
+        partes.push('Erros de console:\n' + data.erros_de_console.map(e => '  ' + e).join('\n'));
+      }
+      if (data.falhas_de_rede && data.falhas_de_rede.length) {
+        partes.push('Falhas de rede:\n' + data.falhas_de_rede.map(e => `  ${e.error} — ${e.url}`).join('\n'));
+      }
+      return partes.join('\n');
+    }
     case 'create_directory': return data.success ? '✓ Pasta criada' : (data.error || resultStr);
     case 'delete_file': return data.success ? '✓ Arquivo apagado' : (data.error || resultStr);
     case 'stop_process': return data.success ? `✓ Processo ${data.pid} encerrado` : (data.error || resultStr);
-    case 'web_search':
+    case 'web_search': {
       if (!data.success) return `⚠ ${data.error || 'falha na busca'}`;
       if (!data.results || !data.results.length) return '(nenhum resultado)';
-      return data.results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n\n');
+      const paginas = data.paginas || [];
+      const cabec = `via ${data.source} · ${data.count} resultado(s)` +
+        (paginas.length ? ` · ${paginas.length} página(s) lida(s)` : '') +
+        (data.reformulada ? `\nconsulta refeita: "${data.reformulada}" → "${data.query}"` : '');
+      const lista = data.results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n\n');
+      // O texto extraído das páginas é longo; na tela vai só o começo, mas o modelo
+      // recebe tudo (o corte aqui é apresentação, não conteúdo).
+      const trechos = paginas.map(p => `📄 ${p.url}\n${(p.text || '').slice(0, 400)}…`).join('\n\n');
+      return [cabec, lista, trechos].filter(Boolean).join('\n\n');
+    }
     case 'fetch_url':
       if (!data.success) return `⚠ ${data.error || 'falha ao baixar'}`;
       return `[${data.status}] ${data.url}\n\n${(data.content || '').slice(0, 1000)}${(data.content || '').length > 1000 ? '…' : ''}`;
@@ -755,6 +882,14 @@ function summarizeToolResult(name, resultStr) {
     case 'read_process_output': {
       if (!data.success) return data.error || resultStr;
       const head = `PID ${data.pid} · ${data.status} · ${data.uptimeSec}s`;
+      const out = [data.stdout, data.stderr].filter(x => x && x.trim()).join('\n').trim();
+      return out ? `${head}\n${out}` : head;
+    }
+    case 'wait_for_process': {
+      if (!data.success) return data.error || resultStr;
+      const head = data.finished
+        ? `✓ terminou em ~${data.waitedSec}s${data.exitCode != null ? ` · código ${data.exitCode}` : ''}`
+        : `▸ ainda rodando após ${data.waitedSec}s`;
       const out = [data.stdout, data.stderr].filter(x => x && x.trim()).join('\n').trim();
       return out ? `${head}\n${out}` : head;
     }
@@ -790,7 +925,7 @@ function appendToolCall(name, args) {
 }
 
 // Preenche (ou atualiza) o resultado dentro do card da chamada
-function fillToolResult(card, name, resultStr) {
+function fillToolResult(card, name, resultStr, extras = {}) {
   if (!card) return;
   let res = card.querySelector('.tool-result');
   if (!res) {
@@ -801,13 +936,185 @@ function fillToolResult(card, name, resultStr) {
   const text = summarizeToolResult(name, resultStr);
   res.innerText = truncate(text, 1200);
   res.classList.toggle('is-error', /^⚠/.test(text));
+  if (extras.image && extras.image.path) attachToolShot(card, extras.image);
+  if (extras.alteracao) attachDiff(card, extras.alteracao, extras.diff);
   scrollChat();
 }
 
+// --------------------------------------------------------------------------
+//  Diff visível + desfazer
+// --------------------------------------------------------------------------
+// Mostra o que mudou e dá o botão de reverter. O diff carrega sob demanda: num chat
+// recarregado só existe o snapshotId, e o antes/depois vem do instantâneo em disco.
+function attachDiff(card, alteracao, diffPronto) {
+  if (card.querySelector('.diff-box')) return;
+
+  const box = document.createElement('div');
+  box.className = 'diff-box';
+
+  const barra = document.createElement('div');
+  barra.className = 'diff-bar';
+
+  const rotulo = document.createElement('span');
+  rotulo.className = 'diff-file';
+  rotulo.innerText = alteracao.apagado ? `🗑 ${alteracao.arquivo}` : alteracao.arquivo;
+
+  const contagem = document.createElement('span');
+  contagem.className = 'diff-counts';
+  if (alteracao.apagado) {
+    contagem.innerHTML = `<span class="diff-del-count">arquivo apagado (${alteracao.removidas} linhas)</span>`;
+  } else {
+    contagem.innerHTML =
+      `<span class="diff-add-count">+${alteracao.adicionadas}</span>` +
+      `<span class="diff-del-count">−${alteracao.removidas}</span>`;
+  }
+
+  const acoes = document.createElement('div');
+  acoes.className = 'diff-actions';
+
+  const btnVer = document.createElement('button');
+  btnVer.className = 'diff-btn';
+  btnVer.innerText = alteracao.apagado ? 'Ver conteúdo apagado' : 'Ver diferenças';
+
+  const btnDesfazer = document.createElement('button');
+  btnDesfazer.className = 'diff-btn diff-btn-undo';
+  btnDesfazer.innerText = 'Desfazer';
+
+  acoes.append(btnVer, btnDesfazer);
+  barra.append(rotulo, contagem, acoes);
+  box.appendChild(barra);
+
+  const corpo = document.createElement('div');
+  corpo.className = 'diff-body';
+  corpo.hidden = true;
+  box.appendChild(corpo);
+
+  let carregado = false;
+  btnVer.addEventListener('click', async () => {
+    if (!corpo.hidden) { corpo.hidden = true; btnVer.innerText = alteracao.apagado ? 'Ver conteúdo apagado' : 'Ver diferenças'; return; }
+    if (!carregado) {
+      const diff = diffPronto || await window.electronAPI.getDiff(alteracao.snapshotId);
+      renderDiffLines(corpo, diff);
+      carregado = true;
+    }
+    corpo.hidden = false;
+    btnVer.innerText = 'Ocultar';
+    scrollChat();
+  });
+
+  btnDesfazer.addEventListener('click', async () => {
+    btnDesfazer.disabled = true;
+    btnDesfazer.innerText = 'Desfazendo…';
+    const r = await window.electronAPI.undoChange(alteracao.snapshotId);
+    if (!r || !r.success) {
+      btnDesfazer.disabled = false;
+      btnDesfazer.innerText = 'Desfazer';
+      marcaDiff(box, `⚠ ${(r && r.error) || 'não foi possível desfazer'}`, 'erro');
+      return;
+    }
+    box.classList.add('desfeito');
+    marcaDiff(box, alteracao.apagado ? '✓ arquivo restaurado' : '✓ alteração desfeita', 'ok');
+    logSystem(`Alteração desfeita em ${alteracao.arquivo}. O agente não sabe disso — se ele continuar trabalhando, avise no chat.`);
+    // O desfazer também vira um ponto de restauração, então dá para voltar atrás.
+    btnDesfazer.disabled = false;
+    btnDesfazer.innerText = 'Refazer';
+    alteracao = { ...alteracao, snapshotId: r.refazerId };
+  });
+
+  card.appendChild(box);
+}
+
+function marcaDiff(box, texto, tipo) {
+  let m = box.querySelector('.diff-status');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'diff-status';
+    box.querySelector('.diff-bar').after(m);
+  }
+  m.innerText = texto;
+  m.classList.toggle('is-error', tipo === 'erro');
+}
+
+// Desenha as linhas do diff com numeração das duas versões, como num revisor de código.
+function renderDiffLines(corpo, diff) {
+  corpo.innerHTML = '';
+  if (!diff || !diff.linhas || !diff.linhas.length) {
+    corpo.innerText = diff && diff.semMudanca ? '(conteúdo idêntico)' : '(não foi possível montar o diff)';
+    return;
+  }
+  const tabela = document.createElement('div');
+  tabela.className = 'diff-table';
+
+  for (const l of diff.linhas) {
+    const linha = document.createElement('div');
+    if (l.tipo === 'pulo') {
+      linha.className = 'diff-line diff-skip';
+      linha.innerText = `⋯ ${l.quantas} linha(s) sem alteração`;
+      tabela.appendChild(linha);
+      continue;
+    }
+    linha.className = 'diff-line diff-' + l.tipo;
+    const na = document.createElement('span');
+    na.className = 'diff-num';
+    na.innerText = l.a != null ? l.a : '';
+    const nb = document.createElement('span');
+    nb.className = 'diff-num';
+    nb.innerText = l.b != null ? l.b : '';
+    const sinal = document.createElement('span');
+    sinal.className = 'diff-sign';
+    sinal.innerText = l.tipo === 'add' ? '+' : l.tipo === 'del' ? '−' : ' ';
+    const txt = document.createElement('span');
+    txt.className = 'diff-text';
+    txt.innerText = l.texto;
+    linha.append(na, nb, sinal, txt);
+    tabela.appendChild(linha);
+  }
+  corpo.appendChild(tabela);
+
+  if (diff.cortado) {
+    const aviso = document.createElement('div');
+    aviso.className = 'diff-skip';
+    aviso.innerText = `⋯ diff muito grande: mostrando as primeiras linhas de ${diff.totalLinhasDiff}`;
+    corpo.appendChild(aviso);
+  }
+}
+
+// Mostra o print dentro do card. Carrega por file:// (e não pelo base64 em memória)
+// para que a imagem reapareça igual ao recarregar um chat antigo.
+function attachToolShot(card, image) {
+  if (card.querySelector('.tool-shot')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'tool-shot';
+  const img = document.createElement('img');
+  img.src = 'file://' + image.path;
+  img.alt = 'Print da página capturada pelo agente';
+  img.title = 'Clique para abrir em tamanho real';
+  img.loading = 'lazy';
+  img.addEventListener('click', () => openImageViewer(img.src));
+  img.addEventListener('error', () => { wrap.innerHTML = ''; wrap.className = 'tool-shot-faltando'; wrap.innerText = '(print não está mais disponível)'; });
+  wrap.appendChild(img);
+  card.appendChild(wrap);
+  seguirAposCarregarImagens(wrap); // o print só ganha altura ao carregar
+}
+
+// Visualizador em tela cheia do print (fecha no clique ou no Esc)
+function openImageViewer(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'shot-viewer';
+  const img = document.createElement('img');
+  img.src = src;
+  overlay.appendChild(img);
+  const fechar = () => { overlay.remove(); document.removeEventListener('keydown', aoTeclar); };
+  const aoTeclar = (e) => { if (e.key === 'Escape') fechar(); };
+  overlay.addEventListener('click', fechar);
+  document.addEventListener('keydown', aoTeclar);
+  document.body.appendChild(overlay);
+}
+
 // Card completo (chamada + resultado) — usado ao recarregar o histórico
-function renderToolInvocation(name, args, resultStr) {
+function renderToolInvocation(name, args, resultStr, extras) {
   const card = appendToolCall(name, args);
-  if (resultStr != null) fillToolResult(card, name, resultStr);
+  if (resultStr != null) fillToolResult(card, name, resultStr, extras);
   return card;
 }
 
@@ -835,6 +1142,37 @@ function appendError(text) {
   scrollChat();
 }
 
+// Erro com causa provável e passos para resolver, em vez de uma linha de exceção crua.
+function appendErrorCard({ titulo, detalhe, passos }) {
+  const chatBox = document.getElementById('chat-box');
+  const card = document.createElement('div');
+  card.className = 'error-card';
+
+  const h = document.createElement('div');
+  h.className = 'error-card-title';
+  h.innerText = `⚠ ${titulo}`;
+  card.appendChild(h);
+
+  if (detalhe) {
+    const d = document.createElement('div');
+    d.className = 'error-card-detail';
+    d.innerText = detalhe;
+    card.appendChild(d);
+  }
+  if (passos && passos.length) {
+    const ul = document.createElement('ul');
+    ul.className = 'error-card-steps';
+    for (const p of passos) {
+      const li = document.createElement('li');
+      li.innerText = p;
+      ul.appendChild(li);
+    }
+    card.appendChild(ul);
+  }
+  chatBox.appendChild(card);
+  scrollChat();
+}
+
 function showTyping() {
   const chatBox = document.getElementById('chat-box');
   const div = document.createElement('div');
@@ -855,55 +1193,27 @@ function truncate(str, max) {
   return str.length > max ? str.slice(0, max) + `\n… (truncado, ${str.length} caracteres)` : str;
 }
 
-// Lê um arquivo em JANELA de linhas (paginação por offset), em vez de cortar em silêncio.
-// Arquivos pequenos voltam inteiros (sem cabeçalho). Arquivos grandes voltam em partes, com
-// um rodapé dizendo quantas linhas faltam e qual offset usar para continuar — evitando tanto
-// o "modelo só vê o começo" quanto a perda de conteúdo ao reescrever com write_file.
-function readFileWindow(filename, raw, offset, limit) {
-  const text = String(raw ?? '');
-  if (text === '') return `Arquivo "${filename}" está vazio.`;
+// Formata para o modelo a janela de linhas que o processo main já recortou. O recorte
+// acontece lá (só as linhas pedidas cruzam o IPC); aqui fica apenas a apresentação:
+// cabeçalho com a faixa lida e rodapé dizendo como pedir a continuação.
+function formatFileWindow(filename, res, budget) {
+  if (!res || !res.success) return JSON.stringify({ error: (res && res.error) || 'falha ao ler o arquivo' });
+  if (res.empty) return `Arquivo "${filename}" está vazio.`;
 
-  const allLines = text.split('\n');
-  const total = allLines.length;
-
-  let start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 1;
-  let want = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : READ_FILE_MAX_LINES;
-  want = Math.min(want, READ_FILE_MAX_LINES);
-
-  if (start > total) {
-    return `Arquivo "${filename}" tem ${total} linha(s). O offset ${start} está além do fim — nada a mostrar.`;
-  }
-
-  // Seleciona a janela respeitando o teto de linhas E o de caracteres (linhas muito longas).
-  const chunk = [];
-  let chars = 0;
-  for (let i = start - 1; i < total && chunk.length < want; i++) {
-    const ln = allLines[i];
-    // Para se a próxima linha estourar o orçamento de chars — mas garante ao menos 1 linha.
-    if (chunk.length > 0 && chars + ln.length + 1 > READ_FILE_MAX_CHARS) break;
-    chunk.push(ln);
-    chars += ln.length + 1;
-  }
-  const shownEnd = start - 1 + chunk.length; // última linha mostrada (base 1)
-  let body = chunk.join('\n');
-
-  // Trava dura de caracteres: uma única linha gigante (ex: arquivo minificado) pode furar o
-  // orçamento mesmo cabendo em "1 linha". Aqui o corte é SINALIZADO, não silencioso.
   let charNote = '';
-  if (body.length > READ_FILE_MAX_CHARS) {
-    body = body.slice(0, READ_FILE_MAX_CHARS);
-    charNote = `\n\n[… conteúdo desta janela cortado em ${READ_FILE_MAX_CHARS} caracteres (linhas muito longas)]`;
+  if (res.charClipped) {
+    charNote = `\n\n[… conteúdo desta janela cortado em ${budget} caracteres (linhas muito longas)]`;
   }
 
-  // Arquivo cabe inteiro na janela: retorna direto (comportamento antigo p/ arquivos pequenos).
-  if (start === 1 && shownEnd === total && !charNote) return body;
+  // Arquivo cabe inteiro na janela: volta direto, sem cabeçalho (o caso comum).
+  if (res.start === 1 && res.end === res.total && !charNote) return res.content;
 
-  const header = `[Arquivo "${filename}" — linhas ${start}–${shownEnd} de ${total}]`;
+  const header = `[Arquivo "${filename}" — linhas ${res.start}–${res.end} de ${res.total}]`;
   let footer = charNote;
-  if (shownEnd < total) {
-    footer += `\n\n[… restam ${total - shownEnd} linha(s). Para continuar, chame read_file com offset=${shownEnd + 1}]`;
+  if (res.end < res.total) {
+    footer += `\n\n[… restam ${res.total - res.end} linha(s). Para continuar, chame read_file com offset=${res.end + 1}]`;
   }
-  return `${header}\n${body}${footer}`;
+  return `${header}\n${res.content}${footer}`;
 }
 
 // Recorta pelo MEIO preservando início e fim (o erro costuma estar no fim da saída)
@@ -935,11 +1245,10 @@ const tools = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Lê o conteúdo de um arquivo do workspace. Arquivos grandes são retornados em ' +
-        'JANELAS de linhas (padrão: ' + READ_FILE_MAX_LINES + ' linhas por leitura). Se o resultado ' +
-        'avisar que restam linhas, chame read_file de novo com "offset" na linha indicada para ler o ' +
-        'restante — o arquivo NÃO é cortado silenciosamente. Antes de reescrever um arquivo grande, ' +
-        'leia todas as partes.',
+      description: 'Lê o conteúdo de um arquivo do workspace. A maioria dos arquivos volta INTEIRA; ' +
+        'só os muito grandes são divididos em JANELAS de linhas. Se o resultado avisar que restam ' +
+        'linhas, chame read_file de novo com "offset" na linha indicada para ler o restante — o ' +
+        'arquivo NÃO é cortado silenciosamente. Antes de reescrever um arquivo grande, leia todas as partes.',
       parameters: {
         type: 'object',
         properties: {
@@ -955,7 +1264,9 @@ const tools = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Cria ou sobrescreve um arquivo com um conteúdo específico.',
+      description: 'Cria um arquivo novo ou SOBRESCREVE por completo um existente. Para alterar ' +
+        'parte de um arquivo que já existe use edit_file — reescrever tudo gasta muito mais tokens ' +
+        'e a resposta pode ser cortada no meio, truncando o arquivo.',
       parameters: {
         type: 'object',
         properties: {
@@ -963,6 +1274,46 @@ const tools = [
           content: { type: 'string', description: 'Conteúdo completo a ser escrito no arquivo' }
         },
         required: ['filename', 'content']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description: 'Forma PADRÃO de alterar um arquivo existente: troca o trecho exato old_text por ' +
+        'new_text, preservando o resto do arquivo. Leia o arquivo antes e copie old_text exatamente ' +
+        'como está (mesma indentação), incluindo linhas de contexto suficientes para o trecho ser ' +
+        'único. Falha sem alterar nada se o trecho não existir ou aparecer mais de uma vez.',
+      parameters: {
+        type: 'object',
+        properties: {
+          filename: { type: 'string', description: 'Caminho relativo do arquivo a editar' },
+          old_text: { type: 'string', description: 'Trecho exato que será substituído (copiado do arquivo)' },
+          new_text: { type: 'string', description: 'Texto que entra no lugar (use string vazia para remover)' },
+          replace_all: { type: 'boolean', description: 'Substituir todas as ocorrências em vez de exigir trecho único (padrão: false)' }
+        },
+        required: ['filename', 'old_text', 'new_text']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_files',
+      description: 'Procura um texto ou padrão dentro dos arquivos do workspace e devolve arquivo, ' +
+        'linha e o conteúdo da linha. Use para localizar onde algo é definido ou usado — é muito mais ' +
+        'barato que ler arquivos inteiros à procura. Ignora node_modules, dist, .git e binários.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Texto a procurar (ou expressão regular, se regex=true)' },
+          regex: { type: 'boolean', description: 'Interpretar query como expressão regular (padrão: false)' },
+          case_sensitive: { type: 'boolean', description: 'Diferenciar maiúsculas de minúsculas (padrão: false)' },
+          file_pattern: { type: 'string', description: 'Filtro de arquivos no estilo glob (ex: *.js, src/**/*.test.js)' },
+          max_results: { type: 'number', description: 'Máximo de linhas de resultado (padrão 60, teto 200)' }
+        },
+        required: ['query']
       }
     }
   },
@@ -984,7 +1335,9 @@ const tools = [
     type: 'function',
     function: {
       name: 'delete_file',
-      description: 'Apaga um arquivo do workspace.',
+      description: 'Apaga um arquivo do workspace. Use APENAS quando o usuário pediu a remoção, ou para ' +
+        'um arquivo temporário que você mesmo criou. Nunca apague um arquivo existente para "recomeçar" ' +
+        'uma edição que não deu certo — para corrigir conteúdo, use edit_file ou write_file.',
       parameters: {
         type: 'object',
         properties: {
@@ -1029,6 +1382,24 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'wait_for_process',
+      description: 'ESPERA um processo de segundo plano TERMINAR e devolve o exit code com toda a saída. ' +
+        'Use sempre que precisar do resultado de algo demorado (npm install, build, suíte de testes) em vez ' +
+        'de chamar read_process_output várias vezes perguntando se já acabou — isso desperdiça chamadas e ' +
+        'não acelera nada. Para servidores, que não terminam, NÃO espere: siga trabalhando.',
+      parameters: {
+        type: 'object',
+        properties: {
+          pid: { type: 'number', description: 'PID retornado por execute_command' },
+          timeout_ms: { type: 'number', description: 'Tempo máximo de espera em ms (padrão 120000, teto 600000)' }
+        },
+        required: ['pid']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'list_processes',
       description: 'Lista os processos em segundo plano (PID, comando, status, tempo de execução).',
       parameters: { type: 'object', properties: {} }
@@ -1047,6 +1418,50 @@ const tools = [
         required: ['pid']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'http_request',
+      description: 'Faz uma requisição HTTP e devolve status, cabeçalhos e corpo separados. Use para ' +
+        'validar APIs (inclusive as que você mesmo subiu com execute_command): confira o status E o ' +
+        'corpo, e teste também entradas inválidas para ver se o erro retornado é o esperado.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL completa (ex: http://localhost:3000/api/itens)' },
+          method: { type: 'string', description: 'GET, POST, PUT, PATCH, DELETE… (padrão: GET)' },
+          headers: { type: 'object', description: 'Cabeçalhos extras, ex: { "Authorization": "Bearer x" }' },
+          body: { type: 'string', description: 'Corpo da requisição (JSON como string). Content-Type: application/json é assumido se parecer JSON.' },
+          timeout_ms: { type: 'number', description: 'Tempo limite em milissegundos (padrão 15000)' }
+        },
+        required: ['url']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'capture_page',
+      description: 'Abre uma URL num navegador oculto, tira um PRINT da tela e devolve o que aconteceu: ' +
+        'erros de console, requisições que falharam, título e texto visível da página. Use para validar ' +
+        'visualmente páginas e interfaces que você criou ou alterou, e para depurar erros de JavaScript ' +
+        'que não aparecem no terminal. O servidor precisa estar no ar.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL a abrir (ex: http://localhost:5173)' },
+          width: { type: 'number', description: 'Largura da janela em px (padrão 1280)' },
+          height: { type: 'number', description: 'Altura da janela em px (padrão 800)' },
+          wait_ms: { type: 'number', description: 'Espera após o carregamento, para a página montar (padrão 700)' },
+          full_page: { type: 'boolean', description: 'Captura a PÁGINA INTEIRA, não só a primeira dobra. Use ao validar um layout — sem isso você não vê o rodapé nem o que depende de rolagem.' },
+          crop_selector: { type: 'string', description: 'Recorta a captura neste elemento CSS e a envia em tamanho CHEIO. Use sempre que a tarefa for de DETALHE (alinhamento, espaçamento, sobreposição, texto torto): no print da página inteira a imagem é reduzida e esse tipo de defeito desaparece. Ex: ".roleta", "#cabecalho".' },
+          selector: { type: 'string', description: 'Espera este seletor CSS aparecer antes do print (ex: #app .lista)' },
+          script: { type: 'string', description: 'JavaScript executado na página ANTES do print, para interagir ou medir. Use "return" para devolver um valor. Ex: document.querySelector("#salvar").click(); return document.body.innerText;' }
+        },
+        required: ['url']
+      }
+    }
   }
 ];
 
@@ -1056,8 +1471,10 @@ const webTools = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Pesquisa na web (DuckDuckGo) e retorna uma lista de resultados (título, URL e resumo). ' +
-        'Use para obter informações atuais, documentação ou referências que você não conhece.',
+      description: 'Pesquisa na web e retorna os resultados (título, URL e resumo) E o TEXTO já extraído ' +
+        'das primeiras páginas, em "paginas". Na maioria das vezes a resposta está aí e não é preciso ' +
+        'chamar fetch_url depois. Tenta vários buscadores em cascata até um responder. ' +
+        'Use termos simples e específicos — evite aspas e operadores como site:, que costumam zerar a busca.',
       parameters: {
         type: 'object',
         properties: {
@@ -1090,6 +1507,77 @@ function activeTools() {
   return state.settings.webSearch ? [...tools, ...webTools] : tools;
 }
 
+// --------------------------------------------------------------------------
+//  Visão: devolver o print do capture_page para o modelo
+// --------------------------------------------------------------------------
+// Mandar image_url para um modelo que só entende texto faz o servidor recusar a
+// requisição inteira, então o reenvio depende do endpoint ANUNCIAR um modelo
+// multimodal (campo "capabilities" do /v1/models). Sem isso, o print continua
+// sendo salvo e mostrado ao usuário — só não volta para o modelo.
+let modelSupportsVision = false;
+const shotCache = new Map(); // caminho do png -> data URL, para não reler o disco a cada requisição
+let ultimaPoda = 0;          // quantos resultados o último payload encurtou
+let avisouPoda = false;      // o aviso de compactação é dado uma vez por conversa, não por turno
+let ultimoSystemChars = 0;   // tamanho do prompt de sistema atual, descontado do orçamento do histórico
+
+function visionEnabled() {
+  return !!(state.settings.visionFeedback && modelSupportsVision);
+}
+
+function detectVision(json, modelId) {
+  const all = [...(json.models || []), ...(json.data || [])];
+  const daMesmaId = all.filter(m => [m.id, m.name, m.model].filter(Boolean).includes(modelId));
+  const pool = daMesmaId.length ? daMesmaId : all;
+  modelSupportsVision = pool.some(m =>
+    (m.capabilities || []).some(c => /multimodal|vision|image/i.test(String(c))));
+}
+
+// Índices das mensagens cujo print ainda deve acompanhar o histórico. Prints antigos
+// saem porque cada imagem custa milhares de tokens de visão — em poucas capturas o
+// contexto acabaria, e o que interessa ao modelo é sempre a tela mais recente.
+function recentShotIndexes(messages) {
+  const idx = [];
+  for (let i = messages.length - 1; i >= 0 && idx.length < MAX_VISION_IMAGES; i--) {
+    if (messages[i].role === 'tool' && messages[i].image && messages[i].image.path) idx.push(i);
+  }
+  return new Set(idx);
+}
+
+// Relê do disco os prints que voltarão ao modelo (ao reabrir um chat o cache está vazio).
+async function hydrateShots(messages) {
+  if (!visionEnabled()) return;
+  for (const i of recentShotIndexes(messages)) {
+    const p = messages[i].image.path;
+    if (shotCache.has(p)) continue;
+    try {
+      const res = await window.electronAPI.readImage(p);
+      if (res && res.success) shotCache.set(p, res.dataUrl);
+    } catch (e) { /* print perdido (arquivo apagado): segue só com o texto */ }
+  }
+}
+
+// Arquivos que o agente já leu (ou escreveu) nesta sessão. Serve para barrar um
+// write_file que sobrescreveria conteúdo que ele nunca viu. Zera ao trocar de chat,
+// porque quem manda é o que está no histórico da conversa atual.
+let arquivosLidos = new Set();
+
+// Separa o que vai para o MODELO do que vai para a TELA. O diff é do usuário: mandá-lo
+// ao modelo repetiria o conteúdo que ele acabou de escrever, dobrando o custo em contexto.
+function comAlteracao(res, arquivo, extras = {}) {
+  const { diff, snapshotId, ...paraModelo } = res;
+  const saida = { text: JSON.stringify(paraModelo) };
+  if (snapshotId) {
+    saida.alteracao = {
+      snapshotId, arquivo,
+      adicionadas: (diff && diff.adicionadas) || extras.adicionadas || 0,
+      removidas: (diff && diff.removidas) || extras.removidas || 0,
+      apagado: !!extras.apagado
+    };
+    saida.diff = diff || null; // no delete não há diff: o card mostra "arquivo apagado"
+  }
+  return saida;
+}
+
 async function runTool(name, args, workspace) {
   try {
     if (name === 'list_files') {
@@ -1098,20 +1586,54 @@ async function runTool(name, args, workspace) {
       return JSON.stringify(files);
     }
     if (name === 'read_file') {
-      const content = await window.electronAPI.readFile(`${workspace}/${args.filename}`);
-      return readFileWindow(args.filename, content, args.offset, args.limit);
+      // O orçamento acompanha o n_ctx do modelo em uso, então trocar de modelo muda
+      // automaticamente quanto cabe numa leitura.
+      const budget = readCharBudget(state.modelCtx);
+      const alvo = `${workspace}/${args.filename}`;
+      const res = await window.electronAPI.readFile(alvo, {
+        offset: args.offset, limit: args.limit,
+        maxLines: READ_FILE_MAX_LINES, maxChars: budget
+      });
+      if (res && res.success) arquivosLidos.add(alvo);
+      return formatFileWindow(args.filename, res, budget);
     }
     if (name === 'write_file') {
-      const res = await window.electronAPI.writeFile(`${workspace}/${args.filename}`, args.content ?? '');
-      return JSON.stringify(res);
+      const alvo = `${workspace}/${args.filename}`;
+      const res = await window.electronAPI.writeFile(alvo, args.content ?? '', {
+        requireRead: !arquivosLidos.has(alvo)
+      });
+      // Depois de escrever, o agente conhece o conteúdo: as próximas escritas passam direto.
+      if (res.success) arquivosLidos.add(alvo);
+      // Um arquivo que já existia e encolheu muito quase sempre veio de uma reescrita
+      // feita a partir de leitura parcial. Avisar aqui é o último ponto em que dá
+      // para o modelo perceber e restaurar o conteúdo.
+      if (res.success && !res.created && res.previousLines > 20 && res.lines < res.previousLines * 0.5) {
+        res.aviso = `ATENÇÃO: o arquivo tinha ${res.previousLines} linhas e agora tem ${res.lines}. ` +
+          `Se não era para remover esse tanto, releia o arquivo por completo (read_file com offset) e restaure o que faltou.`;
+      }
+      return comAlteracao(res, args.filename);
+    }
+    if (name === 'edit_file') {
+      const res = await window.electronAPI.editFile(
+        `${workspace}/${args.filename}`, args.old_text, args.new_text ?? '', !!args.replace_all
+      );
+      return comAlteracao(res, args.filename);
+    }
+    if (name === 'search_files') {
+      const res = await window.electronAPI.searchFiles(workspace, {
+        query: args.query, regex: !!args.regex, caseSensitive: !!args.case_sensitive,
+        filePattern: args.file_pattern, maxResults: args.max_results
+      });
+      return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
     }
     if (name === 'create_directory') {
       const res = await window.electronAPI.createDirectory(`${workspace}/${args.dirname}`);
       return JSON.stringify(res);
     }
     if (name === 'delete_file') {
-      const res = await window.electronAPI.deleteFile(`${workspace}/${args.filename}`);
-      return JSON.stringify(res);
+      const alvo = `${workspace}/${args.filename}`;
+      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(alvo) });
+      return comAlteracao(res, args.filename, { apagado: true, removidas: res.linhasApagadas || 0 });
     }
     if (name === 'execute_command') {
       const timeoutMs = (state.settings.cmdTimeout || 25) * 1000;
@@ -1140,6 +1662,14 @@ async function runTool(name, args, workspace) {
       }
       return JSON.stringify(res);
     }
+    if (name === 'wait_for_process') {
+      const res = await window.electronAPI.waitForProcess(args.pid, args.timeout_ms);
+      if (res && res.success) {
+        res.stderr = clipMiddle(res.stderr || '', 2500) || undefined;
+        res.stdout = clipMiddle(res.stdout || '', 3000) || undefined;
+      }
+      return JSON.stringify(res);
+    }
     if (name === 'list_processes') {
       const res = await window.electronAPI.listProcesses();
       return JSON.stringify(res);
@@ -1148,9 +1678,55 @@ async function runTool(name, args, workspace) {
       const res = await window.electronAPI.stopProcess(args.pid);
       return JSON.stringify(res);
     }
+    if (name === 'http_request') {
+      const res = await window.electronAPI.httpRequest(args.url, {
+        method: args.method, headers: args.headers, body: args.body, timeoutMs: args.timeout_ms
+      });
+      if (res.success) {
+        // Só os cabeçalhos que costumam importar numa validação; o resto é ruído
+        // que ocupa contexto (cache-control, x-powered-by, cookies de sessão…).
+        const keep = ['content-type', 'location', 'content-length'];
+        const h = {};
+        for (const k of keep) if (res.headers && res.headers[k]) h[k] = res.headers[k];
+        res.headers = h;
+      }
+      return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
+    }
+    if (name === 'capture_page') {
+      const res = await window.electronAPI.capturePage(args.url, {
+        width: args.width, height: args.height, waitMs: args.wait_ms,
+        selector: args.selector, script: args.script, fullPage: !!args.full_page,
+        cropSelector: args.crop_selector
+      });
+      if (!res.success) return JSON.stringify({ error: res.error, hint: res.hint });
+
+      // O dataUrl NÃO entra no texto do resultado: ele vai como imagem, à parte, e
+      // colado aqui (centenas de KB de base64) estouraria o contexto sozinho.
+      const resumo = {
+        ok: true, url: res.url, titulo: res.title, status: res.httpStatus,
+        tamanho: `${res.width}x${res.height}`,
+        erros_de_console: (res.console || []).filter(c => c.level === 'error').map(c => c.text).slice(0, 15),
+        avisos_de_console: (res.console || []).filter(c => c.level === 'warning').map(c => c.text).slice(0, 5),
+        falhas_de_rede: (res.netErrors || []).slice(0, 10),
+        texto_visivel: res.text
+      };
+      if (args.selector) resumo.seletor_encontrado = res.selectorFound;
+      if (res.recorte) resumo.recortado_em = res.recorte;
+      if (res.recorteFalhou) resumo.aviso_do_recorte = res.recorteFalhou;
+      if (res.scriptResult !== undefined) resumo.resultado_do_script = res.scriptResult;
+      if (res.scriptError) resumo.erro_no_script = res.scriptError;
+      resumo.print = visionEnabled()
+        ? 'A imagem do print acompanha este resultado — analise-a.'
+        : 'Print salvo e exibido ao usuário (o modelo atual não recebe imagens; use o texto e os erros acima).';
+
+      return {
+        text: truncate(JSON.stringify(resumo), MAX_TOOL_RESULT_CHARS),
+        image: { path: res.path, dataUrl: res.dataUrl, width: res.width, height: res.height }
+      };
+    }
     if (name === 'web_search') {
       const res = await window.electronAPI.webSearch(args.query, args.max_results || 5);
-      return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
+      return truncate(JSON.stringify(res), MAX_SEARCH_RESULT_CHARS);
     }
     if (name === 'fetch_url') {
       const res = await window.electronAPI.fetchUrl(args.url, 8000);
@@ -1193,7 +1769,12 @@ async function runAgent() {
   isRunning = true;
   stopRequested = false;
   updateInputState();
-  refreshModelContext(); // atualiza n_ctx/infos do modelo a cada requisição (não bloqueia)
+  // O n_ctx precisa ser conhecido ANTES de montar o primeiro payload: é ele que dimensiona
+  // a poda do histórico. Sem isso, justamente a primeira requisição de uma conversa longa
+  // (a mais perigosa) iria inteira e estouraria o contexto. Só a primeira vez espera;
+  // depois a atualização volta a rodar em paralelo, sem somar latência ao envio.
+  if (!state.modelCtx) await refreshModelContext();
+  else refreshModelContext();
 
   try {
     await agentTurns(chat);
@@ -1205,6 +1786,7 @@ async function runAgent() {
     // Garante que o input SEMPRE destrave, mesmo se algo estourar no meio do loop
     isRunning = false;
     updateInputState();
+    atualizarBotaoCompactar();
     setAppTitle(''); // volta o título ao nome do app
     await persist();
     // Se o agente terminou deixando processos rodando, avisa (o usuário pode precisar encerrá-los)
@@ -1216,9 +1798,140 @@ async function runAgent() {
   }
 }
 
+// --------------------------------------------------------------------------
+//  Compactar a pedido do usuário
+// --------------------------------------------------------------------------
+// Marca até onde os resultados de ferramenta devem ir encurtados ao modelo. Não apaga
+// nada: o histórico e a tela continuam completos, só o payload encolhe.
+function compactarAgora() {
+  const chat = activeChat();
+  if (!chat) return;
+
+  const jaMarcado = chat.podaManualAte || 0;
+  let candidatos = 0, bytes = 0;
+  for (let i = jaMarcado; i < chat.messages.length; i++) {
+    const m = chat.messages[i];
+    if (m.role !== 'tool' || typeof m.content !== 'string') continue;
+    if (m.content.length <= PODA_AVISO.length) continue;
+    candidatos++;
+    bytes += m.content.length - PODA_AVISO.length;
+  }
+
+  if (!candidatos) {
+    logSystem('Nada a compactar: não há resultado de ferramenta antigo o bastante nesta conversa.');
+    return;
+  }
+
+  chat.podaManualAte = chat.messages.length;
+  persist();
+  atualizarBotaoCompactar();
+  logSystem(`Contexto liberado: ${candidatos} resultado(s) de ferramenta passam a ir encurtados ao modelo (~${fmtSize(bytes)}). O conteúdo continua aqui na tela; se o agente precisar, é só chamar a ferramenta de novo.`);
+}
+
+// Mostra quanto dá para liberar e destaca o botão quando vale a pena.
+function atualizarBotaoCompactar() {
+  const btn = document.getElementById('btn-compactar');
+  const rotulo = document.getElementById('compact-label');
+  if (!btn || !rotulo) return;
+  const chat = activeChat();
+  if (!chat) { btn.disabled = true; return; }
+
+  let bytes = 0;
+  for (let i = (chat.podaManualAte || 0); i < chat.messages.length; i++) {
+    const m = chat.messages[i];
+    if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > PODA_AVISO.length) {
+      bytes += m.content.length - PODA_AVISO.length;
+    }
+  }
+  btn.disabled = bytes === 0;
+  rotulo.innerText = bytes > 0 ? `Compactar (${fmtSize(bytes)})` : 'Compactar';
+  // Destaca a partir de ~40 KB, quando a economia começa a fazer diferença real
+  btn.classList.toggle('vale-a-pena', bytes > 40 * 1024);
+}
+
 async function clearFinishedProcesses() {
   await window.electronAPI.clearFinishedProcesses();
   await refreshProcesses();
+}
+
+// Traduz a falha em causa provável + o que fazer: "Failed to fetch" não diz se é
+// servidor fora do ar, porta errada ou modelo inexistente — consertos bem diferentes.
+// `transitorio` também decide se vale repetir (só 5xx vale).
+function classificaErroDeRequisicao(err, apiUrl, model) {
+  const msg = String((err && err.message) || err || '');
+  const status = Number((msg.match(/^HTTP (\d{3})/) || [])[1]) || 0;
+  const nomeCurto = model ? model.split(/[\\/]/).pop() : '(nenhum)';
+
+  if (/failed to fetch|fetch failed|networkerror|ERR_CONNECTION|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/i.test(msg)) {
+    return {
+      transitorio: false,
+      titulo: 'Não consegui falar com o servidor do modelo',
+      detalhe: `Nenhuma resposta de ${apiUrl}.`,
+      passos: [
+        'Confirme que o servidor do modelo (llama.cpp, Ollama, vLLM…) está de pé.',
+        'Confira a URL e principalmente a PORTA em Configurações → Conexão.',
+        `Teste no navegador: ${apiUrl}/models deve devolver JSON.`
+      ]
+    };
+  }
+  if (status === 401 || status === 403) {
+    return {
+      transitorio: false,
+      titulo: 'O servidor recusou a autenticação',
+      detalhe: `HTTP ${status} em ${apiUrl}.`,
+      passos: [
+        'Preencha ou corrija a API Key em Configurações → Conexão.',
+        'Servidores locais em geral não pedem chave — se for o caso, deixe o campo vazio.'
+      ]
+    };
+  }
+  if (status === 404) {
+    return {
+      transitorio: false,
+      titulo: 'Endereço ou modelo não encontrado',
+      detalhe: `HTTP 404 em ${apiUrl}/chat/completions (modelo: ${nomeCurto}).`,
+      passos: [
+        'A URL precisa terminar no prefixo da API, normalmente /v1.',
+        'Reabra Configurações e clique em "Recarregar" para escolher um modelo que exista no servidor.'
+      ]
+    };
+  }
+  if (status === 400 && /model|not found|does not exist/i.test(msg)) {
+    return {
+      transitorio: false,
+      titulo: 'O servidor não reconheceu o modelo pedido',
+      detalhe: `Modelo enviado: ${nomeCurto}.`,
+      passos: ['Configurações → "Recarregar" e selecione um modelo da lista do servidor.']
+    };
+  }
+  if (status === 413 || /context|too long|exceeds/i.test(msg)) {
+    return {
+      transitorio: false,
+      titulo: 'A conversa passou do que o modelo aguenta',
+      detalhe: msg.slice(0, 200),
+      passos: [
+        'Comece um chat novo, ou reduza "Máximo de tokens por resposta" nas configurações.',
+        'Se o servidor foi iniciado com contexto pequeno, suba o valor de -c / --ctx-size nele.'
+      ]
+    };
+  }
+  if (status >= 500) {
+    return {
+      transitorio: true, // geração estocástica: repetir costuma resolver
+      titulo: 'O servidor do modelo devolveu erro interno',
+      detalhe: msg.slice(0, 250),
+      passos: [
+        'Costuma ser uma geração malformada e passa ao repetir.',
+        'Se insistir, veja o terminal onde o servidor está rodando — o erro real aparece lá.'
+      ]
+    };
+  }
+  return {
+    transitorio: true,
+    titulo: 'Falha na requisição ao modelo',
+    detalhe: msg.slice(0, 250),
+    passos: ['Confira se o servidor do modelo continua rodando.']
+  };
 }
 
 // Chamada em STREAMING (SSE): dispara os callbacks conforme o texto chega e
@@ -1362,8 +2075,15 @@ function createLiveReasoning() {
 async function agentTurns(chat) {
   const { apiUrl, model, apiKey, temperature, topP, maxTokens, noThink } = state.settings;
 
-  let systemContent = system_prompt(chat.path, state.settings.webSearch);
-  if (noThink) systemContent += ' /no_think';
+  // Montado a cada iteração porque a detecção de multimodal (refreshModelContext) roda
+  // em paralelo e pode chegar depois do primeiro turno — o prompt precisa acompanhar,
+  // senão o modelo é informado de que "vê" prints quando ainda não recebe imagem.
+  const buildSystem = () => {
+    let s = system_prompt(chat.path, state.settings.webSearch, visionEnabled());
+    if (noThink) s += ' /no_think';
+    ultimoSystemChars = s.length; // entra na conta do orçamento do histórico
+    return s;
+  };
 
   const toolset = activeTools();
 
@@ -1394,6 +2114,8 @@ async function agentTurns(chat) {
       scrollChat();
     };
 
+    await hydrateShots(chat.messages); // recarrega do disco os prints que voltam ao modelo
+
     // Uma resposta ruim (ex.: tool_call malformado → 500 do llama.cpp) é transitória:
     // tenta de novo em vez de encerrar a run inteira. Abort do usuário não lança —
     // volta em result.aborted — então tudo que cai no catch é falha real.
@@ -1405,7 +2127,7 @@ async function agentTurns(chat) {
           apiUrl, apiKey,
           payload: {
             model,
-            messages: [{ role: 'system', content: systemContent }, ...toApiMessages(chat.messages)],
+            messages: [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)],
             tools: toolset, tool_choice: 'auto', temperature, top_p: topP, max_tokens: maxTokens
           },
           signal: abortController.signal,
@@ -1419,8 +2141,12 @@ async function agentTurns(chat) {
         abortController = null;
       }
       if (stopRequested) break;
+      // Repetir só faz sentido para falha transitória; servidor fora do ar ou modelo
+      // inexistente falham igual nas três tentativas e atrasam o diagnóstico.
+      const diag = classificaErroDeRequisicao(lastErr, apiUrl, model);
+      if (!diag.transitorio) break;
       if (attempt < MAX_REQUEST_RETRIES) {
-        logSystem(`Requisição falhou (tentativa ${attempt}/${MAX_REQUEST_RETRIES}): ${lastErr.message}. Tentando de novo…`);
+        logSystem(`${diag.titulo} (tentativa ${attempt}/${MAX_REQUEST_RETRIES}). Tentando de novo…`);
         if (liveReason) { liveReason.details.remove(); liveReason = null; } // descarta o parcial da tentativa perdida
         if (liveBody) { liveBody.parentElement.remove(); liveBody = null; }
         await new Promise(r => setTimeout(r, REQUEST_RETRY_DELAY_MS * attempt));
@@ -1430,7 +2156,8 @@ async function agentTurns(chat) {
 
     if (!result) {
       hideTyping();
-      appendError(`Falha na requisição: ${lastErr ? lastErr.message : 'interrompida'}`);
+      if (lastErr) appendErrorCard(classificaErroDeRequisicao(lastErr, apiUrl, model));
+      else appendError('Requisição interrompida.');
       break;
     }
 
@@ -1500,6 +2227,9 @@ async function agentTurns(chat) {
       const fn = toolCall && toolCall.function;
       const name = (fn && fn.name) || '';
       let result;
+      let image = null;      // print do capture_page, quando houver
+      let alteracao = null;  // {snapshotId, arquivo, +/-} das ferramentas que mexem em arquivo
+      let diffVivo = null;   // diff já calculado desta execução (evita recalcular agora)
 
       if (!name) {
         // Modelos quantizados às vezes emitem tool_calls malformados
@@ -1529,19 +2259,41 @@ async function agentTurns(chat) {
             logSystem(`Ação rejeitada pelo usuário: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
           } else {
             setAppTitle(`executando: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
-            result = await runTool(name, args, chat.path);
-            fillToolResult(card, name, result);
+            const saida = await runTool(name, args, chat.path);
+            // Ferramentas que produzem algo além de texto (print, diff) devolvem objeto;
+            // as demais devolvem a string que vai direto para o modelo.
+            if (saida && typeof saida === 'object') {
+              result = saida.text;
+              if (saida.image) {
+                shotCache.set(saida.image.path, saida.image.dataUrl);
+                image = { path: saida.image.path, width: saida.image.width, height: saida.image.height };
+              }
+              if (saida.alteracao) {
+                alteracao = saida.alteracao;
+                diffVivo = saida.diff; // já calculado; na recarga o card busca de novo pelo snapshotId
+              }
+            } else {
+              result = saida;
+            }
+            fillToolResult(card, name, result, { image, alteracao, diff: diffVivo });
             refreshProcesses(); // atualiza o painel de processos (pode ter subido/encerrado algo)
           }
         }
       }
 
-      chat.messages.push({
+      const toolMsg = {
         role: 'tool',
         tool_call_id: toolCall && toolCall.id,
         name: name || 'unknown',
         content: result
-      });
+      };
+      // Guarda só o CAMINHO do print: o base64 fica no cache em memória, porque gravá-lo
+      // no histórico incharia o app-store.json em centenas de KB por captura.
+      if (image) toolMsg.image = image;
+      // Mesma lógica para o diff: no histórico fica só a referência do instantâneo
+      // (que já tem o antes e o depois em disco) e os contadores do cabeçalho.
+      if (alteracao) toolMsg.alteracao = alteracao;
+      chat.messages.push(toolMsg);
     }
 
     await persist();
@@ -1566,12 +2318,109 @@ function sanitizeToolCalls(toolCalls) {
   });
 }
 
+// --------------------------------------------------------------------------
+//  Compactação de contexto
+// --------------------------------------------------------------------------
+const PODA_AVISO = '[resultado antigo removido para liberar contexto — chame a ferramenta de novo se precisar deste conteúdo]';
+
+// Decide o que substituir nos resultados de ferramenta para o payload caber no contexto.
+// Devolve índice -> novo conteúdo. A mensagem NUNCA é removida: um tool_call sem o 'tool'
+// correspondente faz o servidor recusar a requisição inteira. E vale só para o que é
+// ENVIADO — o histórico salvo continua completo, na tela e ao reabrir o chat.
+function compactToolResults(messages) {
+  const ctx = state.modelCtx || ASSUMED_CTX_WHEN_UNKNOWN;
+  // Reserva o que não é histórico: o prompt de sistema (que vai junto em toda requisição)
+  // e o espaço da resposta. O piso evita orçamento negativo se maxTokens for quase a janela.
+  const reserva = (state.settings.maxTokens || 4096)
+    + Math.ceil(ultimoSystemChars / CHARS_PER_TOKEN)
+    + CONTEXT_MARGIN_TOKENS;
+  const tokensHistorico = Math.max(ctx - reserva, Math.floor(ctx * HISTORY_MIN_FRACTION));
+  const orcamento = Math.floor(tokensHistorico * CHARS_PER_TOKEN);
+
+  // Estimativa do peso REAL da mensagem no corpo da requisição: contar só o content
+  // subestima bastante, porque os argumentos do tool_call e as chaves do JSON também
+  // ocupam contexto — e aí a poda para cedo demais e o payload passa do orçamento.
+  const tamanho = (m) => {
+    let n = 80; // role, tool_call_id, name e a estrutura do objeto JSON
+    if (typeof m.content === 'string') n += m.content.length;
+    for (const a of (m.attachments || [])) n += (a.content || '').length + 60;
+    for (const tc of (m.tool_calls || [])) {
+      const f = tc.function || {};
+      n += 70 + (f.arguments || '').length + (f.name || '').length;
+    }
+    return n;
+  };
+
+  let total = 0;
+  for (const m of messages) total += tamanho(m);
+  const subs = new Map();
+
+  // Corte pedido pelo usuário no botão "Compactar": tudo anterior a esta marca vai
+  // encurtado, caiba ou não no orçamento. Some do ENVIO, não do histórico.
+  const chat = activeChat();
+  const marca = (chat && chat.podaManualAte) || 0;
+  for (let i = 0; i < Math.min(marca, messages.length); i++) {
+    if (messages[i].role !== 'tool') continue;
+    if (tamanho(messages[i]) - PODA_AVISO.length <= 0) continue;
+    total -= tamanho(messages[i]) - PODA_AVISO.length;
+    subs.set(i, PODA_AVISO);
+  }
+
+  if (total <= orcamento) return subs;
+
+  // 1ª etapa: do mais novo para o mais antigo — o que acabou de acontecer é o que o
+  // modelo precisa, então os antigos é que viram aviso curto.
+  const recentes = [];
+  let vistos = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'tool') continue;
+    if (subs.has(i)) continue;                        // já encurtado pelo corte manual
+    if (++vistos <= KEEP_RECENT_TOOL_RESULTS) { recentes.push(i); continue; }
+    if (total <= orcamento) continue;                 // já coube: o resto fica intacto
+    const ganho = tamanho(messages[i]) - PODA_AVISO.length;
+    if (ganho <= 0) continue;                          // resultado curto: podar não compensa
+    total -= ganho;
+    subs.set(i, PODA_AVISO);
+  }
+  if (total <= orcamento) return subs;
+
+  // 2ª etapa: nem os recentes cabem (contexto pequeno + saídas enormes). Apagá-los faria
+  // o agente perder o que acabou de fazer e repetir as chamadas em looping, então eles são
+  // cortados pelo MEIO — o começo tem o cabeçalho e o fim tem o erro, que é o que importa.
+  const somaRecentes = recentes.reduce((s, i) => s + tamanho(messages[i]), 0);
+  const sobra = orcamento - (total - somaRecentes);
+  const cota = Math.max(Math.floor(sobra / Math.max(recentes.length, 1)), CLIP_MIN_CHARS);
+  for (const i of recentes) {
+    const c = messages[i].content;
+    if (typeof c === 'string' && c.length > cota) subs.set(i, clipMiddle(c, cota));
+  }
+  return subs;
+}
+
 // Monta o payload para o servidor: remove reasoning_content e expande anexos no conteúdo do usuário
 function toApiMessages(messages) {
-  return messages.map(m => {
+  const comPrint = visionEnabled() ? recentShotIndexes(messages) : new Set();
+  const compactados = compactToolResults(messages);
+  // A contagem sobe a cada turno, então comparar com a anterior avisava de novo toda
+  // vez. O usuário só precisa saber UMA vez que a compactação entrou; o estado contínuo
+  // fica no indicador de contexto do cabeçalho, que não polui a conversa.
+  if (compactados.size > 0 && !avisouPoda) {
+    avisouPoda = true;
+    logSystem('Contexto quase cheio: resultados antigos de ferramenta passaram a ser enviados encurtados ao modelo (continuam completos aqui). Use "Compactar" ao lado do campo de texto para liberar espaço de vez.');
+  }
+  ultimaPoda = compactados.size;
+  return messages.map((m, i) => {
+    if (compactados.has(i)) return { role: 'tool', tool_call_id: m.tool_call_id, name: m.name, content: compactados.get(i) };
     const copy = { role: m.role };
     if (m.role === 'user' && m.attachments && m.attachments.length) {
       copy.content = buildAttachmentBlock(m.attachments) + (m.content || '');
+    } else if (comPrint.has(i) && shotCache.has(m.image.path)) {
+      // O print entra como parte de conteúdo da própria mensagem de ferramenta: é onde
+      // ele pertence, e evita inventar uma mensagem de usuário que o modelo não enviou.
+      copy.content = [
+        { type: 'text', text: m.content },
+        { type: 'image_url', image_url: { url: shotCache.get(m.image.path) } }
+      ];
     } else if (m.content !== undefined) {
       copy.content = m.content;
     }
@@ -1737,18 +2586,23 @@ async function addMentionAttachment(relPath) {
   const chat = activeChat();
   if (!chat || !chat.path) return;
   if (pendingAttachments.some(a => a.mention && a.path === relPath)) return;
-  let content;
+  // O anexo quer o arquivo inteiro (até ATTACH_MAX), não a janela de leitura do agente:
+  // o teto de linhas é neutralizado e quem corta é o de caracteres.
+  let res;
   try {
-    content = await window.electronAPI.readFile(`${chat.path}/${relPath}`);
+    res = await window.electronAPI.readFile(`${chat.path}/${relPath}`, {
+      maxLines: Number.MAX_SAFE_INTEGER, maxChars: ATTACH_MAX
+    });
   } catch (e) {
-    logSystem(`Não consegui ler o arquivo mencionado: ${relPath}`);
+    res = null;
+  }
+  if (!res || !res.success) {
+    logSystem(`Não consegui ler o arquivo mencionado: ${relPath}${res && res.error ? ` — ${res.error}` : ''}`);
     return;
   }
-  if (content == null) return;
-  let truncated = false;
-  const size = content.length;
-  if (content.length > ATTACH_MAX) { content = content.slice(0, ATTACH_MAX); truncated = true; }
-  pendingAttachments.push({ name: relPath, path: relPath, mention: true, content, size, truncated });
+  const content = res.content || '';
+  const truncated = !!res.charClipped || (res.total > 0 && res.end < res.total);
+  pendingAttachments.push({ name: relPath, path: relPath, mention: true, content, size: res.size || content.length, truncated });
   renderAttachments();
 }
 const TEXT_EXT = /\.(txt|md|markdown|js|mjs|cjs|ts|jsx|tsx|json|jsonc|html?|css|scss|sass|less|py|rb|go|rs|java|kt|c|h|hpp|cpp|cc|cs|php|sh|bash|zsh|zig|yml|yaml|toml|ini|cfg|conf|env|xml|sql|csv|tsv|log|vue|svelte|swift|dart|lua|r|pl|pm|ex|exs|erl|hs|clj|gradle|properties)$/i;
@@ -1906,7 +2760,10 @@ async function fetchModels() {
     }
 
     updateModelInfo(models.find(m => m.id === select.value) || models[0]);
-    status.innerText = `${models.length} modelo(s) disponível(is).`;
+    detectVision(json, select.value);
+    updateVisionStatus();
+    status.innerText = `${models.length} modelo(s) disponível(is)` +
+      (modelSupportsVision ? ' — multimodal: o agente vê os prints do capture_page.' : '.');
   } catch (err) {
     status.innerText = `Não foi possível carregar modelos de ${apiUrl}/models — ${err.message}`;
     select.innerHTML = '<option value="">(indisponível)</option>';
@@ -1948,6 +2805,7 @@ async function refreshModelContext() {
     const models = json.data || [];
     const m = models.find(x => x.id === model) || models[0];
     if (m) updateModelInfo(m);
+    detectVision(json, model);
   } catch (e) { /* silencioso: não atrapalha o envio */ }
 }
 
@@ -1967,6 +2825,18 @@ function applySettingsToForm() {
   document.getElementById('check-nothink').checked = s.noThink;
   document.getElementById('check-safety-interactions').checked = s.safetyInteractions;
   document.getElementById('check-websearch').checked = s.webSearch;
+  document.getElementById('check-vision').checked = s.visionFeedback;
+  updateVisionStatus();
+}
+
+// Diz se o modelo escolhido aceita imagem — sem isso o usuário liga a opção e não
+// entende por que os prints continuam voltando só como texto.
+function updateVisionStatus() {
+  const el = document.getElementById('vision-status');
+  if (!el) return;
+  el.innerText = modelSupportsVision
+    ? 'o modelo atual é multimodal.'
+    : 'o modelo atual não anuncia suporte a imagem.';
 }
 
 function readSettingsFromForm() {
@@ -1980,6 +2850,7 @@ function readSettingsFromForm() {
   state.settings.noThink = document.getElementById('check-nothink').checked;
   state.settings.safetyInteractions = document.getElementById('check-safety-interactions').checked;
   state.settings.webSearch = document.getElementById('check-websearch').checked;
+  state.settings.visionFeedback = document.getElementById('check-vision').checked;
 }
 
 // --------------------------------------------------------------------------
@@ -1991,6 +2862,8 @@ function wireEvents() {
   chatBox.addEventListener('scroll', () => {
     stickToBottom = (chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight) < 80;
   });
+
+  document.getElementById('btn-compactar').addEventListener('click', compactarAgora);
 
   // Selecionar pasta de trabalho (diálogo nativo real do Electron)
   document.getElementById('btn-select-folder').addEventListener('click', async () => {

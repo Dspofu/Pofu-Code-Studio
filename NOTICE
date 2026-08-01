@@ -1,0 +1,38 @@
+Pofuserver Coder Studio
+Copyright 2026-present the Pofuserver Coder Studio authors (Dspofu)
+
+This product includes software developed by Dspofu.
+Source: https://github.com/Dspofu/Pofuserver-Code
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License in the LICENSE file at the root of this repository, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+If you redistribute this software, in whole or in part, with or without
+modification, you must keep this NOTICE file and state any changes you made
+to the original files, as required by sections 4(b) and 4(d) of the License.
+Attribution to the original project is appreciated.
+
+--------------------------------------------------------------------------
+Third-party components
+--------------------------------------------------------------------------
+
+Bundled in vendor/ (loaded offline by the renderer, unmodified):
+
+  - Tailwind CSS ................ MIT License
+  - marked ...................... MIT License
+  - DOMPurify ................... Apache-2.0 OR MPL-2.0
+  - highlight.js ................ BSD-3-Clause
+
+Runtime dependencies (installed from npm, see package.json):
+
+  - @mozilla/readability ........ Apache-2.0
+  - linkedom .................... ISC
+  - turndown .................... MIT
+  - openai ...................... Apache-2.0
+  - Electron .................... MIT
+
+Each third-party component remains under its own license; the terms above
+apply only to the code authored in this repository.
