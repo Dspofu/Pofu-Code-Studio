@@ -56,7 +56,13 @@ export const DEFAULT_SETTINGS = {
   // emitir o tool_call; com folga de menos, a chamada é cortada no meio dos argumentos
   // e chega com JSON quebrado (finish_reason 'length').
   maxTokens: 16384,
-  noThink: false, // modelos de raciocínio (ex: Qwen3) precisam pensar para chamar ferramentas
+  noThink: false, // legado: mantido só para migrar quem já tinha a chave salva (ver thinkLevel)
+  // Quanto o modelo deve raciocinar antes de responder. 'padrao' NÃO acrescenta campo
+  // nenhum ao corpo da requisição, e é por isso que ele é o default: `reasoning_effort`
+  // é extensão recente e servidor antigo responde 400 ao receber campo que não conhece —
+  // ligar isso por conta própria quebraria quem só atualizou o app. Os outros níveis são
+  // escolha explícita do usuário, que aí sabe que depende do suporte do servidor.
+  thinkLevel: 'padrao', // 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto'
   cmdTimeout: 20, // segundos até um comando ser considerado "rodando em segundo plano"
   webSearch: false, // habilita as ferramentas de busca na web (web_search / fetch_url)
   execMode: 'manual', // 'manual' pede confirmação antes de rodar comandos; 'auto' executa direto
@@ -66,6 +72,28 @@ export const DEFAULT_SETTINGS = {
   // imagem para um modelo de texto derruba a requisição com erro do servidor.
   visionFeedback: true
 };
+
+// Tradução do nível escolhido na UI para o que entra no corpo da requisição.
+// `desligado` usa DOIS mecanismos porque nenhum é universal: o sufixo /no_think no prompt
+// é o que os Qwen3 entendem, e chat_template_kwargs.enable_thinking é o que llama.cpp e
+// vLLM entendem. Quem não suporta um ignora e o outro resolve.
+export const THINK_LEVELS = {
+  padrao:    { rotulo: 'Padrão do modelo', payload: null, semRaciocinio: false },
+  desligado: { rotulo: 'Desligado',        payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true },
+  baixo:     { rotulo: 'Baixo',            payload: { reasoning_effort: 'low' },    semRaciocinio: false },
+  medio:     { rotulo: 'Médio',            payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
+  alto:      { rotulo: 'Alto',             payload: { reasoning_effort: 'high' },   semRaciocinio: false }
+};
+
+// Teto do raciocínio MOSTRADO na tela (o texto do think não é persistido no histórico).
+// Sem teto, um bloco de raciocínio muito longo vira um nó de texto de vários MB que o
+// Blink reposiciona a cada quadro — junto com a reescrita a cada token, foi isso que fez
+// o processo passar de 9 GB durante um "pensa muito" e só cair quando o GC alcançava.
+// A poda tira do COMEÇO: o fim é a parte que o usuário está acompanhando.
+export const MAX_REASONING_DOM_CHARS = 200000;
+
+// Pastas recentes guardadas para a troca rápida de workspace no cabeçalho.
+export const MAX_RECENT_PATHS = 8;
 
 export const APP_NAME = 'Pofuserver Coder Studio';
 

@@ -66,6 +66,22 @@ Falha de conexão, chave inválida, modelo inexistente e erro do servidor viram 
 
 ![Configurações](docs/img/config.png)
 
+### Pasta segura com troca rápida
+Cada chat trabalha dentro de **uma pasta** — o agente não enxerga nada fora dela. O botão de pasta no cabeçalho abre um menu com a **pasta atual**, as **usadas recentemente** e a opção de escolher outra: alternar entre projetos é um clique, sem passar pelo diálogo do sistema toda vez.
+
+![Troca da pasta segura](docs/img/pasta-segura.png)
+
+### Nível de raciocínio ajustável
+Em *Ajustes* → **Nível de raciocínio** dá para pedir que o modelo pense mais, menos ou nada:
+
+| Nível | O que é enviado |
+|---|---|
+| Padrão do modelo | nada — funciona em qualquer servidor |
+| Desligado | `enable_thinking: false` + `/no_think` no prompt |
+| Baixo / Médio / Alto | `reasoning_effort: low \| medium \| high` |
+
+O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning_effort` é extensão recente e servidor antigo recusa o que não conhece. Se um nível der erro, volte para o padrão.
+
 ### Offline
 As bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos) são vendorizadas em `vendor/` — a interface não depende de CDN.
 
@@ -77,7 +93,7 @@ As bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos
 - Um **servidor de modelo compatível com OpenAI** rodando (ex.: llama.cpp)
 - Linux, Windows ou macOS
 
-Modelos com **function calling** são necessários (o agente depende disso). Para modelos de raciocínio (ex.: Qwen3), mantenha o raciocínio **ligado**. Um modelo **multimodal** habilita o retorno visual dos prints.
+Modelos com **function calling** são necessários (o agente depende disso). Para modelos de raciocínio (ex.: Qwen3), mantenha o **Nível de raciocínio** diferente de *Desligado* — sem pensar, eles costumam parar de chamar ferramentas. Um modelo **multimodal** habilita o retorno visual dos prints.
 
 ## Instalação
 
@@ -103,12 +119,13 @@ Engrenagem → aba **Ajustes**:
 1. **Endpoint** — padrão `http://localhost:8080/v1`
 2. **Modelo** — *Recarregar* lista o que o endpoint expõe
 3. **API Key** — opcional (vazio para servidores locais)
-4. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
-5. **Busca na web**, temperatura, top-p, máximo de tokens e timeout de comando
+4. **Nível de raciocínio** — quanto o modelo pensa antes de responder (veja a tabela acima)
+5. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
+6. **Busca na web**, temperatura, top-p, máximo de tokens e timeout de comando
 
 ## Como usar
 
-1. Crie um chat e **escolha a pasta de trabalho** (ícone de pasta no cabeçalho)
+1. Crie um chat e **escolha a pasta segura** (ícone de pasta no cabeçalho — o menu também lista as pastas recentes)
 2. Peça o que precisa — ex.: *"crie uma API Express com testes e valide os endpoints"*
 3. Acompanhe os cards de ferramenta, os diffs e os prints em tempo real
 4. Use **Auto/Manual** para decidir se comandos pedem confirmação

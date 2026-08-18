@@ -3,12 +3,13 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofuserver-Code
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_TOOL_RESULT_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_TOOL_RESULT_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 let state = {
   chats: {},          // { id: { id, name, path, messages: [] } }
   activeChatId: null,
   settings: { ...DEFAULT_SETTINGS },
+  recentPaths: [], // pastas seguras usadas antes, para a troca rápida no cabeçalho
   usage: { prompt: 0, completion: 0, requests: 0, history: [], lastTotal: 0 },
   modelCtx: 0
 };
@@ -262,8 +263,14 @@ function seguirAposCarregarImagens(raiz) {
 }
 
 // Atualiza o título da janela: "Pofuserver Coder Studio — <status>" (ou só o nome quando ocioso)
+let ultimoTitulo = '';
 function setAppTitle(status) {
   const title = status ? `${APP_NAME} — ${status}` : APP_NAME;
+  // O streaming chama isto a CADA token. Sem esta guarda, cada token virava um send de
+  // IPC e uma chamada nativa win.setTitle no processo main — dezenas de milhares delas
+  // num raciocínio longo, enfileiradas mais rápido do que o main conseguia drenar.
+  if (title === ultimoTitulo) return;
+  ultimoTitulo = title;
   document.title = title;
   if (window.electronAPI && window.electronAPI.setTitle) window.electronAPI.setTitle(title);
 }
@@ -275,20 +282,39 @@ async function persist() {
   await window.electronAPI.saveStore({
     chats: state.chats,
     activeChatId: state.activeChatId,
-    settings: state.settings
+    settings: state.settings,
+    recentPaths: state.recentPaths
   });
+}
+
+// O controle de raciocínio era um liga/desliga (noThink) e virou um nível. Quem já tinha
+// desligado precisa continuar desligado depois de atualizar, senão o modelo volta a
+// pensar sozinho e o usuário não faz ideia do porquê.
+function migraSettings(salvas) {
+  const s = { ...DEFAULT_SETTINGS, ...(salvas || {}) };
+  if (salvas && salvas.thinkLevel === undefined && salvas.noThink) s.thinkLevel = 'desligado';
+  return s;
 }
 
 async function loadPersisted() {
   const data = await window.electronAPI.loadStore();
+  state.recentPaths = Array.isArray(data && data.recentPaths) ? data.recentPaths : [];
   if (data && data.chats && Object.keys(data.chats).length > 0) {
     state.chats = data.chats;
     state.activeChatId = data.activeChatId && data.chats[data.activeChatId]
       ? data.activeChatId
       : Object.keys(data.chats)[0];
-    state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+    state.settings = migraSettings(data.settings);
+    // Store antigo não tem recentPaths: semeia com as pastas que os chats já usam, senão
+    // o menu de troca rápida nasceria vazio para quem já tem projetos abertos.
+    if (!state.recentPaths.length) {
+      for (const chat of Object.values(state.chats)) {
+        if (chat.path && !state.recentPaths.includes(chat.path)) state.recentPaths.push(chat.path);
+      }
+      state.recentPaths = state.recentPaths.slice(0, MAX_RECENT_PATHS);
+    }
   } else {
-    if (data && data.settings) state.settings = { ...DEFAULT_SETTINGS, ...data.settings };
+    state.settings = migraSettings(data && data.settings);
     createChat('Chat Inicial');
   }
 }
@@ -434,7 +460,7 @@ function deleteChat(id) {
 function renderActiveChat() {
   const chat = activeChat();
   document.getElementById('active-chat-title').innerText = chat.name;
-  document.getElementById('selected-path').innerText = chat.path || 'Selecionar ambiente';
+  mostraCaminhoAtivo(chat.path);
 
   const chatBox = document.getElementById('chat-box');
   chatBox.innerHTML = '';
@@ -1983,8 +2009,10 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
         if (!choice) continue;
         const delta = choice.delta || {};
         if ((delta.reasoning_content || delta.content) && !firstTokenAt) firstTokenAt = performance.now();
-        if (delta.reasoning_content) { reasoning += delta.reasoning_content; onReasoning && onReasoning(reasoning); }
-        if (delta.content) { content += delta.content; onContent && onContent(content); }
+        // Os callbacks recebem o DELTA, não o texto acumulado: mandar o acumulado obrigava
+        // a tela a reescrever o bloco inteiro a cada token (custo O(n²) — ver criaEscritorStream).
+        if (delta.reasoning_content) { reasoning += delta.reasoning_content; onReasoning && onReasoning(delta.reasoning_content); }
+        if (delta.content) { content += delta.content; onContent && onContent(delta.content); }
         if (delta.tool_calls) {
           for (const tc of delta.tool_calls) {
             const i = tc.index ?? 0;
@@ -2059,6 +2087,50 @@ function createLiveAgentBody() {
   return body;
 }
 
+// Escritor de texto em streaming — a correção do consumo de memória durante o raciocínio.
+// Antes, cada token reescrevia o bloco inteiro (`el.innerText = tudoQueChegouAteAgora`).
+// innerText descarta e recria o nó de texto E força reflow síncrono, então um raciocínio de
+// N caracteres custava O(N²) de trabalho e de lixo: num "pensa muito" longo o processo
+// passava de 9 GB e só voltava ao normal quando o GC alcançava, já com o stream encerrado.
+// Aqui chega só o delta, que é acumulado num buffer e ANEXADO ao mesmo nó de texto uma vez
+// por quadro — appendData não recria nada e o custo deixa de crescer com o tamanho do texto.
+function criaEscritorStream(el) {
+  const no = document.createTextNode('');
+  el.appendChild(no);
+  let pendente = '';
+  let quadro = 0;
+
+  const aplicar = () => {
+    quadro = 0;
+    if (!pendente) return;
+    no.appendData(pendente);
+    pendente = '';
+    // Poda o começo ao passar do teto: o nó segue único e o custo de layout para de subir.
+    const excesso = no.length - MAX_REASONING_DOM_CHARS;
+    if (excesso > 0) no.deleteData(0, excesso);
+    scrollChat();
+  };
+
+  return {
+    escreve(delta) {
+      if (!delta) return;
+      pendente += delta;
+      if (!quadro) quadro = requestAnimationFrame(aplicar);
+    },
+    // Fim do stream: descarrega o que sobrou no buffer.
+    encerra() {
+      if (quadro) { cancelAnimationFrame(quadro); quadro = 0; }
+      aplicar();
+    },
+    // O elemento vai ser removido ou reescrito como markdown — o quadro pendente escreveria
+    // num nó que já não está mais na árvore.
+    descarta() {
+      if (quadro) { cancelAnimationFrame(quadro); quadro = 0; }
+      pendente = '';
+    }
+  };
+}
+
 // Bloco de raciocínio aberto para streaming; retorna { details, body }
 function createLiveReasoning() {
   const chatBox = document.getElementById('chat-box');
@@ -2079,13 +2151,17 @@ function createLiveReasoning() {
 // Executa o ciclo de raciocínio/ferramentas até o modelo parar de chamar ferramentas
 async function agentTurns(chat) {
   const { apiUrl, model, apiKey, temperature, topP, maxTokens, noThink } = state.settings;
+  const nivelThink = THINK_LEVELS[state.settings.thinkLevel] || THINK_LEVELS.padrao;
+  // noThink continua sendo respeitado: migraSettings converte a chave antiga, mas um store
+  // escrito por uma versão mais nova em outra máquina pode trazer as duas.
+  const semRaciocinio = nivelThink.semRaciocinio || noThink;
 
   // Montado a cada iteração porque a detecção de multimodal (refreshModelContext) roda
   // em paralelo e pode chegar depois do primeiro turno — o prompt precisa acompanhar,
   // senão o modelo é informado de que "vê" prints quando ainda não recebe imagem.
   const buildSystem = () => {
     let s = system_prompt(chat.path, state.settings.webSearch, visionEnabled());
-    if (noThink) s += ' /no_think';
+    if (semRaciocinio) s += ' /no_think';
     ultimoSystemChars = s.length; // entra na conta do orçamento do histórico
     return s;
   };
@@ -2104,19 +2180,24 @@ async function agentTurns(chat) {
 
     // Elementos de streaming (criados sob demanda quando o primeiro token chega)
     let liveBody = null, liveReason = null;
-    const onReasoning = (full) => {
+    let escritorBody = null, escritorReason = null;
+    const onReasoning = (delta) => {
       hideTyping();
       setAppTitle('pensando…');
-      if (!liveReason) liveReason = createLiveReasoning();
-      liveReason.body.innerText = full;
-      scrollChat();
+      if (!liveReason) {
+        liveReason = createLiveReasoning();
+        escritorReason = criaEscritorStream(liveReason.body);
+      }
+      escritorReason.escreve(delta);
     };
-    const onContent = (full) => {
+    const onContent = (delta) => {
       hideTyping();
       setAppTitle('gerando resposta…');
-      if (!liveBody) liveBody = createLiveAgentBody();
-      liveBody.innerText = full; // texto puro enquanto digita; markdown ao finalizar
-      scrollChat();
+      if (!liveBody) {
+        liveBody = createLiveAgentBody();
+        escritorBody = criaEscritorStream(liveBody); // texto puro enquanto digita; markdown ao finalizar
+      }
+      escritorBody.escreve(delta);
     };
 
     await hydrateShots(chat.messages); // recarrega do disco os prints que voltam ao modelo
@@ -2133,7 +2214,9 @@ async function agentTurns(chat) {
           payload: {
             model,
             messages: [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)],
-            tools: toolset, tool_choice: 'auto', temperature, top_p: topP, max_tokens: maxTokens
+            tools: toolset, tool_choice: 'auto', temperature, top_p: topP, max_tokens: maxTokens,
+            // Vazio no nível 'padrao' — ver THINK_LEVELS: campo desconhecido derruba servidor antigo.
+            ...(nivelThink.payload || {})
           },
           signal: abortController.signal,
           onContent, onReasoning
@@ -2152,12 +2235,18 @@ async function agentTurns(chat) {
       if (!diag.transitorio) break;
       if (attempt < MAX_REQUEST_RETRIES) {
         logSystem(`${diag.titulo} (tentativa ${attempt}/${MAX_REQUEST_RETRIES}). Tentando de novo…`);
-        if (liveReason) { liveReason.details.remove(); liveReason = null; } // descarta o parcial da tentativa perdida
-        if (liveBody) { liveBody.parentElement.remove(); liveBody = null; }
+        // descarta o parcial da tentativa perdida (e o quadro pendente do escritor)
+        if (liveReason) { escritorReason.descarta(); liveReason.details.remove(); liveReason = null; escritorReason = null; }
+        if (liveBody) { escritorBody.descarta(); liveBody.parentElement.remove(); liveBody = null; escritorBody = null; }
         await new Promise(r => setTimeout(r, REQUEST_RETRY_DELAY_MS * attempt));
         showTyping();
       }
     }
+
+    // O stream acabou (ou foi abortado): joga na tela o que ficou no buffer do último
+    // quadro, senão o fim do texto some justamente quando ele para de ser atualizado.
+    if (escritorReason) escritorReason.encerra();
+    if (escritorBody) escritorBody.encerra();
 
     if (!result) {
       hideTyping();
@@ -2200,6 +2289,7 @@ async function agentTurns(chat) {
         // Finaliza a bolha: re-renderiza como markdown, adiciona botão de regenerar e as métricas
         const bubble = liveBody ? liveBody.parentElement : null;
         if (liveBody) {
+          if (escritorBody) escritorBody.descarta(); // innerHTML abaixo troca o nó de texto
           renderMarkdownInto(liveBody, message.content);
           bubble.classList.remove('streaming');
           attachMsgAction(bubble, 'regenerate', assistantIndex);
@@ -2827,7 +2917,7 @@ function applySettingsToForm() {
   document.getElementById('range-topp').nextElementSibling.innerText = s.topP;
   document.getElementById('input-maxtokens').value = s.maxTokens;
   document.getElementById('input-cmdtimeout').value = s.cmdTimeout;
-  document.getElementById('check-nothink').checked = s.noThink;
+  document.getElementById('select-thinklevel').value = THINK_LEVELS[s.thinkLevel] ? s.thinkLevel : 'padrao';
   document.getElementById('check-safety-interactions').checked = s.safetyInteractions;
   document.getElementById('check-websearch').checked = s.webSearch;
   document.getElementById('check-vision').checked = s.visionFeedback;
@@ -2852,10 +2942,98 @@ function readSettingsFromForm() {
   state.settings.topP = parseFloat(document.getElementById('range-topp').value);
   state.settings.maxTokens = parseInt(document.getElementById('input-maxtokens').value, 10) || DEFAULT_SETTINGS.maxTokens;
   state.settings.cmdTimeout = parseInt(document.getElementById('input-cmdtimeout').value, 10) || DEFAULT_SETTINGS.cmdTimeout;
-  state.settings.noThink = document.getElementById('check-nothink').checked;
+  state.settings.thinkLevel = document.getElementById('select-thinklevel').value;
+  // Zera o legado ao salvar pela UI: deixá-lo true forçaria /no_think mesmo em nível 'alto'.
+  state.settings.noThink = state.settings.thinkLevel === 'desligado';
   state.settings.safetyInteractions = document.getElementById('check-safety-interactions').checked;
   state.settings.webSearch = document.getElementById('check-websearch').checked;
   state.settings.visionFeedback = document.getElementById('check-vision').checked;
+}
+
+// --------------------------------------------------------------------------
+//  Pasta segura (workspace) — o agente só enxerga daqui para dentro
+// --------------------------------------------------------------------------
+
+// O caminho inteiro não cabe no cabeçalho e o começo (/home/fulano/...) é a parte que
+// menos identifica a pasta — então o corte tira do começo, não do fim.
+function encurtaCaminho(caminho, max = 44) {
+  if (!caminho || caminho.length <= max) return caminho || 'Selecionar ambiente';
+  return '…' + caminho.slice(-(max - 1));
+}
+
+function mostraCaminhoAtivo(caminho) {
+  const el = document.getElementById('selected-path');
+  el.innerText = encurtaCaminho(caminho);
+  el.title = caminho
+    ? `Pasta segura deste chat: ${caminho}`
+    : 'Nenhuma pasta segura definida — escolha uma para liberar o agente';
+}
+
+function registraPastaRecente(caminho) {
+  state.recentPaths = [caminho, ...state.recentPaths.filter(p => p !== caminho)].slice(0, MAX_RECENT_PATHS);
+}
+
+// Ponto único de troca de workspace: o cache do autocomplete de @ é por pasta e ficaria
+// apontando para a árvore antiga se a troca acontecesse em outro lugar.
+function defineWorkspace(caminho) {
+  if (!caminho) return;
+  const chat = activeChat();
+  if (chat.path === caminho) return;
+  chat.path = caminho;
+  mentionFiles = []; mentionFilesFor = null;
+  registraPastaRecente(caminho);
+  mostraCaminhoAtivo(caminho);
+  logSystem(`Pasta segura definida para: ${caminho}`);
+  updateInputState();
+  persist();
+}
+
+function abreMenuPastas() {
+  const menu = document.getElementById('folder-menu');
+  const atual = activeChat().path;
+  menu.innerHTML = '';
+
+  const recentes = state.recentPaths.filter(p => p !== atual);
+  if (atual) {
+    const titulo = document.createElement('div');
+    titulo.className = 'folder-menu-title';
+    titulo.innerText = 'Pasta atual';
+    menu.appendChild(titulo);
+    const item = document.createElement('div');
+    item.className = 'folder-item atual';
+    item.innerText = atual;
+    item.title = atual;
+    menu.appendChild(item);
+  }
+
+  if (recentes.length) {
+    const titulo = document.createElement('div');
+    titulo.className = 'folder-menu-title';
+    titulo.innerText = 'Recentes';
+    menu.appendChild(titulo);
+    for (const caminho of recentes) {
+      const item = document.createElement('div');
+      item.className = 'folder-item';
+      item.innerText = caminho;
+      item.title = caminho;
+      item.addEventListener('click', () => {
+        menu.hidden = true;
+        defineWorkspace(caminho);
+      });
+      menu.appendChild(item);
+    }
+  }
+
+  const escolher = document.createElement('div');
+  escolher.className = 'folder-item acao';
+  escolher.innerText = '📂  Escolher outra pasta…';
+  escolher.addEventListener('click', async () => {
+    menu.hidden = true;
+    defineWorkspace(await window.electronAPI.selectFolder());
+  });
+  menu.appendChild(escolher);
+
+  menu.hidden = false;
 }
 
 // --------------------------------------------------------------------------
@@ -2870,17 +3048,22 @@ function wireEvents() {
 
   document.getElementById('btn-compactar').addEventListener('click', compactarAgora);
 
-  // Selecionar pasta de trabalho (diálogo nativo real do Electron)
-  document.getElementById('btn-select-folder').addEventListener('click', async () => {
-    const folderPath = await window.electronAPI.selectFolder();
-    if (folderPath) {
-      activeChat().path = folderPath;
-      mentionFiles = []; mentionFilesFor = null; // invalida o cache do autocomplete de @
-      document.getElementById('selected-path').innerText = folderPath;
-      logSystem(`Workspace definido para: ${folderPath}`);
-      updateInputState();
-      persist();
-    }
+  // Trocar a pasta segura: o botão abre o menu de recentes; o diálogo nativo fica a um
+  // clique dentro dele. Sem os recentes, alternar entre dois projetos exigia navegar a
+  // árvore inteira no diálogo do sistema toda vez.
+  const btnPasta = document.getElementById('btn-select-folder');
+  const menuPasta = document.getElementById('folder-menu');
+
+  btnPasta.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (menuPasta.hidden) abreMenuPastas(); else menuPasta.hidden = true;
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!menuPasta.hidden && !menuPasta.contains(e.target)) menuPasta.hidden = true;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menuPasta.hidden) menuPasta.hidden = true;
   });
 
   // Enviar mensagem (com anexos, se houver)
