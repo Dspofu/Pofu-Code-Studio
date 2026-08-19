@@ -362,6 +362,63 @@
     }
 
     /* Menu de autocomplete da menção de arquivo (@arquivo) */
+    /* Troca rápida da pasta segura: o caminho atual e o botão que abre o menu de recentes */
+    .folder-picker { position: relative; display: flex; align-items: center; gap: 6px; }
+
+    #selected-path {
+      font-size: 0.8rem;
+      color: #a1a1aa;
+      font-family: monospace;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .folder-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 280px;
+      max-width: 420px;
+      max-height: 320px;
+      overflow-y: auto;
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 12px;
+      box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+      padding: 5px;
+      z-index: 60;
+    }
+
+    .folder-menu[hidden] { display: none; }
+
+    .folder-menu-title {
+      padding: 6px 9px 4px;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-dim, #71717a);
+    }
+
+    .folder-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-family: monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .folder-item:hover { background: var(--surface-3); }
+    .folder-item.atual { color: var(--accent, #6366f1); }
+    .folder-item.acao { font-family: inherit; border-top: 1px solid var(--border-2); border-radius: 0 0 8px 8px; }
+
     .mention-menu {
       position: absolute;
       left: 6px;
@@ -1874,10 +1931,13 @@
             <span id="hdr-ctx-text">— / — tkn</span>
             <span class="ctx-pill-bar"><span class="ctx-pill-fill" id="hdr-ctx-fill"></span></span>
           </div>
-          <span id="selected-path" style="font-size: 0.8rem; color: #a1a1aa; font-family: monospace;">Selecionar ambiente</span>
-          <button id="btn-select-folder" class="btn-icon" title="Selecionar Pasta para este Chat">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-          </button>
+          <div class="folder-picker">
+            <span id="selected-path" title="Pasta segura deste chat: o agente só enxerga daqui para dentro">Selecionar ambiente</span>
+            <button id="btn-select-folder" class="btn-icon" title="Trocar a pasta segura deste chat">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </button>
+            <div class="folder-menu" id="folder-menu" hidden></div>
+          </div>
         </div>
       </header>
 
@@ -2022,12 +2082,16 @@
                 <label for="input-maxtokens">Máximo de tokens por resposta</label>
                 <input type="text" id="input-maxtokens" value="8192">
               </div>
-              <div class="switch-row">
-                <div class="switch-text">
-                  <span class="switch-title">Desativar raciocínio (/no_think)</span>
-                  <span class="cfg-hint">Mais rápido, mas modelos de raciocínio (Qwen3) podem parar de chamar ferramentas.</span>
-                </div>
-                <label class="switch"><input type="checkbox" id="check-nothink"><span class="switch-slider"></span></label>
+              <div class="config-group">
+                <label for="select-thinklevel">Nível de raciocínio</label>
+                <select id="select-thinklevel" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border-2);background:var(--surface-3);color:var(--text);font-size:0.85rem;outline:none;">
+                  <option value="padrao">Padrão do modelo</option>
+                  <option value="desligado">Desligado — responde direto</option>
+                  <option value="baixo">Baixo</option>
+                  <option value="medio">Médio</option>
+                  <option value="alto">Alto — pensa mais antes de agir</option>
+                </select>
+                <span class="cfg-hint">"Padrão" não envia nada e vale para qualquer servidor. Os demais dependem do servidor aceitar <code>reasoning_effort</code>; se der erro na requisição, volte para o padrão. "Desligado" é mais rápido, mas modelos de raciocínio (Qwen3) podem parar de chamar ferramentas.</span>
               </div>
             </div>
 
