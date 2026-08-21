@@ -45,6 +45,25 @@ jobs:
         with:
           node-version: '22'
 
+      # A tag é só um rótulo: quem nomeia os instaladores e grava a versão dentro do
+      # executável é o "version" do package.json. Criar a tag antes de subir a versão
+      # publica um release vX.Y.Z inteiro com arquivos marcados com a versão ANTERIOR,
+      # sem nenhum erro no caminho — foi exatamente o que aconteceu no v1.2.0. Falha
+      # aqui, antes de gastar o build.
+      - name: Confere se a tag bate com o package.json
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          versao_tag="${TAG#v}"
+          versao_pkg="$(node -p "require('./package.json').version")"
+          echo "tag: $TAG (versão $versao_tag) · package.json: $versao_pkg"
+          if [ "$versao_tag" != "$versao_pkg" ]; then
+            echo "::error::A tag $TAG não corresponde à versão $versao_pkg do package.json. Suba a versão no package.json, faça o commit e recrie a tag."
+            exit 1
+          fi
+
       - run: npm install
 
       # --publish never: ao detectar CI, o electron-builder tenta publicar o release
