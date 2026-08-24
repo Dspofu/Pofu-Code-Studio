@@ -3,13 +3,15 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofuserver-Code
 
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification } from 'electron';
 import { dirname, join } from 'path';
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { WebSearch } from './src/websearch.js';
+import packageJson from "./package.json" with { type: "json" };
+import { vibeCodingTips } from './src/constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -85,6 +87,11 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    new Notification({
+      title: packageJson.productName,
+      body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)]
+    }).show()
+    console.log("ué")
   });
 });
 

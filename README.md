@@ -171,9 +171,10 @@ Você pode usar, modificar, redistribuir e criar derivados, inclusive comercialm
 
 - Ícone do aplicativo gerado com ChatGPT (OpenAI)
 - Bibliotecas de terceiros e suas licenças estão listadas no [NOTICE](NOTICE)
+- Referencia de icones: https://feathericons.com
 
 ## Notas
 
 - Histórico e configurações ficam no diretório de dados do Electron (`app-store.json`)
 - Prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`, no mesmo diretório
-- Desenvolvido e testado principalmente no **Linux**, contra um **llama.cpp** local
+- Desenvolvido e testado principalmente no **Linux (Ubuntu 26.04) / Windows (11 PRO 25H2)**, contra um **llama.cpp** local

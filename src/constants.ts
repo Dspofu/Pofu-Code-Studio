@@ -160,3 +160,15 @@ export const MAX_LOOP_ITERATIONS = 100;
 // inteira do agente morre por causa de uma única resposta ruim.
 export const MAX_REQUEST_RETRIES = 3;
 export const REQUEST_RETRY_DELAY_MS = 800;
+
+// Dicas presentes nas notificações
+export const vibeCodingTips = [
+  "Defina o contexto e as regras do projeto antes de pedir para a IA gerar código.",
+  "Trabalhe em ciclos curtos: gere pequenas partes, teste imediatamente e itere.",
+  "Peça para a IA explicar a lógica antes de colar o código diretamente no projeto.",
+  "Mantenha seu repositório limpo e faça commits frequentes a cada feature funcional.",
+  "Use prompts específicos com exemplos de entrada e saída esperados.",
+  "Se o código gerado quebrar, envie o erro exato do terminal direto para a IA.",
+  "Não tente fazer tudo em um único prompt, separe o problema em etapas lógicas.",
+  "Mantenha o foco na arquitetura e deixe a IA cuidar do trabalho repetitivo."
+];
