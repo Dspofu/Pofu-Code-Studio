@@ -6,7 +6,7 @@
 // O prompt é montado por partes porque as ferramentas disponíveis mudam conforme as
 // configurações: prometer ao modelo uma ferramenta que não está no toolset faz ele
 // tentar chamá-la, falhar e gastar turnos até desistir.
-export const system_prompt = (path, web_search, vision) => `Você é um assistente de desenvolvimento sênior com acesso direto aos arquivos do projeto local. O diretório de trabalho atual é: ${path}. Responda em português.
+export const system_prompt = (path: string, web_search: boolean, vision: boolean) => `Você é um assistente de desenvolvimento sênior com acesso direto aos arquivos do projeto local. O diretório de trabalho atual é: ${path}. Responda em português.
 
 CICLO DE TRABALHO — investigar → alterar → validar → relatar:
 1. INVESTIGUE antes de agir: list_files, search_files e read_file para entender estrutura, convenções e estilo ANTES de criar ou alterar código. Não presuma nomes de arquivo, dependências ou frameworks — verifique. Para achar onde algo é definido ou usado, search_files é mais rápido e barato que ler arquivos inteiros.
@@ -46,7 +46,7 @@ FERRAMENTAS:
   ? "\n- Informação externa/atual: use web_search, que já devolve o TEXTO das primeiras páginas junto dos resultados — leia esse texto antes de responder. Só chame fetch_url se precisar de uma página específica que não veio no retorno. Busque com termos simples e específicos (aspas e operadores como site: costumam zerar o resultado). Cite a URL de onde tirou a informação e não invente dados que você não viu."
   : "");
 
-export const DEFAULT_SETTINGS = {
+export const DEFAULT_SETTINGS: Settings = {
   apiUrl: 'http://localhost:8080/v1',
   model: '',
   apiKey: '',
@@ -66,6 +66,10 @@ export const DEFAULT_SETTINGS = {
   cmdTimeout: 20, // segundos até um comando ser considerado "rodando em segundo plano"
   webSearch: false, // habilita as ferramentas de busca na web (web_search / fetch_url)
   execMode: 'manual', // 'manual' pede confirmação antes de rodar comandos; 'auto' executa direto
+  // Janela de console que o Windows abre ao rodar um comando. Oculta por padrão: numa
+  // tarefa longa o agente dispara dezenas de comandos e cada um piscava um terminal por
+  // cima do app. Desligar só faz sentido para acompanhar ao vivo o que está sendo rodado.
+  hideCommandConsole: true,
   safetyInteractions: true, // Implatação de segurança para evitar que o modelo esteja possivelmente alucinando
   // Devolve o PNG do capture_page para o modelo, e não só o texto da página. Ligado por
   // padrão mas usado apenas quando o endpoint anuncia um modelo multimodal — enviar
@@ -77,12 +81,15 @@ export const DEFAULT_SETTINGS = {
 // `desligado` usa DOIS mecanismos porque nenhum é universal: o sufixo /no_think no prompt
 // é o que os Qwen3 entendem, e chat_template_kwargs.enable_thinking é o que llama.cpp e
 // vLLM entendem. Quem não suporta um ignora e o outro resolve.
-export const THINK_LEVELS = {
-  padrao:    { rotulo: 'Padrão do modelo', payload: null, semRaciocinio: false },
-  desligado: { rotulo: 'Desligado',        payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true },
-  baixo:     { rotulo: 'Baixo',            payload: { reasoning_effort: 'low' },    semRaciocinio: false },
-  medio:     { rotulo: 'Médio',            payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
-  alto:      { rotulo: 'Alto',             payload: { reasoning_effort: 'high' },   semRaciocinio: false }
+// A `dica` é o que aparece embaixo do rótulo no menu do compositor: sem ela o usuário
+// escolhe "Alto" às cegas e só descobre que o servidor recusa `reasoning_effort` quando a
+// requisição falha.
+export const THINK_LEVELS: Record<ThinkLevel, ThinkLevelDef> = {
+  padrao:    { rotulo: 'Padrão do modelo', dica: 'Não envia nada — funciona em qualquer servidor', payload: null, semRaciocinio: false },
+  desligado: { rotulo: 'Desligado',        dica: 'Responde direto; modelos de raciocínio podem parar de chamar ferramentas', payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true },
+  baixo:     { rotulo: 'Baixo',            dica: 'Exige suporte a reasoning_effort no servidor', payload: { reasoning_effort: 'low' },    semRaciocinio: false },
+  medio:     { rotulo: 'Médio',            dica: 'Exige suporte a reasoning_effort no servidor', payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
+  alto:      { rotulo: 'Alto',             dica: 'Pensa mais antes de agir; exige suporte no servidor', payload: { reasoning_effort: 'high' },   semRaciocinio: false }
 };
 
 // Teto do raciocínio MOSTRADO na tela (o texto do think não é persistido no histórico).
@@ -115,7 +122,7 @@ export const READ_FILE_CHARS_CEILING = 400000;  // trava final contra minificado
 
 // O piso é MIN_CHARS, e não o fallback: usar o fallback como piso daria a um modelo de
 // 8k uma leitura de ~11k tokens — maior que o contexto inteiro dele.
-export function readCharBudget(modelCtx) {
+export function readCharBudget(modelCtx: number): number {
   if (!modelCtx || modelCtx <= 0) return READ_FILE_FALLBACK_CHARS;
   const budget = Math.floor(modelCtx * READ_BUDGET_FRACTION * CHARS_PER_TOKEN);
   return Math.min(Math.max(budget, READ_FILE_MIN_CHARS), READ_FILE_CHARS_CEILING);

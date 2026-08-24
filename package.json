@@ -5,9 +5,15 @@
   "description": "Pofuserver Coder Studio — agente de código em desktop (Electron) que se conecta a qualquer API REST compatível com OpenAI (llama.cpp, Ollama, vLLM, etc.). O agente lê, escreve e apaga arquivos do workspace, executa comandos no terminal com gerenciamento inteligente de processos em segundo plano (sobe servidores/APIs sem travar o chat), aceita anexos de arquivos e renderiza respostas em Markdown com realce de código.",
   "main": "main.js",
   "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prestart": "npm run build",
     "start": "electron --no-sandbox . --ozone-platform=x11",
+    "predist:linux": "npm run build",
     "dist:linux": "electron-builder --linux deb",
+    "predist:win": "npm run build",
     "dist:win": "electron-builder --win nsis",
+    "predist": "npm run build",
     "dist": "electron-builder --linux deb --win nsis"
   },
   "keywords": [
@@ -36,8 +42,10 @@
     "turndown": "^7.2.4"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "electron": "^43.1.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "typescript": "^7.0.2"
   },
   "build": {
     "appId": "com.dspofu.pofusercoderstudio",
@@ -45,8 +53,10 @@
     "copyright": "Copyright © 2026 Dspofu",
     "files": [
       "main.js",
-      "preload.js",
+      "preload.cjs",
       "src/**/*",
+      "!src/**/*.ts",
+      "!**/*.map",
       "index.html",
       "vendor/**/*",
       "assets/**/*",

@@ -16,35 +16,54 @@ Idioma do projeto: **português**. Commits, comentários, prompts e UI são em p
 
 | Arquivo | Papel |
 |---|---|
-| [main.js](main.js) | Processo *main* do Electron. Todos os `ipcMain.handle` (fs, spawn de comandos, store, web search/fetch), janela e menu. |
-| [preload.js](preload.js) | Ponte `contextBridge` → `window.electronAPI`. Toda nova capacidade do main precisa ser exposta aqui. |
+| [main.ts](main.ts) | Processo *main* do Electron. Todos os `ipcMain.handle` (fs, spawn de comandos, store, web search/fetch), janela e menu. |
+| [preload.cts](preload.cts) | Ponte `contextBridge` → `window.electronAPI`. Toda nova capacidade do main precisa ser exposta aqui. É `.cts` porque o preload é CommonJS (sai como `preload.cjs`). |
 | [index.html](index.html) | UI inteira: Tailwind (vendorizado), `<style>` grande no topo, markup e modais. Carrega os módulos ao final. |
-| [src/renderer.js](src/renderer.js) | Cérebro do renderer: estado dos chats, loop do agente, definição das `tools`, streaming, execução de tool calls, render de mensagens. |
-| [src/constants.js](src/constants.js) | `system_prompt`, `DEFAULT_SETTINGS` e os limites, todos comentados com o *porquê*: janela de leitura derivada do contexto, orçamento de histórico, prints por requisição, retries e trava de loop. |
-| [src/websearch.js](src/websearch.js) | **Arquivo gerado** — não edite. Saída do `tsc` sobre o módulo portátil `…/chat/src/lib/websearch.ts`. Cascata de buscadores, pontuação de relevância, cache e cooldown. |
+| [src/renderer.ts](src/renderer.ts) | Cérebro do renderer: estado dos chats, loop do agente, definição das `tools`, streaming, execução de tool calls, render de mensagens. |
+| [src/constants.ts](src/constants.ts) | `system_prompt`, `DEFAULT_SETTINGS` e os limites, todos comentados com o *porquê*: janela de leitura derivada do contexto, orçamento de histórico, prints por requisição, retries e trava de loop. |
+| [src/types.d.ts](src/types.d.ts) | Tipos GLOBAIS (o arquivo não exporta nada de propósito): `Settings`, `Chat`, `ChatMessage`, `ElectronAPI`, `ProcEntry`. Main e renderer os enxergam sem importar. |
+| [src/websearch.js](src/websearch.js) | **Arquivo gerado** — não edite, e não converta para `.ts`. Saída do `tsc` sobre o módulo portátil `…/chat/src/lib/websearch.ts`, mantido em OUTRO repositório. Os tipos dele estão em [src/websearch.d.ts](src/websearch.d.ts). |
 | `vendor/` | Libs offline do RENDERER (tailwind, marked, purify, highlight). Sem CDN. |
 | `build/`, `dist/` | Recursos e saída do electron-builder. |
 
 ## Comandos
 
 ```bash
-npm start        # electron --no-sandbox . --ozone-platform=x11
-npm run dist     # empacota .deb + .nsis
+npm run build     # tsc: emite o .js AO LADO de cada .ts
+npm run typecheck # só checagem, sem emitir
+npm start         # build + electron --no-sandbox . --ozone-platform=x11
+npm run dist      # build + empacota .deb + .nsis
 npm run dist:linux
 ```
 
-Não há testes nem linter. Verificação = rodar o app e exercitar o fluxo alterado.
+Não há testes nem linter. Verificação = `npm run typecheck` + rodar o app e exercitar o fluxo alterado.
+
+## TypeScript
+
+O `tsconfig.json` **não tem `outDir`**: o `.js` sai ao lado do `.ts`, e é por isso que
+`main` do package.json, as tags `<script>` do index.html e a lista `files` do
+electron-builder seguem apontando para os caminhos de sempre. Os `.js` gerados são
+ignorados pelo git; `prestart`/`predist` rodam o build antes.
+
+A checagem é **frouxa de propósito** (`strict: false`, `noImplicitAny: false`,
+`strictNullChecks: false`): a base veio de ~5 mil linhas de JS de DOM imperativo e ligar
+`strict` de uma vez daria centenas de erros. Apertar isso é trabalho arquivo a arquivo, não
+um flag no config.
+
+No renderer, use os helpers `el(id)` e `q(seletor, raiz)` em vez de
+`document.getElementById`/`querySelector` — eles devolvem `CampoUI` (um `HTMLElement` com as
+propriedades de campo opcionais), que é o que evita um cast em cada uma das ~120 buscas.
 
 ## Fluxo de uma alteração no agente
 
 Uma ferramenta nova exige tocar em **quatro** pontos, na ordem:
 
-1. `ipcMain.handle('nome', …)` em [main.js](main.js)
-2. exposição em [preload.js](preload.js)
-3. entrada no array `tools` em [src/renderer.js:1204](src/renderer.js#L1204) (schema JSON enviado ao modelo)
-4. o `case` no executor `runTool` ([src/renderer.js:1553](src/renderer.js#L1553)), a entrada em
-   `TOOL_META` e os `switch` de rótulo/resumo em [src/renderer.js:709](src/renderer.js#L709)
-   e [src/renderer.js:749](src/renderer.js#L749)
+1. `ipcMain.handle('nome', …)` em [main.ts](main.ts)
+2. exposição em [preload.cts](preload.cts) — e a assinatura em `ElectronAPI`, em [src/types.d.ts](src/types.d.ts)
+3. entrada no array `tools` em [src/renderer.ts:1328](src/renderer.ts#L1328) (schema JSON enviado ao modelo)
+4. o `case` no executor `runTool` ([src/renderer.ts:1679](src/renderer.ts#L1679)), a entrada em
+   `TOOL_META` ([src/renderer.ts:810](src/renderer.ts#L810)) e os `switch` de rótulo/resumo em
+   [src/renderer.ts:830](src/renderer.ts#L830) e [src/renderer.ts:873](src/renderer.ts#L873)
 
 Esquecer o passo 4 gera tool call que "funciona" mas aparece cru na UI.
 
@@ -67,12 +86,12 @@ que a ausência dele.
 - ES modules (`"type": "module"`) no main; renderer também usa `type="module"`.
 - Sem framework de UI: DOM imperativo (`document.createElement`). Siga o padrão dos
   `render*`/`build*` existentes em vez de introduzir templates ou libs.
-- Comentários explicam **por quê**, não o quê — veja [src/constants.js](src/constants.js), que
+- Comentários explicam **por quê**, não o quê — veja [src/constants.ts](src/constants.ts), que
   documenta o motivo de cada limite (ex.: `maxTokens` alto porque modelos de raciocínio gastam
   orçamento no bloco de think e cortam o JSON do tool call). Mantenha esse estilo ao mexer em
   qualquer constante ou heurística.
 - Mudanças de comportamento do agente quase sempre significam ajustar o `system_prompt` em
-  [src/constants.js](src/constants.js) — não espalhe instruções pelo renderer.
+  [src/constants.ts](src/constants.ts) — não espalhe instruções pelo renderer.
 
 ## Armadilhas conhecidas
 
@@ -107,6 +126,14 @@ que a ausência dele.
 - **Escrita sem leitura**: `write_file` recusa sobrescrever arquivo existente que não está em
   `arquivosLidos` (a checagem mora no main, junto da escrita, para não haver intervalo entre
   verificar e gravar). Criar arquivo novo passa livre. O conjunto zera ao trocar de chat.
+- **Janela de console no Windows**: `windowsHide: true` sozinho NÃO esconde nada quando o
+  spawn também usa `detached: true`. `detached` vira `DETACHED_PROCESS`, e o `CreateProcess`
+  ignora o `CREATE_NO_WINDOW` (o que o `windowsHide` liga) quando os dois vêm juntos — sem
+  console herdado e sem o flag de esconder, o `cmd.exe` aloca um console PRÓPRIO e visível.
+  Medido: `detached:true + windowsHide:true` abre 2 janelas por comando; `detached:false +
+  windowsHide:true` abre 0. Por isso o `execute-command` só usa `detached` fora do Windows —
+  os dois motivos do `detached` são POSIX (sudo e grupo de processos), e quem derruba a
+  árvore no Windows é o `taskkill /T` do `killTree`. Não volte a ligar `detached` lá.
 - **Processos longos**: comandos que passam de `cmdTimeout` viram background e retornam PID,
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava

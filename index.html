@@ -1751,6 +1751,78 @@
     .exec-mode .exec-opt.active { background: var(--accent); border-color: var(--accent); color: #fff; }
     .exec-mode .exec-opt:not(.active):hover { background: var(--surface-3); color: var(--text); }
 
+    /* O nível de raciocínio mora no rodapé do compositor, ao lado do modo de execução:
+       quanto o modelo deve pensar é decisão tomada NA HORA de escrever a mensagem.
+       Enterrado no modal, o usuário só lembrava dele depois de mandar o prompt, com a
+       resposta já em andamento. */
+    .composer-ctls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .think-picker {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.68rem;
+    }
+
+    .think-lbl { color: var(--muted-2); }
+
+    .composer-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: transparent;
+      border: 1px solid var(--border-2);
+      color: var(--muted);
+      padding: 3px 8px;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 0.68rem;
+      line-height: 1;
+    }
+
+    .composer-chip:hover { background: var(--surface-3); color: var(--text); }
+    .composer-chip svg { flex-shrink: 0; }
+
+    /* Nível diferente do padrão do modelo fica em destaque: é uma escolha que muda o
+       corpo da requisição e pode ser recusada por servidor antigo — invisível é pior. */
+    .think-btn.custom { color: var(--accent-2, #38bdf8); border-color: var(--accent); }
+
+    .think-menu {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0;
+      min-width: 230px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 12px;
+      box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+      padding: 5px;
+      z-index: 60;
+    }
+
+    .think-menu[hidden] { display: none; }
+
+    .think-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+
+    .think-item:hover { background: var(--surface-3); }
+    .think-item.active { color: var(--accent-2, #38bdf8); }
+    .think-item .think-item-hint { font-size: 0.68rem; color: var(--muted-2); }
+
     .proc-header-btn { position: relative; }
     .proc-header-btn.has-active { border-color: var(--accent); color: var(--accent-2); }
 
@@ -1961,10 +2033,21 @@
             </button>
           </div>
           <div class="composer-footer">
-            <div class="exec-mode" id="exec-mode" title="Modo de execução de comandos — Manual pede confirmação; Auto executa direto">
-              <span class="exec-mode-lbl">Comandos:</span>
-              <button class="exec-opt" data-mode="auto">Auto</button>
-              <button class="exec-opt active" data-mode="manual">Manual</button>
+            <div class="composer-ctls">
+              <div class="exec-mode" id="exec-mode" title="Modo de execução de comandos — Manual pede confirmação; Auto executa direto">
+                <span class="exec-mode-lbl">Comandos:</span>
+                <button class="exec-opt" data-mode="auto">Auto</button>
+                <button class="exec-opt active" data-mode="manual">Manual</button>
+              </div>
+
+              <div class="think-picker">
+                <span class="think-lbl">Raciocínio:</span>
+                <button id="btn-think" class="composer-chip think-btn" title="Quanto o modelo deve pensar antes de responder">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24A2.5 2.5 0 0 0 14.5 2Z"/></svg>
+                  <span id="think-label">Padrão do modelo</span>
+                </button>
+                <div class="think-menu" id="think-menu" hidden></div>
+              </div>
             </div>
             <div class="composer-hint">Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar</div>
           </div>
@@ -2082,17 +2165,7 @@
                 <label for="input-maxtokens">Máximo de tokens por resposta</label>
                 <input type="text" id="input-maxtokens" value="8192">
               </div>
-              <div class="config-group">
-                <label for="select-thinklevel">Nível de raciocínio</label>
-                <select id="select-thinklevel" style="width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border-2);background:var(--surface-3);color:var(--text);font-size:0.85rem;outline:none;">
-                  <option value="padrao">Padrão do modelo</option>
-                  <option value="desligado">Desligado — responde direto</option>
-                  <option value="baixo">Baixo</option>
-                  <option value="medio">Médio</option>
-                  <option value="alto">Alto — pensa mais antes de agir</option>
-                </select>
-                <span class="cfg-hint">"Padrão" não envia nada e vale para qualquer servidor. Os demais dependem do servidor aceitar <code>reasoning_effort</code>; se der erro na requisição, volte para o padrão. "Desligado" é mais rápido, mas modelos de raciocínio (Qwen3) podem parar de chamar ferramentas.</span>
-              </div>
+              <span class="cfg-hint">O nível de raciocínio saiu daqui: agora fica no rodapé do compositor, ao lado do modo de comandos.</span>
             </div>
 
             <div class="cfg-section">
@@ -2121,6 +2194,13 @@
                   <span class="cfg-hint">O <code>capture_page</code> devolve a imagem da tela ao modelo, e não só o texto da página. Usado apenas quando o endpoint anuncia um modelo multimodal — <span id="vision-status">verificando…</span></span>
                 </div>
                 <label class="switch"><input type="checkbox" id="check-vision"><span class="switch-slider"></span></label>
+              </div>
+              <div class="switch-row">
+                <div class="switch-text">
+                  <span class="switch-title">Ocultar o console dos comandos</span>
+                  <span class="cfg-hint">Impede que uma janela de terminal apareça na tela a cada <code>execute_command</code>. Desligue apenas para acompanhar ao vivo o que o agente está rodando — no Windows a janela do console volta a abrir a cada comando.</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="check-hide-console"><span class="switch-slider"></span></label>
               </div>
               <div class="config-group">
                 <label for="input-cmdtimeout">Timeout de comando (segundos)</label>

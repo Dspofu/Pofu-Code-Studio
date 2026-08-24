@@ -5,7 +5,24 @@
 
 import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_TOOL_RESULT_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
-let state = {
+// A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
+// campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
+// de casts idênticos espalhados pelo arquivo, então o tipo devolvido é um HTMLElement com
+// as propriedades de campo OPCIONAIS: `.value` num <div> continua sendo erro de quem
+// escreveu, mas a conversão não começa com 90 erros iguais para apagar à mão.
+type CampoUI = HTMLElement & Partial<HTMLInputElement & HTMLTextAreaElement & HTMLSelectElement>;
+
+/** getElementById com o tipo que o resto do arquivo espera. */
+function el<T extends HTMLElement = CampoUI>(id: string): T {
+  return document.getElementById(id) as T;
+}
+
+/** querySelector com o mesmo tratamento; `raiz` permite buscar dentro de um card. */
+function q<T extends HTMLElement = CampoUI>(seletor: string, raiz: ParentNode = document): T {
+  return raiz.querySelector(seletor) as T;
+}
+
+let state: AppState = {
   chats: {},          // { id: { id, name, path, messages: [] } }
   activeChatId: null,
   settings: { ...DEFAULT_SETTINGS },
@@ -73,9 +90,9 @@ function resolveConfirm(decision) {
 }
 
 function showConfirmModal(name, args) {
-  const modal = document.getElementById('confirm-modal');
-  const label = document.getElementById('confirm-label');
-  const cmd = document.getElementById('confirm-command');
+  const modal = el('confirm-modal');
+  const label = el('confirm-label');
+  const cmd = el('confirm-command');
   if (name === 'execute_command') {
     label.innerText = 'Executar comando no terminal?';
     cmd.innerText = '$ ' + (args.command || '');
@@ -91,19 +108,74 @@ function showConfirmModal(name, args) {
     cmd.innerText = JSON.stringify(args);
   }
   modal.classList.add('active');
-  const ok = document.getElementById('confirm-approve');
+  const ok = el('confirm-approve');
   if (ok) ok.focus();
 }
 
 function hideConfirmModal() {
-  const modal = document.getElementById('confirm-modal');
+  const modal = el('confirm-modal');
   if (modal) modal.classList.remove('active');
 }
 
 function updateExecModeUI() {
-  document.querySelectorAll('#exec-mode .exec-opt').forEach(btn => {
+  document.querySelectorAll<HTMLElement>('#exec-mode .exec-opt').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.mode === state.settings.execMode);
   });
+}
+
+// ---- Nível de raciocínio (no rodapé do compositor) ----
+function nivelThinkAtual(): ThinkLevel {
+  return THINK_LEVELS[state.settings.thinkLevel] ? state.settings.thinkLevel : 'padrao';
+}
+
+function updateThinkUI() {
+  const chave = nivelThinkAtual();
+  const btn = el('btn-think');
+  if (!btn) return;
+  const rotulo = q('#think-label', btn);
+  if (rotulo) rotulo.innerText = THINK_LEVELS[chave].rotulo;
+  btn.classList.toggle('custom', chave !== 'padrao');
+  document.querySelectorAll<HTMLElement>('#think-menu .think-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.level === chave);
+  });
+}
+
+// O menu sai do próprio THINK_LEVELS: uma lista fixa no HTML sairia de sincronia com as
+// constantes assim que um nível novo entrasse (foi o que aconteceu com o <select> antigo).
+function buildThinkMenu() {
+  const menu = el('think-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  for (const chave of Object.keys(THINK_LEVELS) as ThinkLevel[]) {
+    const nivel = THINK_LEVELS[chave];
+    const item = document.createElement('div');
+    item.className = 'think-item';
+    item.dataset.level = chave;
+    const titulo = document.createElement('span');
+    titulo.innerText = nivel.rotulo;
+    item.appendChild(titulo);
+    if (nivel.dica) {
+      const dica = document.createElement('span');
+      dica.className = 'think-item-hint';
+      dica.innerText = nivel.dica;
+      item.appendChild(dica);
+    }
+    item.addEventListener('click', () => {
+      state.settings.thinkLevel = chave;
+      // O legado `noThink` continua sendo lido no runAgent; deixá-lo true com nível
+      // 'alto' escolhido mandaria /no_think junto e anularia a escolha.
+      state.settings.noThink = chave === 'desligado';
+      updateThinkUI();
+      fechaThinkMenu();
+      persist();
+    });
+    menu.appendChild(item);
+  }
+}
+
+function fechaThinkMenu() {
+  const menu = el('think-menu');
+  if (menu) menu.hidden = true;
 }
 
 // ---- Painel de processos ativos (etapa 4) ----
@@ -114,11 +186,11 @@ async function refreshProcesses() {
   try { processList = await window.electronAPI.listProcesses(); }
   catch (e) { processList = []; }
   const running = processList.filter(p => p.status === 'running').length;
-  const badge = document.getElementById('proc-badge');
-  const btn = document.getElementById('btn-processes');
-  if (badge) { badge.innerText = running; badge.style.display = running > 0 ? 'flex' : 'none'; }
+  const badge = el('proc-badge');
+  const btn = el('btn-processes');
+  if (badge) { badge.innerText = String(running); badge.style.display = running > 0 ? 'flex' : 'none'; }
   if (btn) btn.classList.toggle('has-active', running > 0);
-  const modal = document.getElementById('processes-modal');
+  const modal = el('processes-modal');
   if (modal && modal.classList.contains('active')) renderProcessList();
 }
 
@@ -158,7 +230,7 @@ function buildProcRow(p) {
 }
 
 function renderProcessList() {
-  const container = document.getElementById('proc-list');
+  const container = el('proc-list');
   if (!container) return;
 
   if (!processList.length) {
@@ -224,12 +296,12 @@ async function stopProc(pid) {
 }
 
 function openProcessesModal() {
-  document.getElementById('processes-modal').classList.add('active');
+  el('processes-modal').classList.add('active');
   refreshProcesses();
 }
 
 function closeProcessesModal() {
-  document.getElementById('processes-modal').classList.remove('active');
+  el('processes-modal').classList.remove('active');
   for (const pid in procOutputTimers) { clearInterval(procOutputTimers[pid]); delete procOutputTimers[pid]; }
 }
 
@@ -238,13 +310,13 @@ function closeProcessesModal() {
 let stickToBottom = true;
 function scrollChat() {
   if (!stickToBottom) return;
-  const cb = document.getElementById('chat-box');
+  const cb = el('chat-box');
   cb.scrollTop = cb.scrollHeight;
 }
 // Força ir ao fim e reativa o acompanhamento (ex.: ao enviar mensagem ou trocar de chat)
 function forceScrollBottom() {
   stickToBottom = true;
-  const cb = document.getElementById('chat-box');
+  const cb = el('chat-box');
   if (cb) cb.scrollTop = cb.scrollHeight;
 }
 
@@ -334,7 +406,7 @@ function activeChat() {
 }
 
 function renderChatList() {
-  const container = document.getElementById('chat-list-container');
+  const container = el('chat-list-container');
   container.innerHTML = '';
 
   Object.keys(state.chats).forEach(id => {
@@ -395,7 +467,7 @@ function beginRenameChat(id, nameSpan) {
       if (v) { chat.name = v; persist(); }
     }
     renderChatList();
-    if (id === state.activeChatId) document.getElementById('active-chat-title').innerText = state.chats[id].name;
+    if (id === state.activeChatId) el('active-chat-title').innerText = state.chats[id].name;
   };
   input.addEventListener('keydown', (e) => {
     e.stopPropagation();
@@ -408,7 +480,7 @@ function beginRenameChat(id, nameSpan) {
 
 // Renomeia o chat ativo pelo título do cabeçalho (duplo clique)
 function renameActiveChat() {
-  const titleEl = document.getElementById('active-chat-title');
+  const titleEl = el('active-chat-title');
   const chat = activeChat();
   if (!chat || titleEl.querySelector('input')) return;
   const input = document.createElement('input');
@@ -459,10 +531,10 @@ function deleteChat(id) {
 // Reconstrói a visualização do chat ativo a partir do histórico real de mensagens
 function renderActiveChat() {
   const chat = activeChat();
-  document.getElementById('active-chat-title').innerText = chat.name;
+  el('active-chat-title').innerText = chat.name;
   mostraCaminhoAtivo(chat.path);
 
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   chatBox.innerHTML = '';
   stickToBottom = true; // ao (re)carregar/trocar de chat, começa acompanhando o fim
 
@@ -504,9 +576,9 @@ const STOP_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentC
 
 function updateInputState() {
   const hasPath = !!(activeChat() && activeChat().path);
-  const input = document.getElementById('user-input');
-  const btn = document.getElementById('btn-send');
-  const attach = document.getElementById('btn-attach');
+  const input = el('user-input');
+  const btn = el('btn-send');
+  const attach = el('btn-attach');
   input.disabled = !hasPath || isRunning;
   if (attach) attach.disabled = !hasPath || isRunning;
   document.body.classList.toggle('agent-running', isRunning);
@@ -612,7 +684,7 @@ function fallbackCopy(text, onDone) {
 }
 
 function appendMessage(text, sender, index) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const msgDiv = document.createElement('div');
   msgDiv.className = `message ${sender}`;
   if (sender === 'agent') {
@@ -631,7 +703,7 @@ function appendMessage(text, sender, index) {
 
 // Bolha do usuário, com chips de anexos (usada ao vivo e no reload do histórico)
 function renderUserMessage(text, attachments, index) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message user';
   if (attachments && attachments.length) {
@@ -682,7 +754,7 @@ function editUserMessage(index) {
   const chat = activeChat();
   const msg = chat.messages[index];
   if (!msg || msg.role !== 'user') return;
-  const input = document.getElementById('user-input');
+  const input = el('user-input');
   input.value = msg.content || '';
   pendingAttachments = (msg.attachments || []).map(a => ({ ...a }));
   renderAttachments();
@@ -708,7 +780,7 @@ function regenerateFromAssistant(index) {
 }
 
 function appendInfo(text) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const msgDiv = document.createElement('div');
   msgDiv.className = "info";
   msgDiv.innerText = text;
@@ -717,7 +789,7 @@ function appendInfo(text) {
 }
 
 function logSystem(text) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const logDiv = document.createElement('div');
   logDiv.className = 'system-log';
   logDiv.innerText = `[SISTEMA]: ${text}`;
@@ -726,7 +798,7 @@ function logSystem(text) {
 }
 
 function appendToolLog(text) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const div = document.createElement('div');
   div.className = 'tool-log';
   div.innerText = text;
@@ -926,15 +998,15 @@ function summarizeToolResult(name, resultStr) {
 // Cria o card da chamada (cabeçalho + argumento). Retorna o elemento para preencher o resultado depois.
 function appendToolCall(name, args) {
   const meta = TOOL_META[name] || { icon: '🔧', label: name };
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const card = document.createElement('div');
   card.className = 'tool-card';
 
   const head = document.createElement('div');
   head.className = 'tool-head';
   head.innerHTML = `<span class="tool-icon"></span><span class="tool-title"></span>`;
-  head.querySelector('.tool-icon').innerText = meta.icon;
-  head.querySelector('.tool-title').innerText = meta.label;
+  q('.tool-icon', head).innerText = meta.icon;
+  q('.tool-title', head).innerText = meta.label;
   card.appendChild(head);
 
   const argText = summarizeToolCall(name, args);
@@ -951,9 +1023,9 @@ function appendToolCall(name, args) {
 }
 
 // Preenche (ou atualiza) o resultado dentro do card da chamada
-function fillToolResult(card, name, resultStr, extras = {}) {
+function fillToolResult(card, name, resultStr, extras: ToolExtras = {}) {
   if (!card) return;
-  let res = card.querySelector('.tool-result');
+  let res = q<HTMLElement>('.tool-result', card);
   if (!res) {
     res = document.createElement('pre');
     res.className = 'tool-result';
@@ -1145,7 +1217,7 @@ function renderToolInvocation(name, args, resultStr, extras) {
 }
 
 function appendReasoning(text) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const details = document.createElement('details');
   details.className = 'reasoning';
   const summary = document.createElement('summary');
@@ -1160,7 +1232,7 @@ function appendReasoning(text) {
 }
 
 function appendError(text) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const div = document.createElement('div');
   div.className = 'error-msg';
   div.innerText = `⚠ ${text}`;
@@ -1170,7 +1242,7 @@ function appendError(text) {
 
 // Erro com causa provável e passos para resolver, em vez de uma linha de exceção crua.
 function appendErrorCard({ titulo, detalhe, passos }) {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const card = document.createElement('div');
   card.className = 'error-card';
 
@@ -1200,7 +1272,7 @@ function appendErrorCard({ titulo, detalhe, passos }) {
 }
 
 function showTyping() {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const div = document.createElement('div');
   div.className = 'typing-indicator';
   div.id = 'typing-indicator';
@@ -1210,8 +1282,8 @@ function showTyping() {
 }
 
 function hideTyping() {
-  const el = document.getElementById('typing-indicator');
-  if (el) el.remove();
+  const indicador = el('typing-indicator');
+  if (indicador) indicador.remove();
 }
 
 function truncate(str, max) {
@@ -1589,9 +1661,9 @@ let arquivosLidos = new Set();
 
 // Separa o que vai para o MODELO do que vai para a TELA. O diff é do usuário: mandá-lo
 // ao modelo repetiria o conteúdo que ele acabou de escrever, dobrando o custo em contexto.
-function comAlteracao(res, arquivo, extras = {}) {
+function comAlteracao(res, arquivo, extras: Partial<Alteracao> = {}): ToolOutput {
   const { diff, snapshotId, ...paraModelo } = res;
-  const saida = { text: JSON.stringify(paraModelo) };
+  const saida: ToolOutput = { text: JSON.stringify(paraModelo) };
   if (snapshotId) {
     saida.alteracao = {
       snapshotId, arquivo,
@@ -1663,7 +1735,10 @@ async function runTool(name, args, workspace) {
     }
     if (name === 'execute_command') {
       const timeoutMs = (state.settings.cmdTimeout || 25) * 1000;
-      const res = await window.electronAPI.executeCommand(args.command, workspace, { timeoutMs });
+      const res = await window.electronAPI.executeCommand(args.command, workspace, {
+        timeoutMs,
+        hideConsole: state.settings.hideCommandConsole !== false
+      });
       // Monta um resultado LIMITADO priorizando erro/exit/stderr (senão um stdout
       // gigante empurraria o motivo da falha para fora do limite e o modelo não o veria).
       const bounded = {
@@ -1728,7 +1803,9 @@ async function runTool(name, args, workspace) {
 
       // O dataUrl NÃO entra no texto do resultado: ele vai como imagem, à parte, e
       // colado aqui (centenas de KB de base64) estouraria o contexto sozinho.
-      const resumo = {
+      // Record<string, any> porque o resumo é montado por partes: os campos abaixo só
+      // entram quando a captura realmente teve seletor, recorte ou script.
+      const resumo: Record<string, any> = {
         ok: true, url: res.url, titulo: res.title, status: res.httpStatus,
         tamanho: `${res.width}x${res.height}`,
         erros_de_console: (res.console || []).filter(c => c.level === 'error').map(c => c.text).slice(0, 15),
@@ -1775,7 +1852,7 @@ async function submitUserMessage(userPrompt, attachments) {
   }
 
   // Adiciona a mensagem do usuário (com anexos) ao histórico persistente do chat
-  const userMsg = { role: 'user', content: userPrompt };
+  const userMsg: ChatMessage = { role: 'user', content: userPrompt };
   if (attachments && attachments.length) userMsg.attachments = attachments;
   chat.messages.push(userMsg);
   forceScrollBottom(); // ao enviar, volta ao fim e reativa o acompanhamento
@@ -1856,8 +1933,8 @@ function compactarAgora() {
 
 // Mostra quanto dá para liberar e destaca o botão quando vale a pena.
 function atualizarBotaoCompactar() {
-  const btn = document.getElementById('btn-compactar');
-  const rotulo = document.getElementById('compact-label');
+  const btn = el('btn-compactar');
+  const rotulo = el('compact-label');
   if (!btn || !rotulo) return;
   const chat = activeChat();
   if (!chat) { btn.disabled = true; return; }
@@ -2076,7 +2153,7 @@ function renderMsgStats(msgDiv, stats) {
 
 // Bolha de agente vazia para receber texto em streaming; retorna o .md-body
 function createLiveAgentBody() {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message agent streaming';
   const body = document.createElement('div');
@@ -2133,7 +2210,7 @@ function criaEscritorStream(el) {
 
 // Bloco de raciocínio aberto para streaming; retorna { details, body }
 function createLiveReasoning() {
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   const details = document.createElement('details');
   details.className = 'reasoning';
   details.open = true;
@@ -2278,7 +2355,7 @@ async function agentTurns(chat) {
     // Se foi interrompido, NÃO guarda tool_calls (ficariam órfãos, sem resposta → erro no próximo turno)
     const hasContent = !!(message.content && message.content.trim());
     const stats = buildResponseStats(result.usage, result.timing);
-    const stored = { role: 'assistant', content: message.content || '' };
+    const stored: ChatMessage = { role: 'assistant', content: message.content || '' };
     if (!aborted && message.tool_calls && message.tool_calls.length > 0) stored.tool_calls = message.tool_calls;
 
     if (hasContent || stored.tool_calls) {
@@ -2376,7 +2453,7 @@ async function agentTurns(chat) {
         }
       }
 
-      const toolMsg = {
+      const toolMsg: ChatMessage = {
         role: 'tool',
         tool_call_id: toolCall && toolCall.id,
         name: name || 'unknown',
@@ -2506,7 +2583,7 @@ function toApiMessages(messages) {
   ultimaPoda = compactados.size;
   return messages.map((m, i) => {
     if (compactados.has(i)) return { role: 'tool', tool_call_id: m.tool_call_id, name: m.name, content: compactados.get(i) };
-    const copy = { role: m.role };
+    const copy: ChatMessage = { role: m.role };
     if (m.role === 'user' && m.attachments && m.attachments.length) {
       copy.content = buildAttachmentBlock(m.attachments) + (m.content || '');
     } else if (comPrint.has(i) && shotCache.has(m.image.path)) {
@@ -2561,11 +2638,11 @@ async function ensureMentionFiles() {
 
 // Descobre se o cursor está dentro de um trecho "@algo" (sem espaços após o @).
 function mentionCtx() {
-  const el = document.getElementById('user-input');
-  if (!el || el.disabled) return null;
-  const pos = el.selectionStart;
-  if (pos !== el.selectionEnd) return null; // há seleção ativa: ignora
-  const before = el.value.slice(0, pos);
+  const campo = el('user-input');
+  if (!campo || campo.disabled) return null;
+  const pos = campo.selectionStart;
+  if (pos !== campo.selectionEnd) return null; // há seleção ativa: ignora
+  const before = campo.value.slice(0, pos);
   const at = before.lastIndexOf('@');
   if (at === -1) return null;
   if (at > 0 && !/\s/.test(before[at - 1])) return null; // @ precisa iniciar palavra
@@ -2603,7 +2680,7 @@ async function updateMentionMenu() {
 }
 
 function renderMentionMenu() {
-  const menu = document.getElementById('mention-menu');
+  const menu = el('mention-menu');
   if (!menu || !mentionState) return;
   menu.innerHTML = '';
   if (!mentionState.items.length) {
@@ -2636,7 +2713,7 @@ function renderMentionMenu() {
 
 function closeMention() {
   mentionState = null;
-  const menu = document.getElementById('mention-menu');
+  const menu = el('mention-menu');
   if (menu) { menu.hidden = true; menu.innerHTML = ''; }
 }
 
@@ -2664,15 +2741,15 @@ function handleMentionKeydown(e) {
 
 // Substitui o "@query" pelo caminho escolhido e anexa o conteúdo do arquivo.
 async function acceptMention(relPath) {
-  const el = document.getElementById('user-input');
-  if (!el || !mentionState) return closeMention();
+  const campo = el('user-input');
+  if (!campo || !mentionState) return closeMention();
   const insert = '@' + relPath + ' ';
-  el.value = el.value.slice(0, mentionState.start) + insert + el.value.slice(mentionState.end);
+  campo.value = campo.value.slice(0, mentionState.start) + insert + campo.value.slice(mentionState.end);
   const caret = mentionState.start + insert.length;
-  el.setSelectionRange(caret, caret);
-  el.focus();
+  campo.setSelectionRange(caret, caret);
+  campo.focus();
   closeMention();
-  el.dispatchEvent(new Event('input')); // reajusta a altura e fecha o menu residual
+  campo.dispatchEvent(new Event('input')); // reajusta a altura e fecha o menu residual
   await addMentionAttachment(relPath);
 }
 
@@ -2718,8 +2795,8 @@ function readFileAsText(file) {
   });
 }
 
-async function handleFiles(fileList) {
-  const files = Array.from(fileList || []);
+async function handleFiles(fileList: FileList | File[]) {
+  const files = Array.from<File>(fileList || []);
   for (const file of files) {
     const looksText = TEXT_EXT.test(file.name) || TEXT_NAME.test(file.name) ||
       (file.type && (file.type.startsWith('text/') || file.type === 'application/json' || file.type.includes('xml')));
@@ -2727,7 +2804,7 @@ async function handleFiles(fileList) {
       pendingAttachments.push({ name: file.name, size: file.size, binary: true, content: '' });
       continue;
     }
-    let content = await readFileAsText(file);
+    let content = await readFileAsText(file) as string;
     if (content == null) {
       pendingAttachments.push({ name: file.name, size: file.size, binary: true, content: '' });
       continue;
@@ -2740,10 +2817,10 @@ async function handleFiles(fileList) {
 }
 
 function renderAttachments() {
-  const el = document.getElementById('attachments');
-  if (!el) return;
-  el.innerHTML = '';
-  el.style.display = pendingAttachments.length ? 'flex' : 'none';
+  const caixa = el('attachments');
+  if (!caixa) return;
+  caixa.innerHTML = '';
+  caixa.style.display = pendingAttachments.length ? 'flex' : 'none';
   pendingAttachments.forEach((a, i) => {
     const chip = document.createElement('div');
     chip.className = 'attach-chip' + (a.binary ? ' binary' : '');
@@ -2763,7 +2840,7 @@ function renderAttachments() {
     rm.title = 'Remover';
     rm.addEventListener('click', () => { pendingAttachments.splice(i, 1); renderAttachments(); });
     chip.append(icon, name, size, rm);
-    el.appendChild(chip);
+    caixa.appendChild(chip);
   });
 }
 
@@ -2798,23 +2875,23 @@ function trackUsage(usage) {
 
 function renderUsage() {
   const u = state.usage;
-  document.getElementById('usage-prompt').innerText = u.prompt.toLocaleString('pt-BR');
-  document.getElementById('usage-completion').innerText = u.completion.toLocaleString('pt-BR');
-  document.getElementById('usage-total').innerText = (u.prompt + u.completion).toLocaleString('pt-BR');
-  document.getElementById('usage-requests').innerText = u.requests;
+  el('usage-prompt').innerText = u.prompt.toLocaleString('pt-BR');
+  el('usage-completion').innerText = u.completion.toLocaleString('pt-BR');
+  el('usage-total').innerText = (u.prompt + u.completion).toLocaleString('pt-BR');
+  el('usage-requests').innerText = String(u.requests);
 
   // Barra de contexto usado na última requisição
   const ctx = state.modelCtx || 0;
   const pct = ctx > 0 ? Math.min(100, Math.round((u.lastTotal / ctx) * 100)) : 0;
-  document.getElementById('ctx-label').innerText = `${u.lastTotal} / ${ctx || '?'} tkn`;
-  document.getElementById('ctx-percent').innerText = `${pct}%`;
-  document.getElementById('ctx-fill').style.width = `${pct}%`;
+  el('ctx-label').innerText = `${u.lastTotal} / ${ctx || '?'} tkn`;
+  el('ctx-percent').innerText = `${pct}%`;
+  el('ctx-fill').style.width = `${pct}%`;
 
   // Medidor de contexto sempre visível no cabeçalho
   const ctxText = `${u.lastTotal.toLocaleString('pt-BR')} / ${ctx ? ctx.toLocaleString('pt-BR') : '?'} tkn`;
-  document.getElementById('hdr-ctx-text').innerText = ctxText;
-  document.getElementById('hdr-ctx-fill').style.width = `${pct}%`;
-  const pill = document.getElementById('ctx-pill');
+  el('hdr-ctx-text').innerText = ctxText;
+  el('hdr-ctx-fill').style.width = `${pct}%`;
+  const pill = el('ctx-pill');
   pill.classList.toggle('warn', pct >= 70 && pct < 90);
   pill.classList.toggle('danger', pct >= 90);
 }
@@ -2823,9 +2900,9 @@ function renderUsage() {
 //  Busca de modelos e informações reais do endpoint
 // --------------------------------------------------------------------------
 async function fetchModels() {
-  const status = document.getElementById('info-model-status');
-  const select = document.getElementById('model-name');
-  const apiUrl = document.getElementById('api-url').value.trim() || state.settings.apiUrl;
+  const status = el('info-model-status');
+  const select = el('model-name');
+  const apiUrl = el('api-url').value.trim() || state.settings.apiUrl;
 
   status.innerText = 'Consultando endpoint...';
   try {
@@ -2873,15 +2950,15 @@ function shortModelName(id) {
 
 function updateModelInfo(model) {
   const meta = (model && model.meta) || {};
-  document.getElementById('info-model-name').innerText = shortModelName(model.id);
-  document.getElementById('info-model-quant').innerText = meta.ftype || '—';
-  document.getElementById('info-model-ctx').innerText = meta.n_ctx
+  el('info-model-name').innerText = shortModelName(model.id);
+  el('info-model-quant').innerText = meta.ftype || '—';
+  el('info-model-ctx').innerText = meta.n_ctx
     ? `${meta.n_ctx.toLocaleString('pt-BR')} tkn` : '—';
-  document.getElementById('info-model-size').innerText = meta.size
+  el('info-model-size').innerText = meta.size
     ? `${(meta.size / 1e9).toFixed(2)} GB` : '—';
-  document.getElementById('info-model-params').innerText = meta.n_params
+  el('info-model-params').innerText = meta.n_params
     ? `${(meta.n_params / 1e9).toFixed(2)} B` : '—';
-  document.getElementById('info-model-owner').innerText = model.owned_by || '—';
+  el('info-model-owner').innerText = model.owned_by || '—';
   state.modelCtx = meta.n_ctx || 0;
   renderUsage();
 }
@@ -2909,45 +2986,45 @@ async function refreshModelContext() {
 // --------------------------------------------------------------------------
 function applySettingsToForm() {
   const s = state.settings;
-  document.getElementById('api-url').value = s.apiUrl;
-  document.getElementById('api-key').value = s.apiKey;
-  document.getElementById('range-temp').value = s.temperature;
-  document.getElementById('range-temp').nextElementSibling.innerText = s.temperature;
-  document.getElementById('range-topp').value = s.topP;
-  document.getElementById('range-topp').nextElementSibling.innerText = s.topP;
-  document.getElementById('input-maxtokens').value = s.maxTokens;
-  document.getElementById('input-cmdtimeout').value = s.cmdTimeout;
-  document.getElementById('select-thinklevel').value = THINK_LEVELS[s.thinkLevel] ? s.thinkLevel : 'padrao';
-  document.getElementById('check-safety-interactions').checked = s.safetyInteractions;
-  document.getElementById('check-websearch').checked = s.webSearch;
-  document.getElementById('check-vision').checked = s.visionFeedback;
+  el('api-url').value = s.apiUrl;
+  el('api-key').value = s.apiKey;
+  el('range-temp').value = String(s.temperature);
+  q<HTMLElement>('.range-value', el('range-temp').parentElement).innerText = String(s.temperature);
+  el('range-topp').value = String(s.topP);
+  q<HTMLElement>('.range-value', el('range-topp').parentElement).innerText = String(s.topP);
+  el('input-maxtokens').value = String(s.maxTokens);
+  el('input-cmdtimeout').value = String(s.cmdTimeout);
+  el('check-safety-interactions').checked = s.safetyInteractions;
+  el('check-websearch').checked = s.webSearch;
+  el('check-vision').checked = s.visionFeedback;
+  el('check-hide-console').checked = s.hideCommandConsole !== false;
   updateVisionStatus();
 }
 
 // Diz se o modelo escolhido aceita imagem — sem isso o usuário liga a opção e não
 // entende por que os prints continuam voltando só como texto.
 function updateVisionStatus() {
-  const el = document.getElementById('vision-status');
-  if (!el) return;
-  el.innerText = modelSupportsVision
+  const aviso = el('vision-status');
+  if (!aviso) return;
+  aviso.innerText = modelSupportsVision
     ? 'o modelo atual é multimodal.'
     : 'o modelo atual não anuncia suporte a imagem.';
 }
 
 function readSettingsFromForm() {
-  state.settings.apiUrl = document.getElementById('api-url').value.trim() || DEFAULT_SETTINGS.apiUrl;
-  state.settings.apiKey = document.getElementById('api-key').value.trim();
-  state.settings.model = document.getElementById('model-name').value;
-  state.settings.temperature = parseFloat(document.getElementById('range-temp').value);
-  state.settings.topP = parseFloat(document.getElementById('range-topp').value);
-  state.settings.maxTokens = parseInt(document.getElementById('input-maxtokens').value, 10) || DEFAULT_SETTINGS.maxTokens;
-  state.settings.cmdTimeout = parseInt(document.getElementById('input-cmdtimeout').value, 10) || DEFAULT_SETTINGS.cmdTimeout;
-  state.settings.thinkLevel = document.getElementById('select-thinklevel').value;
-  // Zera o legado ao salvar pela UI: deixá-lo true forçaria /no_think mesmo em nível 'alto'.
-  state.settings.noThink = state.settings.thinkLevel === 'desligado';
-  state.settings.safetyInteractions = document.getElementById('check-safety-interactions').checked;
-  state.settings.webSearch = document.getElementById('check-websearch').checked;
-  state.settings.visionFeedback = document.getElementById('check-vision').checked;
+  state.settings.apiUrl = el('api-url').value.trim() || DEFAULT_SETTINGS.apiUrl;
+  state.settings.apiKey = el('api-key').value.trim();
+  state.settings.model = el('model-name').value;
+  state.settings.temperature = parseFloat(el('range-temp').value);
+  state.settings.topP = parseFloat(el('range-topp').value);
+  state.settings.maxTokens = parseInt(el('input-maxtokens').value, 10) || DEFAULT_SETTINGS.maxTokens;
+  state.settings.cmdTimeout = parseInt(el('input-cmdtimeout').value, 10) || DEFAULT_SETTINGS.cmdTimeout;
+  // thinkLevel NÃO é lido daqui: ele mora no rodapé do compositor e já se grava sozinho ao
+  // ser escolhido. Reler um campo que não existe mais no modal zeraria a escolha ao salvar.
+  state.settings.safetyInteractions = el('check-safety-interactions').checked;
+  state.settings.webSearch = el('check-websearch').checked;
+  state.settings.visionFeedback = el('check-vision').checked;
+  state.settings.hideCommandConsole = el('check-hide-console').checked;
 }
 
 // --------------------------------------------------------------------------
@@ -2962,9 +3039,9 @@ function encurtaCaminho(caminho, max = 44) {
 }
 
 function mostraCaminhoAtivo(caminho) {
-  const el = document.getElementById('selected-path');
-  el.innerText = encurtaCaminho(caminho);
-  el.title = caminho
+  const alvo = el('selected-path');
+  alvo.innerText = encurtaCaminho(caminho);
+  alvo.title = caminho
     ? `Pasta segura deste chat: ${caminho}`
     : 'Nenhuma pasta segura definida — escolha uma para liberar o agente';
 }
@@ -2989,7 +3066,7 @@ function defineWorkspace(caminho) {
 }
 
 function abreMenuPastas() {
-  const menu = document.getElementById('folder-menu');
+  const menu = el('folder-menu');
   const atual = activeChat().path;
   menu.innerHTML = '';
 
@@ -3041,18 +3118,18 @@ function abreMenuPastas() {
 // --------------------------------------------------------------------------
 function wireEvents() {
   // Detecta se o usuário está perto do fim: se rolar para cima, paramos de acompanhar
-  const chatBox = document.getElementById('chat-box');
+  const chatBox = el('chat-box');
   chatBox.addEventListener('scroll', () => {
     stickToBottom = (chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight) < 80;
   });
 
-  document.getElementById('btn-compactar').addEventListener('click', compactarAgora);
+  el('btn-compactar').addEventListener('click', compactarAgora);
 
   // Trocar a pasta segura: o botão abre o menu de recentes; o diálogo nativo fica a um
   // clique dentro dele. Sem os recentes, alternar entre dois projetos exigia navegar a
   // árvore inteira no diálogo do sistema toda vez.
-  const btnPasta = document.getElementById('btn-select-folder');
-  const menuPasta = document.getElementById('folder-menu');
+  const btnPasta = el('btn-select-folder');
+  const menuPasta = el('folder-menu');
 
   btnPasta.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -3060,14 +3137,14 @@ function wireEvents() {
   });
 
   document.addEventListener('click', (e) => {
-    if (!menuPasta.hidden && !menuPasta.contains(e.target)) menuPasta.hidden = true;
+    if (!menuPasta.hidden && !menuPasta.contains(e.target as Node)) menuPasta.hidden = true;
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !menuPasta.hidden) menuPasta.hidden = true;
   });
 
   // Enviar mensagem (com anexos, se houver)
-  const inputEl = document.getElementById('user-input');
+  const inputEl = el('user-input');
   const autoGrow = () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
@@ -3084,7 +3161,7 @@ function wireEvents() {
     submitUserMessage(prompt, attachments);
   };
   // Botão único: envia quando ocioso, para a geração quando o agente está rodando
-  document.getElementById('btn-send').addEventListener('click', () => {
+  el('btn-send').addEventListener('click', () => {
     if (isRunning) stopAgent();
     else sendMessage();
   });
@@ -3103,15 +3180,15 @@ function wireEvents() {
   inputEl.addEventListener('blur', () => setTimeout(closeMention, 120));
 
   // Anexar arquivos: botão + seletor nativo
-  const fileInput = document.getElementById('file-input');
-  document.getElementById('btn-attach').addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', (e) => { handleFiles(e.target.files); e.target.value = ''; });
+  const fileInput = el('file-input');
+  el('btn-attach').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => { handleFiles(fileInput.files); fileInput.value = ''; });
 
   // Anexar arquivos: arrastar-e-soltar sobre a área principal
   const dropZone = document.querySelector('.main-content');
-  const overlay = document.getElementById('drop-overlay');
+  const overlay = el('drop-overlay');
   let dragDepth = 0;
-  dropZone.addEventListener('dragenter', (e) => {
+  dropZone.addEventListener('dragenter', (e: DragEvent) => {
     if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
     e.preventDefault(); dragDepth++; overlay.classList.add('active');
   });
@@ -3120,7 +3197,7 @@ function wireEvents() {
     dragDepth = Math.max(0, dragDepth - 1);
     if (dragDepth === 0) overlay.classList.remove('active');
   });
-  dropZone.addEventListener('drop', (e) => {
+  dropZone.addEventListener('drop', (e: DragEvent) => {
     e.preventDefault(); dragDepth = 0; overlay.classList.remove('active');
     if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
   });
@@ -3141,20 +3218,20 @@ function wireEvents() {
       tabButtons.forEach(btn => btn.classList.remove('active'));
       tabPanels.forEach(panel => panel.classList.remove('active'));
       button.classList.add('active');
-      document.getElementById(button.getAttribute('data-tab')).classList.add('active');
+      el(button.getAttribute('data-tab')).classList.add('active');
     });
   });
 
   // Abrir/fechar modal
-  const modal = document.getElementById('settings-modal');
-  document.getElementById('btn-open-settings').addEventListener('click', () => {
+  const modal = el('settings-modal');
+  el('btn-open-settings').addEventListener('click', () => {
     applySettingsToForm();
     modal.classList.add('active');
     fetchModels();
   });
   const closeModal = () => modal.classList.remove('active');
-  document.getElementById('btn-close-modal').addEventListener('click', closeModal);
-  document.getElementById('btn-save-settings').addEventListener('click', () => {
+  el('btn-close-modal').addEventListener('click', closeModal);
+  el('btn-save-settings').addEventListener('click', () => {
     readSettingsFromForm();
     persist();
     closeModal();
@@ -3162,42 +3239,52 @@ function wireEvents() {
   });
 
   // Recarregar modelos manualmente
-  document.getElementById('btn-refresh-models').addEventListener('click', fetchModels);
+  el('btn-refresh-models').addEventListener('click', fetchModels);
 
   // Atualiza a info do modelo ao trocar a seleção
-  document.getElementById('model-name').addEventListener('change', (e) => {
-    state.settings.model = e.target.value;
+  el('model-name').addEventListener('change', (e) => {
+    state.settings.model = (e.target as HTMLSelectElement).value;
   });
 
   // Toggle Auto/Manual de execução de comandos
-  document.getElementById('exec-mode').addEventListener('click', (e) => {
-    const opt = e.target.closest('.exec-opt');
+  el('exec-mode').addEventListener('click', (e) => {
+    const opt = (e.target as HTMLElement).closest<HTMLElement>('.exec-opt');
     if (!opt) return;
-    state.settings.execMode = opt.dataset.mode;
+    state.settings.execMode = opt.dataset.mode as ExecMode;
     updateExecModeUI();
     persist();
   });
 
+  // Menu de nível de raciocínio
+  el('btn-think').addEventListener('click', (e) => {
+    e.stopPropagation(); // senão o clique fecha o menu que ele acabou de abrir
+    const menu = el('think-menu');
+    menu.hidden = !menu.hidden;
+  });
+  document.addEventListener('click', (e) => {
+    if (!(e.target as HTMLElement).closest('.think-picker')) fechaThinkMenu();
+  });
+
   // Modal de confirmação de execução
-  document.getElementById('confirm-approve').addEventListener('click', () => resolveConfirm('approve'));
-  document.getElementById('confirm-always').addEventListener('click', () => resolveConfirm('always'));
-  document.getElementById('confirm-reject').addEventListener('click', () => resolveConfirm('reject'));
-  document.getElementById('confirm-modal').addEventListener('keydown', (e) => {
+  el('confirm-approve').addEventListener('click', () => resolveConfirm('approve'));
+  el('confirm-always').addEventListener('click', () => resolveConfirm('always'));
+  el('confirm-reject').addEventListener('click', () => resolveConfirm('reject'));
+  el('confirm-modal').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); resolveConfirm('approve'); }
     if (e.key === 'Escape') { e.preventDefault(); resolveConfirm('reject'); }
   });
 
   // Painel de processos
-  document.getElementById('btn-processes').addEventListener('click', openProcessesModal);
-  document.getElementById('btn-close-processes').addEventListener('click', closeProcessesModal);
-  document.getElementById('btn-clear-finished').addEventListener('click', clearFinishedProcesses);
+  el('btn-processes').addEventListener('click', openProcessesModal);
+  el('btn-close-processes').addEventListener('click', closeProcessesModal);
+  el('btn-clear-finished').addEventListener('click', clearFinishedProcesses);
 
   // Renomear o chat ativo pelo título do cabeçalho (duplo clique)
-  document.getElementById('active-chat-title').addEventListener('dblclick', renameActiveChat);
+  el('active-chat-title').addEventListener('dblclick', renameActiveChat);
 
   // Botão do GitHub (abre a URL do package.json no navegador externo via window.open,
   // que passa pelo setWindowOpenHandler do main.js)
-  document.getElementById('btn-github').addEventListener('click', () => {
+  el('btn-github').addEventListener('click', () => {
     if (appInfo.githubUrl) window.open(appInfo.githubUrl, '_blank');
   });
 
@@ -3209,7 +3296,7 @@ function wireEvents() {
 let appInfo = { githubUrl: '', version: '', name: '' };
 async function loadAppInfo() {
   try { appInfo = await window.electronAPI.getAppInfo(); } catch (e) { /* ignora */ }
-  const gh = document.getElementById('btn-github');
+  const gh = el('btn-github');
   if (gh) gh.style.display = appInfo.githubUrl ? '' : 'none'; // esconde se não houver URL configurada
 }
 
@@ -3224,6 +3311,8 @@ async function init() {
   renderAttachments();
   renderUsage();
   updateExecModeUI();   // reflete o modo salvo (auto/manual)
+  buildThinkMenu();     // monta o menu a partir de THINK_LEVELS
+  updateThinkUI();      // reflete o nível de raciocínio salvo
   refreshProcesses();   // popula o badge de processos
   loadAppInfo();        // carrega URL do GitHub etc. do package.json
   // Tenta descobrir os modelos do endpoint padrão já na abertura

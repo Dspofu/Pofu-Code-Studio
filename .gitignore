@@ -4,6 +4,19 @@ package-lock.json
 # Pasta de Build versionado
 /dist
 
+# Saída do tsc. Fica ao lado do .ts (ver tsconfig.json) e é regerada pelo `npm run build`,
+# que o prestart/predist já disparam — versionar isso só criaria conflito a cada commit.
+# src/websearch.js NÃO entra aqui: ele é gerado em OUTRO repositório e é fonte aqui dentro.
+/main.js
+/main.js.map
+/preload.cjs
+/preload.cjs.map
+/src/constants.js
+/src/constants.js.map
+/src/renderer.js
+/src/renderer.js.map
+*.tsbuildinfo
+
 # Logs
 *.log
 npm-debug.log*

@@ -3,9 +3,13 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofuserver-Code
 
-const { contextBridge, ipcRenderer } = require('electron');
+// Arquivo .cts (e não .ts): o Electron carrega o script de preload com o loader CommonJS
+// dele, mas o package.json declara "type": "module" — sem a extensão .cts o compilador
+// emitiria `import` aqui e a ponte morreria antes de expor qualquer coisa, deixando a
+// janela sem `window.electronAPI`. A extensão trava o formato de saída em CJS.
+import { contextBridge, ipcRenderer } from 'electron';
 
-contextBridge.exposeInMainWorld('electronAPI', {
+const api: ElectronAPI = {
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   listFiles: (dirPath) => ipcRenderer.invoke('list-files', dirPath),
   listTree: (rootPath) => ipcRenderer.invoke('list-tree', rootPath),
@@ -32,4 +36,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadStore: () => ipcRenderer.invoke('load-store'),
   saveStore: (data) => ipcRenderer.invoke('save-store', data),
   setTitle: (title) => ipcRenderer.send('set-title', title)
-});
+};
+
+contextBridge.exposeInMainWorld('electronAPI', api);

@@ -31,7 +31,7 @@ function createWindow() {
     height: 600,
     icon: join(__dirname, 'assets', 'icon.png'), // usado no Linux/Windows em desenvolvimento (empacotado usa o ícone do build)
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
+      preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false
     },
@@ -656,11 +656,21 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
     // detached + stdin ignorado => sessão própria, SEM terminal de controle:
     //  - impede que `sudo` sequestre o terminal do usuário (falha com "a terminal is required")
     //  - permite deixar servidores rodando em segundo plano sem travar o app
+    //
+    // No WINDOWS, porém, `detached` é o que fazia a janela de console piscar a cada
+    // comando, apesar do `windowsHide: true` logo abaixo: `detached` vira DETACHED_PROCESS,
+    // e a documentação do CreateProcess diz que CREATE_NO_WINDOW (o que o windowsHide liga)
+    // é IGNORADO quando vem junto de DETACHED_PROCESS. Sem console herdado e sem o flag de
+    // esconder, o cmd.exe aloca um console próprio — visível. Nada disso se perde ao tirar
+    // o detached lá: os dois motivos acima são POSIX (sudo e grupo de processos), e quem
+    // encerra a árvore no Windows é o `taskkill /T` do killTree, não o grupo de processos.
+    const esconderConsole = opts.hideConsole !== false;
     let child;
     try {
       child = spawn(command, {
-        cwd, shell: SHELL, detached: true,
-        windowsHide: true, // no Windows, evita piscar uma janela de console a cada comando
+        cwd, shell: SHELL,
+        detached: !isWindows || !esconderConsole,
+        windowsHide: esconderConsole,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0', FORCE_COLOR: '0' }
       });
@@ -668,7 +678,7 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       return resolve({ command, stdout: '', stderr: '', error: err.message, finished: true });
     }
 
-    const entry = { command, child, stdout: '', stderr: '', startedAt: Date.now(), ready: false, status: 'running' };
+    const entry: ProcEntry = { command, child, stdout: '', stderr: '', startedAt: Date.now(), ready: false, status: 'running' };
     let settled = false;
     let idleTimer = null;
 
@@ -759,7 +769,7 @@ ipcMain.handle('wait-for-process', async (event, pid, timeoutMs = 120000) => {
   const inicio = Date.now();
 
   if (entry.status === 'running') {
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       let pronto = false;
       const terminar = () => { if (!pronto) { pronto = true; clearTimeout(prazo); resolve(); } };
       const prazo = setTimeout(terminar, limite);
@@ -1086,18 +1096,20 @@ const clamp = (v, min, max) => Math.min(Math.max(Number(v) || min, min), max);
 ipcMain.handle('http-request', async (event, url, opts = {}) => {
   const started = Date.now();
   try {
-    const init = {
+    const init: RequestInit = {
       method: (opts.method || 'GET').toUpperCase(),
       headers: opts.headers && typeof opts.headers === 'object' ? { ...opts.headers } : {},
       redirect: 'follow',
       signal: AbortSignal.timeout(clamp(opts.timeoutMs || 15000, 500, 120000))
     };
     if (opts.body != null && init.method !== 'GET' && init.method !== 'HEAD') {
-      init.body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
+      const corpo = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
+      init.body = corpo;
       // Sem content-type explícito o servidor recebe o JSON como texto e devolve 400/415,
       // e o agente perde turnos depurando um erro que é da própria chamada.
-      const hasCt = Object.keys(init.headers).some(h => h.toLowerCase() === 'content-type');
-      if (!hasCt && /^\s*[[{]/.test(init.body)) init.headers['Content-Type'] = 'application/json';
+      const cabecalhos = init.headers as Record<string, string>;
+      const hasCt = Object.keys(cabecalhos).some(h => h.toLowerCase() === 'content-type');
+      if (!hasCt && /^\s*[[{]/.test(corpo)) cabecalhos['Content-Type'] = 'application/json';
     }
 
     const resp = await fetch(url, init);

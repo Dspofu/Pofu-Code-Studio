@@ -71,8 +71,10 @@ Cada chat trabalha dentro de **uma pasta** — o agente não enxerga nada fora d
 
 ![Troca da pasta segura](docs/img/pasta-segura.png)
 
-### Nível de raciocínio ajustável
-Em *Ajustes* → **Nível de raciocínio** dá para pedir que o modelo pense mais, menos ou nada:
+### Nível de raciocínio no próprio compositor
+O seletor **Raciocínio** fica ao lado do campo de mensagem, junto do Auto/Manual — quanto o modelo deve pensar é decisão que se toma na hora de escrever o pedido, não algo para lembrar dentro de um modal com a resposta já em andamento. Um clique abre os níveis, cada um com o que ele exige do servidor:
+
+![Seletor de raciocínio no compositor](docs/img/raciocinio.png)
 
 | Nível | O que é enviado |
 |---|---|
@@ -81,6 +83,9 @@ Em *Ajustes* → **Nível de raciocínio** dá para pedir que o modelo pense mai
 | Baixo / Médio / Alto | `reasoning_effort: low \| medium \| high` |
 
 O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning_effort` é extensão recente e servidor antigo recusa o que não conhece. Se um nível der erro, volte para o padrão.
+
+### Sem janela de console piscando
+No Windows, cada comando do agente abria um terminal por cima do app — e uma tarefa longa dispara dezenas deles. Em *Ajustes → Ferramentas*, **Ocultar o console dos comandos** vem **ligado** e a janela não aparece mais. Desligue só para acompanhar ao vivo o que está sendo executado.
 
 ### Offline
 As bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos) são vendorizadas em `vendor/` — a interface não depende de CDN.
@@ -104,7 +109,7 @@ npm install
 npm start
 ```
 
-> O script `start` usa `--no-sandbox --ozone-platform=x11` (Linux). Em Windows/macOS, rode `npx electron .`.
+> `npm start` compila o TypeScript (via `prestart`) e abre o app. Ele usa `--no-sandbox --ozone-platform=x11` (Linux); em Windows/macOS, rode `npm run build` e depois `npx electron .`.
 
 ### Servidor de exemplo com llama.cpp
 
@@ -119,33 +124,42 @@ Engrenagem → aba **Ajustes**:
 1. **Endpoint** — padrão `http://localhost:8080/v1`
 2. **Modelo** — *Recarregar* lista o que o endpoint expõe
 3. **API Key** — opcional (vazio para servidores locais)
-4. **Nível de raciocínio** — quanto o modelo pensa antes de responder (veja a tabela acima)
-5. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
+4. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
+5. **Ocultar o console dos comandos** — ligado por padrão (veja acima)
 6. **Busca na web**, temperatura, top-p, máximo de tokens e timeout de comando
+
+O **nível de raciocínio** não fica aqui: ele mora no rodapé do compositor, ao lado do campo de mensagem.
 
 ## Como usar
 
 1. Crie um chat e **escolha a pasta segura** (ícone de pasta no cabeçalho — o menu também lista as pastas recentes)
 2. Peça o que precisa — ex.: *"crie uma API Express com testes e valide os endpoints"*
 3. Acompanhe os cards de ferramenta, os diffs e os prints em tempo real
-4. Use **Auto/Manual** para decidir se comandos pedem confirmação
+4. Use **Auto/Manual** para decidir se comandos pedem confirmação, e **Raciocínio** para regular quanto o modelo pensa antes de agir
 5. `@` menciona um arquivo; o clipe (ou arrastar) anexa arquivos
 
 ---
 
 ## Estrutura do projeto
 
+O código-fonte é **TypeScript**. O `tsc` emite o `.js` ao lado de cada `.ts` (sem `outDir`), então o Electron continua carregando os mesmos caminhos de sempre, sem empacotador no caminho:
+
 ```
-├── main.js           # Processo main: IPC de arquivos, processos, HTTP, captura e busca
-├── preload.js        # Ponte contextBridge entre renderer e main
+├── main.ts           # Processo main: IPC de arquivos, processos, HTTP, captura e busca
+├── preload.cts       # Ponte contextBridge (.cts porque o preload é CommonJS → preload.cjs)
 ├── index.html        # Interface e estilos
+├── tsconfig.json     # Único config do build
 ├── src/
-│   ├── renderer.js   # Loop do agente, ferramentas, streaming, diff, render das mensagens
-│   ├── constants.js  # system_prompt, padrões e limites
-│   └── websearch.js  # Busca web (arquivo gerado — veja o cabeçalho)
+│   ├── renderer.ts   # Loop do agente, ferramentas, streaming, diff, render das mensagens
+│   ├── constants.ts  # system_prompt, padrões e limites
+│   ├── types.d.ts    # Tipos compartilhados (Settings, Chat, ElectronAPI…)
+│   ├── websearch.js  # Busca web (arquivo gerado noutro repositório — veja o cabeçalho)
+│   └── websearch.d.ts# Tipos do módulo acima
 ├── docs/img/         # Imagens do README
 └── vendor/           # Bibliotecas de front-end (offline)
 ```
+
+Os `.js`/`.cjs` gerados são ignorados pelo git: `npm start` e `npm run dist` já rodam o build antes. Para compilar sozinho, `npm run build`; para só checar tipos, `npm run typecheck`.
 
 ---
 

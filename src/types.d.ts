@@ -1,0 +1,223 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
+// Source: https://github.com/Dspofu/Pofuserver-Code
+
+// Declarações GLOBAIS (o arquivo não tem import/export de propósito): main e renderer
+// enxergam estes tipos sem precisar importar nada, e nenhum .js a mais é emitido para o
+// runtime carregar. Um módulo de tipos exigiria `import type … from './types.js'` em cada
+// arquivo, e um caminho .js que não existe em disco é exatamente o tipo de armadilha que
+// só aparece quando o Electron tenta resolvê-lo.
+
+/** Nível de raciocínio escolhido no rodapé do compositor. */
+type ThinkLevel = 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto';
+
+/** Modo de execução de comandos: 'manual' abre o modal de confirmação. */
+type ExecMode = 'manual' | 'auto';
+
+interface ThinkLevelDef {
+  rotulo: string;
+  dica: string;
+  /** Campos acrescentados ao corpo da requisição; `null` não acrescenta nada. */
+  payload: Record<string, unknown> | null;
+  /** Se verdadeiro, o prompt de sistema ainda ganha o sufixo /no_think. */
+  semRaciocinio: boolean;
+}
+
+interface Settings {
+  apiUrl: string;
+  model: string;
+  apiKey: string;
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+  /** Legado: só sobrevive para migrar store antigo — quem manda é `thinkLevel`. */
+  noThink: boolean;
+  thinkLevel: ThinkLevel;
+  cmdTimeout: number;
+  webSearch: boolean;
+  execMode: ExecMode;
+  safetyInteractions: boolean;
+  visionFeedback: boolean;
+  /** Esconde a janela de console que o Windows abriria a cada execute_command. */
+  hideCommandConsole: boolean;
+}
+
+/** Anexo de arquivo preso à mensagem do usuário. */
+interface Attachment {
+  name: string;
+  content: string;
+  size?: number;
+}
+
+interface ToolCall {
+  id: string;
+  type?: 'function';
+  function: { name: string; arguments: string };
+}
+
+/** Print devolvido pelo capture_page: no histórico fica só o caminho do PNG. */
+interface ShotRef {
+  path: string;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Instantâneo de escrita/edição/remoção, usado pelo card de diff e pelo desfazer. No
+ * histórico persistido fica só isto: o antes/depois mora no instantâneo em disco e é o
+ * `get-diff` que o remonta ao recarregar o chat.
+ */
+interface Alteracao {
+  snapshotId: string;
+  arquivo: string;
+  adicionadas: number;
+  removidas: number;
+  apagado: boolean;
+}
+
+/** Linhas do diff calculado no main. */
+interface DiffData {
+  adicionadas?: number;
+  removidas?: number;
+  linhas?: Array<{ tipo: string; texto: string; linha?: number }>;
+  [k: string]: any;
+}
+
+/**
+ * O que acompanha o resultado de uma ferramenta na TELA e não vai para o modelo — print
+ * e diff custariam contexto em dobro se voltassem no histórico da requisição.
+ */
+interface ToolExtras {
+  image?: ShotRef;
+  alteracao?: Alteracao;
+  diff?: DiffData | null;
+}
+
+/** Retorno de runTool: `text` é o que o modelo vê; o resto é da UI. */
+interface ToolOutput extends ToolExtras {
+  text: string;
+}
+
+/** Números da geração mostrados abaixo da resposta (tokens/s, tempo até o 1º token). */
+interface MessageStats {
+  /** Tokens por segundo da geração. */
+  tps: number;
+  completion: number;
+  prompt: number;
+  total: number;
+  totalSec: number;
+  /** Tempo até o primeiro token (TTFT). */
+  ttftSec: number;
+}
+
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  /** Opcional: resposta interrompida guarda só os tool_calls, sem conteúdo nenhum. */
+  content?: any;
+  reasoning_content?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
+  attachments?: Attachment[];
+  image?: ShotRef;
+  alteracao?: Alteracao;
+  stats?: MessageStats;
+}
+
+interface Chat {
+  id: string;
+  name: string;
+  /** Pasta segura: o agente só enxerga daqui para dentro. */
+  path: string;
+  messages: ChatMessage[];
+  /** Índice até onde o usuário já compactou à mão pelo botão do compositor. */
+  podaManualAte?: number;
+}
+
+interface UsageStats {
+  prompt: number;
+  completion: number;
+  requests: number;
+  history: unknown[];
+  lastTotal: number;
+}
+
+interface AppState {
+  chats: Record<string, Chat>;
+  activeChatId: string | null;
+  settings: Settings;
+  recentPaths: string[];
+  usage: UsageStats;
+  /** n_ctx do modelo em uso; 0 enquanto o /v1/models não respondeu. */
+  modelCtx: number;
+}
+
+/**
+ * Registro de um comando em segundo plano no main. `exitCode` só aparece depois do
+ * 'close', e é dele que o wait_for_process tira o "deu certo ou não".
+ */
+interface ProcEntry {
+  command: string;
+  child: import('child_process').ChildProcess;
+  stdout: string;
+  stderr: string;
+  startedAt: number;
+  ready: boolean;
+  status: 'running' | 'exited' | 'error';
+  exitCode?: number | null;
+}
+
+/** O que vai para o disco em userData/app-store.json. */
+interface PersistedStore {
+  chats?: Record<string, Chat>;
+  activeChatId?: string | null;
+  settings?: Partial<Settings>;
+  recentPaths?: string[];
+}
+
+/**
+ * Ponte exposta pelo preload. Os retornos ficam em `any` porque cada handler do main
+ * devolve um formato próprio (arquivo, diff, saída de processo, resultado de busca) e
+ * fixá-los aqui duplicaria as formas do main sem ninguém garantir que as duas cópias
+ * andem juntas — o handler continua sendo a fonte da verdade.
+ */
+interface ElectronAPI {
+  selectFolder(): Promise<string | null>;
+  listFiles(dirPath: string): Promise<any>;
+  listTree(rootPath: string): Promise<any>;
+  readFile(filePath: string, opts?: any): Promise<any>;
+  writeFile(filePath: string, content: string, opts?: any): Promise<any>;
+  editFile(filePath: string, oldText: string, newText: string, replaceAll?: boolean): Promise<any>;
+  searchFiles(rootPath: string, opts?: any): Promise<any>;
+  createDirectory(dirPath: string): Promise<any>;
+  deleteFile(filePath: string, opts?: any): Promise<any>;
+  undoChange(snapshotId: string): Promise<any>;
+  getDiff(snapshotId: string): Promise<any>;
+  httpRequest(url: string, opts?: any): Promise<any>;
+  capturePage(url: string, opts?: any): Promise<any>;
+  readImage(filePath: string): Promise<any>;
+  executeCommand(command: string, cwd: string, opts?: any): Promise<any>;
+  readProcessOutput(pid: number): Promise<any>;
+  waitForProcess(pid: number, timeoutMs?: number): Promise<any>;
+  listProcesses(): Promise<any>;
+  stopProcess(pid: number): Promise<any>;
+  clearFinishedProcesses(): Promise<any>;
+  getAppInfo(): Promise<{ githubUrl: string; version: string; name: string }>;
+  webSearch(query: string, maxResults?: number): Promise<any>;
+  fetchUrl(url: string, maxChars?: number): Promise<any>;
+  loadStore(): Promise<PersistedStore>;
+  saveStore(data: PersistedStore): Promise<any>;
+  setTitle(title: string): void;
+}
+
+// As libs do renderer são vendorizadas em vendor/ e entram por <script> global, não por
+// import — por isso vivem no Window e não num módulo.
+interface Window {
+  electronAPI: ElectronAPI;
+  marked: any;
+  DOMPurify: any;
+  hljs: any;
+  /** Definida inline no index.html; chamada pelo onclick do olho da API key. */
+  toggleApiKeyVisibility(): void;
+}
