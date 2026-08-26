@@ -9,9 +9,11 @@ import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdir
 import { tmpdir } from 'os';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { WebSearch } from './src/websearch.js';
-import packageJson from "./package.json" with { type: "json" };
-import { vibeCodingTips } from './src/constants.js';
+// main.ts e os demais módulos moram no MESMO diretório (src/), então os imports são
+// "./x.js" — o rootDir "src" do tsconfig espelha a estrutura em out/.
+import { WebSearch } from './websearch.js';
+import packageJson from '../package.json' with { type: "json" };
+import { vibeCodingTips } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -40,7 +42,9 @@ function createWindow() {
     autoHideMenuBar: true
   });
 
-  mainWindow.loadFile('index.html');
+  // main.js roda de out/ (ver tsconfig.json); o index.html fica na RAIZ do app —
+  // sem o join, o loadFile procuraria index.html dentro de out/ e a janela abriria em branco.
+  mainWindow.loadFile(join(__dirname, '..', 'index.html'));
   // mainWindow.webContents.openDevTools()
 
   // Links (ex: markdown gerado pela IA, target="_blank" ou window.open) nunca abrem
@@ -85,13 +89,19 @@ function createWindow() {
 app.whenReady().then(() => {
   createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  // Dica aleatória de vibe coding ao abrir. Ficava presa em `app.on('activate')`,
+  // evento que SÓ dispara no macOS (clique no dock) — em Windows/Linux a notificação
+  // nunca aparecia. Mover para whenReady faz ela mostrar uma vez por abertura.
+  try {
     new Notification({
       title: packageJson.productName,
       body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)]
-    }).show()
-    console.log("ué")
+    }).show();
+  } catch (e) { /* sem daemon de notificação (alguns Linux) — não bloqueia a abertura */ }
+
+  // macOS: recria a janela ao clicar no dock com todas fechadas.
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
@@ -457,16 +467,61 @@ ipcMain.handle('create-directory', async (event, dirPath) => {
 // Informações do app lidas do package.json (ex: URL do GitHub, versão)
 ipcMain.handle('get-app-info', async () => {
   try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf-8'));
+    // package.json fica na RAIZ; com outDir o main.js roda de out/ (ver tsconfig.json).
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
     return {
       githubUrl: pkg.githubUrl || pkg.homepage || (pkg.repository && (pkg.repository.url || pkg.repository)) || '',
       version: pkg.version || '',
-      name: pkg.productName || pkg.name || ''
+      name: pkg.productName || pkg.name || '',
+      author: pkg.author || '',
+      license: pkg.license || ''
     };
   } catch (e) {
-    return { githubUrl: '', version: '', name: '' };
+    return { githubUrl: '', version: '', name: '', author: '', license: '' };
   }
 });
+
+// Verifica a última versão publicada no GitHub (releases/latest). Chamada MANUAL pelo
+// botão "Verificar" da aba Visão geral — não automática, porque a API anônima do GitHub
+// tem rate limit de 60 req/h por IP e abrir o app não justifica gastar esse orçamento.
+ipcMain.handle('check-update', async () => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+    const url = pkg.githubUrl || pkg.homepage || (pkg.repository && (pkg.repository.url || pkg.repository)) || '';
+    const m = String(url).match(/github\.com[/:]([\w.-]+)\/([\w.-]+)/i);
+    if (!m) return { success: false, error: 'Nenhum repositório GitHub configurado no package.json.' };
+    const [ , owner, repo ] = m;
+    const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {
+      headers: { 'User-Agent': 'Pofuserver-Coder-Studio', Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(12000)
+    });
+    if (resp.status === 404) return { success: false, error: 'Nenhum release publicado ainda.' };
+    if (!resp.ok) return { success: false, error: `GitHub respondeu ${resp.status}.` };
+    const rel = await resp.json();
+    const remota = String(rel.tag_name || '').replace(/^v/i, '');
+    const atual = String(pkg.version || '');
+    const maior = remota && atual ? compareVersions(atual, remota) < 0 : false;
+    return {
+      success: true, atual, remota, maior,
+      releaseUrl: rel.html_url || `https://github.com/${owner}/${repo}/releases`,
+      nomeRelease: rel.name || rel.tag_name || ''
+    };
+  } catch (e) {
+    return { success: false, error: String(e.message || e) };
+  }
+});
+
+// Compara versões semânticas ponto a ponto (1.2.0 < 1.10.0 — comparação por texto
+// daria o resultado errado). Sem patch, o campo vira 0.
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
 
 ipcMain.handle('delete-file', async (event, filePath, opts = {}) => {
   // Mesma trava do write_file. Sem ela, o modelo barrado ao sobrescrever simplesmente
@@ -545,13 +600,20 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   const max = Math.min(Math.max(opts.maxResults || 60, 1), SEARCH_MAX_RESULTS);
   const matches = [];
   let scanned = 0, truncated = false;
+  // totalFound conta TODAS as ocorrências (não só as devolvidas): sem ele o agente
+  // não saberia que uma busca "curta" casou com milhares de linhas e deveria refinar.
+  // countCap limita o CONTADOR (não o retorno) — varrer o projeto inteiro só para
+  // contar um "function" seria caro demais; passado disso reportamos o teto e paramos.
+  let totalFound = 0;
+  const countCap = 10000;
+  let done = false;
 
   const walk = (dir, rel) => {
-    if (truncated) return;
+    if (done) return;
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
     for (const ent of entries) {
-      if (truncated) return;
+      if (done) return;
       const relPath = rel ? `${rel}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
         if (ent.name.startsWith('.') || MENTION_IGNORE.has(ent.name)) continue;
@@ -574,19 +636,25 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
       for (let i = 0; i < lines.length; i++) {
         re.lastIndex = 0;
         if (!re.test(lines[i])) continue;
-        matches.push({
-          file: relPath,
-          line: i + 1,
-          // Linhas muito longas (minificados que passaram do filtro) viram ruído no contexto
-          text: lines[i].length > 300 ? lines[i].slice(0, 300) + '…' : lines[i]
-        });
-        if (matches.length >= max) { truncated = true; return; }
+        totalFound++;
+        // Devolve só as primeiras `max` (o resto é ruído no contexto), mas CONTINUA
+        // contando para o totalFound — para de empilhar, não de escanear.
+        if (matches.length < max) {
+          matches.push({
+            file: relPath,
+            line: i + 1,
+            // Linhas muito longas (minificados que passaram do filtro) viram ruído no contexto
+            text: lines[i].length > 300 ? lines[i].slice(0, 300) + '…' : lines[i]
+          });
+        }
+        if (totalFound >= countCap) { done = true; return; }
       }
     }
   };
 
   try { walk(rootPath, ''); } catch (e) { /* ignora */ }
-  return { success: true, query, count: matches.length, scanned, truncated, matches };
+  truncated = totalFound > max;
+  return { success: true, query, count: matches.length, totalFound, scanned, truncated, matches };
 });
 
 ipcMain.handle('list-tree', async (event, rootPath) => {
@@ -708,10 +776,17 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
 
     // Reinicia o "cronômetro de ocioso" a cada saída: builds barulhentos seguem esperando;
     // servidores que imprimem o banner e ficam quietos são considerados prontos.
+    //
+    // IMPORTANTE: o timer só backgroundiza se o processo AINDA ESTIVER VIVO. Antes, um
+    // comando rápido com pausa (ex.: `git status` num disco de rede, que fica ~7s sem
+    // imprimir nada) era "promovido" a servidor ocioso e devolvia um PID em vez do
+    // resultado — o agente então precisava de um read_process_output extra só para ler
+    // a saída de algo que já tinha terminado.
     const bumpIdle = () => {
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
-        if (Date.now() - entry.startedAt >= graceMs) backgroundify('ficou ocioso (provável servidor aguardando conexões)');
+        if (entry.status !== 'exited' && Date.now() - entry.startedAt >= graceMs)
+          backgroundify('ficou ocioso (provável servidor aguardando conexões)');
       }, idleMs);
     };
 
@@ -727,7 +802,12 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
     };
     child.stdout.on('data', onData('stdout'));
     child.stderr.on('data', onData('stderr'));
-    bumpIdle();
+    // Sem bumpIdle() aqui de propósito: o cronômetro de ocioso só começa a rodar DEPOIS
+    // da PRIMEIRA linha de saída. Um comando travado/silencioso (ex.: `git status` num
+    // disco de rede, ~7s sem imprimir nada) não tem como ser confundido com "servidor
+    // ocioso" — ele simplesmente termina no 'close'. Já um servidor que imprimiu o banner
+    // e ficou quieto entra no idle e vira background. Antes havia um bumpIdle() aqui
+    // que promovia a qualquer processo que passasse de idleMs sem sair, mesmo mudo.
 
     const hardTimer = setTimeout(() => backgroundify(`ainda em execução após ${Math.round(hardTimeoutMs / 1000)}s`), hardTimeoutMs);
 

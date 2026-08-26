@@ -843,6 +843,38 @@
       font-family: monospace;
     }
 
+    /* Card de verificação de atualização (aba Visão geral) */
+    .update-row { margin-top: 12px; }
+    .update-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .update-card .info-label { margin-bottom: 2px; }
+    .update-body { flex: 1; min-width: 0; }
+    .update-status {
+      font-size: 0.85rem;
+      color: var(--muted-2, #a1a1aa);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .update-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 3px;
+      font-size: 0.72rem;
+      color: var(--muted-2, #71717a);
+    }
+    .update-current { font-family: monospace; }
+    .update-link {
+      color: var(--accent, #38bdf8);
+      text-decoration: none;
+    }
+    .update-link:hover { text-decoration: underline; }
+    .update-check { flex-shrink: 0; }
+
     .range-container {
       display: flex;
       align-items: center;
@@ -2022,7 +2054,7 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.73.5 12a11.5 11.5 0 0 0 7.86 10.92c.575.106.785-.25.785-.556 0-.274-.01-1-.015-1.965-3.196.695-3.87-1.54-3.87-1.54-.523-1.33-1.277-1.684-1.277-1.684-1.044-.714.08-.7.08-.7 1.155.082 1.763 1.187 1.763 1.187 1.026 1.758 2.693 1.25 3.35.955.104-.744.402-1.25.73-1.538-2.552-.29-5.236-1.276-5.236-5.68 0-1.255.448-2.28 1.183-3.084-.119-.29-.513-1.46.112-3.043 0 0 .966-.31 3.165 1.178a10.98 10.98 0 0 1 2.882-.388c.977.004 1.962.132 2.882.388 2.198-1.488 3.163-1.178 3.163-1.178.626 1.583.232 2.753.114 3.043.737.804 1.182 1.829 1.182 3.084 0 4.415-2.688 5.386-5.25 5.67.413.356.78 1.057.78 2.13 0 1.538-.014 2.778-.014 3.157 0 .308.207.667.79.554A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/></svg>
           </button>
           <span class="user-profile">Developer</span>
-          <button class="info-version" title="Versão: ">
+          <button class="info-version" id="info-version-dot" title="Versão: —">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-info"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           </button>
         </div>
@@ -2158,9 +2190,25 @@
 
             <div class="cfg-section">
               <div class="cfg-section-title">Informação do produto</div>
-              <div class="stat-row">
+              <div class="info-grid">
                 <div class="info-card"><div class="info-label">Versão</div><div class="info-value" id="info-version">—</div></div>
-                <div class="info-card"><div class="info-label">Nome</div><div class="info-value" id="info-version">—</div></div>
+                <div class="info-card"><div class="info-label">Nome</div><div class="info-value" id="info-product-name">—</div></div>
+                <div class="info-card"><div class="info-label">Autor</div><div class="info-value" id="info-product-author">—</div></div>
+                <div class="info-card"><div class="info-label">Licença</div><div class="info-value" id="info-product-license">—</div></div>
+                <div class="info-card"><div class="info-label">Repositório</div><div class="info-value" id="info-product-github" title="">—</div></div>
+              </div>
+              <div class="update-row">
+                <div class="info-card update-card">
+                  <div class="info-label">Atualização</div>
+                  <div class="update-body">
+                    <div class="update-status" id="info-update-status">Não verificado</div>
+                    <div class="update-meta">
+                      <span class="update-current" id="info-update-current"></span>
+                      <a class="update-link" id="info-update-link" href="#" target="_blank" rel="noopener" hidden>Abrir página do release</a>
+                    </div>
+                  </div>
+                  <button class="btn-secondary update-check" id="btn-check-update">Verificar</button>
+                </div>
               </div>
             </div>
           </div>
@@ -2297,7 +2345,8 @@
     </div>
   </div>
 
-  <script type="module" src="src/renderer.js"></script>
-  <script type="module" src="src/constants.js"></script>
+  <!-- Saída do build em out/ (ver tsconfig.json): o tsc emite out/renderer.js etc. -->
+  <script type="module" src="out/renderer.js"></script>
+  <script type="module" src="out/constants.js"></script>
 </body>
 </html>

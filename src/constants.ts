@@ -87,9 +87,13 @@ export const DEFAULT_SETTINGS: Settings = {
 export const THINK_LEVELS: Record<ThinkLevel, ThinkLevelDef> = {
   padrao:    { rotulo: 'Padrão do modelo', dica: 'Não envia nada — funciona em qualquer servidor', payload: null, semRaciocinio: false },
   desligado: { rotulo: 'Desligado',        dica: 'Responde direto; modelos de raciocínio podem parar de chamar ferramentas', payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true },
-  baixo:     { rotulo: 'Baixo',            dica: 'Exige suporte a reasoning_effort no servidor', payload: { reasoning_effort: 'low' },    semRaciocinio: false },
-  medio:     { rotulo: 'Médio',            dica: 'Exige suporte a reasoning_effort no servidor', payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
-  alto:      { rotulo: 'Alto',             dica: 'Pensa mais antes de agir; exige suporte no servidor', payload: { reasoning_effort: 'high' },   semRaciocinio: false }
+  baixo:     { rotulo: 'Baixo',            dica: 'Envia reasoning_effort: "low"', payload: { reasoning_effort: 'low' },    semRaciocinio: false },
+  medio:     { rotulo: 'Médio',            dica: 'Envia reasoning_effort: "medium"', payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
+  alto:      { rotulo: 'Alto',             dica: 'Envia reasoning_effort: "high" — pensa mais antes de agir', payload: { reasoning_effort: 'high' },   semRaciocinio: false },
+  // 'max' é o nível mais alto que a API do OpenAI aceita (none|low|medium|high|max).
+  // Servidores que só conhecem low/medium/high podem rejeitar — por isso é escolha
+  // explícita, não default.
+  maximo:    { rotulo: 'Máximo',           dica: 'Envia reasoning_effort: "max" — só em servidores que aceitam', payload: { reasoning_effort: 'max' }, semRaciocinio: false }
 };
 
 // Teto do raciocínio MOSTRADO na tela (o texto do think não é persistido no histórico).

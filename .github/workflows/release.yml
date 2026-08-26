@@ -1,9 +1,13 @@
 # Publica o release quando uma tag vX.Y.Z sobe para o repositório.
 #
-# Cada instalador é montado na sua própria máquina: o .deb no Ubuntu e o .exe no
-# Windows. Dá para gerar o NSIS a partir do Linux, mas só com wine de 32 bits
-# instalado (o rcedit, que grava ícone e versão no executável, é um binário ia32) —
-# dependência frágil que não vale carregar quando o runner do Windows sai de graça.
+# Cada instalador é montado na sua própria máquina: o .deb no Ubuntu, o .exe no
+# Windows. O .rpm (Fedora) também é montado no Ubuntu — o GitHub não tem runner
+# Fedora — instalando o pacote `rpm` via apt (é ele que fornece o `rpmbuild` que
+# o electron-builder usa para gerar o pacote; os nomes das dependências no
+# package.json são os do Fedora, não do Ubuntu). Dá para gerar o NSIS a partir
+# do Linux, mas só com wine de 32 bits instalado (o rcedit, que grava ícone e
+# versão no executável, é um binário ia32) — dependência frágil que não vale
+# carregar quando o runner do Windows sai de graça.
 name: Release
 
 on:
@@ -31,6 +35,10 @@ jobs:
             so: ubuntu-latest
             script: dist:linux
             arquivos: dist/*.deb
+          - nome: Linux (.rpm Fedora)
+            so: ubuntu-latest
+            script: dist:fedora
+            arquivos: dist/*.rpm
           - nome: Windows (.exe)
             so: windows-latest
             script: dist:win
@@ -64,6 +72,17 @@ jobs:
             exit 1
           fi
 
+      # O pacote `rpm` do Ubuntu fornece o `rpmbuild` que o electron-builder precisa
+      # para gerar o .rpm (o fpm usa o rpmbuild como backend). Só o job do Fedora
+      # precisa dele — os outros seguem como antes.
+      - name: Instala o rpmbuild (necessário para o .rpm)
+        if: matrix.script == 'dist:fedora'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          rpmbuild --version
+
       - run: npm install
 
       # --publish never: ao detectar CI, o electron-builder tenta publicar o release
@@ -77,8 +96,8 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          # Os dois jobs correm em paralelo: quem chegar primeiro cria o release,
-          # o outro só anexa o instalador dele.
+          # Os jobs correm em paralelo: quem chega primeiro cria o release,
+          # os outros só anexam o instalador deles.
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --title "$TAG" --generate-notes
           gh release upload "$TAG" ${{ matrix.arquivos }} --clobber
