@@ -10,7 +10,7 @@
 // só aparece quando o Electron tenta resolvê-lo.
 
 /** Nível de raciocínio escolhido no rodapé do compositor. */
-type ThinkLevel = 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto';
+type ThinkLevel = 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto' | 'maximo';
 
 /** Modo de execução de comandos: 'manual' abre o modal de confirmação. */
 type ExecMode = 'manual' | 'auto';
@@ -203,7 +203,8 @@ interface ElectronAPI {
   listProcesses(): Promise<any>;
   stopProcess(pid: number): Promise<any>;
   clearFinishedProcesses(): Promise<any>;
-  getAppInfo(): Promise<{ githubUrl: string; version: string; name: string }>;
+  getAppInfo(): Promise<{ githubUrl: string; version: string; name: string; author: string; license: string }>;
+  checkUpdate(): Promise<any>;
   webSearch(query: string, maxResults?: number): Promise<any>;
   fetchUrl(url: string, maxChars?: number): Promise<any>;
   loadStore(): Promise<PersistedStore>;

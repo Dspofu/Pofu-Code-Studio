@@ -1,13 +1,19 @@
+// Saída do build em out/ (SEPARADA da fonte em src/), espelhando a estrutura:
+// src/main.ts → out/main.js, src/preload.cts → out/preload.cjs, src/renderer.ts →
+// out/renderer.js. Antes o .js saía AO LADO do .ts (sem outDir) — o pedido era ter a
+// build separada, então a fonte vive em src/ e o emitido em out/ (ignorado pelo git,
+// regerado por `npm run build`, que o prestart/predist já disparam).
+//
+// rootDir "src" exige que TODA a fonte compilável esteja dentro de src/ — por isso
+// main.ts e preload.cts foram movidos para lá (os imports relativos "./src/x.js"
+// viram "./x.js", já que main agora está no mesmo diretório).
+//
+// A checagem é frouxa porque a base veio de ~5 mil linhas de JS de DOM imperativo: ligar
+// `strict` aqui geraria centenas de erros de uma vez e a conversão pararia no meio. O que
+// TS já entrega neste nível é o que interessa no dia a dia — nome de campo errado em
+// `settings`, ferramenta fora do `ToolName`, retorno de IPC usado como se fosse outra
+// coisa. Apertar `strictNullChecks` é passo seguinte, arquivo a arquivo.
 {
-  // O .js sai AO LADO do .ts (sem outDir) de propósito: `main` do package.json, as tags
-  // <script> do index.html e a lista `files` do electron-builder continuam apontando para
-  // os mesmos caminhos de sempre, e o app segue rodando com `electron .` sem bundler.
-  //
-  // A checagem é frouxa porque a base veio de ~5 mil linhas de JS de DOM imperativo: ligar
-  // `strict` aqui geraria centenas de erros de uma vez e a conversão pararia no meio. O que
-  // TS já entrega neste nível é o que interessa no dia a dia — nome de campo errado em
-  // `settings`, ferramenta fora do `ToolName`, retorno de IPC usado como se fosse outra
-  // coisa. Apertar `strictNullChecks` é passo seguinte, arquivo a arquivo.
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -22,10 +28,12 @@
     "strictNullChecks": false,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "out"
   },
   // preload.cts entra aqui junto: a extensão .cts é que decide o formato dele (CommonJS,
   // saindo como preload.cjs), então não é preciso um segundo tsconfig só para isso.
   // src/websearch.js é gerado noutro repositório e entra só pela declaração .d.ts.
-  "include": ["main.ts", "preload.cts", "src/constants.ts", "src/renderer.ts", "src/types.d.ts", "src/websearch.d.ts"]
+  "include": ["src/main.ts", "src/preload.cts", "src/constants.ts", "src/renderer.ts", "src/types.d.ts", "src/websearch.d.ts"]
 }

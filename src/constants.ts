@@ -87,9 +87,13 @@ export const DEFAULT_SETTINGS: Settings = {
 export const THINK_LEVELS: Record<ThinkLevel, ThinkLevelDef> = {
   padrao:    { rotulo: 'Padrão do modelo', dica: 'Não envia nada — funciona em qualquer servidor', payload: null, semRaciocinio: false },
   desligado: { rotulo: 'Desligado',        dica: 'Responde direto; modelos de raciocínio podem parar de chamar ferramentas', payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true },
-  baixo:     { rotulo: 'Baixo',            dica: 'Exige suporte a reasoning_effort no servidor', payload: { reasoning_effort: 'low' },    semRaciocinio: false },
-  medio:     { rotulo: 'Médio',            dica: 'Exige suporte a reasoning_effort no servidor', payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
-  alto:      { rotulo: 'Alto',             dica: 'Pensa mais antes de agir; exige suporte no servidor', payload: { reasoning_effort: 'high' },   semRaciocinio: false }
+  baixo:     { rotulo: 'Baixo',            dica: 'Envia reasoning_effort: "low"', payload: { reasoning_effort: 'low' },    semRaciocinio: false },
+  medio:     { rotulo: 'Médio',            dica: 'Envia reasoning_effort: "medium"', payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
+  alto:      { rotulo: 'Alto',             dica: 'Envia reasoning_effort: "high" — pensa mais antes de agir', payload: { reasoning_effort: 'high' },   semRaciocinio: false },
+  // 'max' é o nível mais alto que a API do OpenAI aceita (none|low|medium|high|max).
+  // Servidores que só conhecem low/medium/high podem rejeitar — por isso é escolha
+  // explícita, não default.
+  maximo:    { rotulo: 'Máximo',           dica: 'Envia reasoning_effort: "max" — só em servidores que aceitam', payload: { reasoning_effort: 'max' }, semRaciocinio: false }
 };
 
 // Teto do raciocínio MOSTRADO na tela (o texto do think não é persistido no histórico).
@@ -160,3 +164,15 @@ export const MAX_LOOP_ITERATIONS = 100;
 // inteira do agente morre por causa de uma única resposta ruim.
 export const MAX_REQUEST_RETRIES = 3;
 export const REQUEST_RETRY_DELAY_MS = 800;
+
+// Dicas presentes nas notificações
+export const vibeCodingTips = [
+  "Defina o contexto e as regras do projeto antes de pedir para a IA gerar código.",
+  "Trabalhe em ciclos curtos: gere pequenas partes, teste imediatamente e itere.",
+  "Peça para a IA explicar a lógica antes de colar o código diretamente no projeto.",
+  "Mantenha seu repositório limpo e faça commits frequentes a cada feature funcional.",
+  "Use prompts específicos com exemplos de entrada e saída esperados.",
+  "Se o código gerado quebrar, envie o erro exato do terminal direto para a IA.",
+  "Não tente fazer tudo em um único prompt, separe o problema em etapas lógicas.",
+  "Mantenha o foco na arquitetura e deixe a IA cuidar do trabalho repetitivo."
+];

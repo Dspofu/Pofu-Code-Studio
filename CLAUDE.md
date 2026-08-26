@@ -16,9 +16,9 @@ Idioma do projeto: **português**. Commits, comentários, prompts e UI são em p
 
 | Arquivo | Papel |
 |---|---|
-| [main.ts](main.ts) | Processo *main* do Electron. Todos os `ipcMain.handle` (fs, spawn de comandos, store, web search/fetch), janela e menu. |
-| [preload.cts](preload.cts) | Ponte `contextBridge` → `window.electronAPI`. Toda nova capacidade do main precisa ser exposta aqui. É `.cts` porque o preload é CommonJS (sai como `preload.cjs`). |
-| [index.html](index.html) | UI inteira: Tailwind (vendorizado), `<style>` grande no topo, markup e modais. Carrega os módulos ao final. |
+| [src/main.ts](src/main.ts) | Processo *main* do Electron. Todos os `ipcMain.handle` (fs, spawn de comandos, store, web search/fetch), janela e menu. |
+| [src/preload.cts](src/preload.cts) | Ponte `contextBridge` → `window.electronAPI`. Toda nova capacidade do main precisa ser exposta aqui. É `.cts` porque o preload é CommonJS (sai como `preload.cjs`). |
+| [index.html](index.html) | UI inteira: Tailwind (vendorizado), `<style>` grande no topo, markup e modais. Carrega `out/renderer.js` ao final. |
 | [src/renderer.ts](src/renderer.ts) | Cérebro do renderer: estado dos chats, loop do agente, definição das `tools`, streaming, execução de tool calls, render de mensagens. |
 | [src/constants.ts](src/constants.ts) | `system_prompt`, `DEFAULT_SETTINGS` e os limites, todos comentados com o *porquê*: janela de leitura derivada do contexto, orçamento de histórico, prints por requisição, retries e trava de loop. |
 | [src/types.d.ts](src/types.d.ts) | Tipos GLOBAIS (o arquivo não exporta nada de propósito): `Settings`, `Chat`, `ChatMessage`, `ElectronAPI`, `ProcEntry`. Main e renderer os enxergam sem importar. |
@@ -29,21 +29,26 @@ Idioma do projeto: **português**. Commits, comentários, prompts e UI são em p
 ## Comandos
 
 ```bash
-npm run build     # tsc: emite o .js AO LADO de cada .ts
+npm run build     # tsc: emite a saída em out/ (fonte em src/)
 npm run typecheck # só checagem, sem emitir
 npm start         # build + electron --no-sandbox . --ozone-platform=x11
 npm run dist      # build + empacota .deb + .nsis
-npm run dist:linux
+npm run dist:linux   # só o .deb
+npm run dist:fedora  # só o .rpm — exige o rpmbuild (Ubuntu: apt install rpm; Fedora: dnf install rpm-build)
+npm run dist:win     # só o .exe (NSIS)
 ```
 
 Não há testes nem linter. Verificação = `npm run typecheck` + rodar o app e exercitar o fluxo alterado.
 
-## TypeScript
+## TypeScript / layout do build
 
-O `tsconfig.json` **não tem `outDir`**: o `.js` sai ao lado do `.ts`, e é por isso que
-`main` do package.json, as tags `<script>` do index.html e a lista `files` do
-electron-builder seguem apontando para os caminhos de sempre. Os `.js` gerados são
-ignorados pelo git; `prestart`/`predist` rodam o build antes.
+Toda a fonte compilável vive em `src/` (por isso `main.ts` e `preload.cts` foram movidos
+para lá) e o `tsconfig.json` emite em **`out/`** (`rootDir: "src"`, `outDir: "out"`):
+`src/main.ts → out/main.js`, `src/preload.cts → out/preload.cjs`, `src/renderer.ts →
+out/renderer.js`. O `main` do package.json é `out/main.js`, o index.html carrega
+`out/renderer.js` e o electron-builder empacota `out/**`. O `out/` é gerado e ignorado
+pelo git; `prestart`/`predist` rodam o build antes. `src/websearch.js` é fonte
+versionada (gerada noutro repositório) e vai junto no `out/` por estar dentro do rootDir.
 
 A checagem é **frouxa de propósito** (`strict: false`, `noImplicitAny: false`,
 `strictNullChecks: false`): a base veio de ~5 mil linhas de JS de DOM imperativo e ligar
@@ -58,10 +63,10 @@ propriedades de campo opcionais), que é o que evita um cast em cada uma das ~12
 
 Uma ferramenta nova exige tocar em **quatro** pontos, na ordem:
 
-1. `ipcMain.handle('nome', …)` em [main.ts](main.ts)
-2. exposição em [preload.cts](preload.cts) — e a assinatura em `ElectronAPI`, em [src/types.d.ts](src/types.d.ts)
+1. `ipcMain.handle('nome', …)` em [src/main.ts](src/main.ts)
+2. exposição em [src/preload.cts](src/preload.cts) — e a assinatura em `ElectronAPI`, em [src/types.d.ts](src/types.d.ts)
 3. entrada no array `tools` em [src/renderer.ts:1328](src/renderer.ts#L1328) (schema JSON enviado ao modelo)
-4. o `case` no executor `runTool` ([src/renderer.ts:1679](src/renderer.ts#L1679)), a entrada em
+4. o `case` no executor `runTool` ([src/renderer.ts:1684](src/renderer.ts#L1684)), a entrada em
    `TOOL_META` ([src/renderer.ts:810](src/renderer.ts#L810)) e os `switch` de rótulo/resumo em
    [src/renderer.ts:830](src/renderer.ts#L830) e [src/renderer.ts:873](src/renderer.ts#L873)
 
@@ -138,6 +143,13 @@ que a ausência dele.
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava
   `read_process_output` em looping ("já acabou?"), gastando o contexto inteiro num `npm install`.
+  A detecção de "servidor ocioso" só arma o cronômetro DEPOIS da primeira linha de saída e só
+  backgroundiza se o processo ainda estiver vivo — comando mudo/travado (ex.: `git status` num
+  disco lento) termina no `close` e devolve a saída direto, sem virar PID à toa.
+- **Shell por plataforma**: no Windows o comando roda no `cmd.exe` (`;` vira argumento; use
+  `&`/`&&`), em Linux/macOS no `bash` (`;` e `&&` ok). A descrição da tool já documenta isso.
+  Não troque para PowerShell: o 5.1 do Windows rejeita `&&` com parser error e tem ~1s de
+  start-up por comando (medido).
 - **Diff e desfazer**: toda escrita/edição/remoção grava um instantâneo em
   `userData/instantaneos` e devolve `snapshotId` + `diff`. O diff é do USUÁRIO — `comAlteracao`
   o remove do que vai ao modelo, senão cada edição custaria em contexto o dobro do arquivo. No
@@ -164,6 +176,12 @@ que a ausência dele.
   termina de carregar (anúncio pendurado, websocket) fica preso PARA SEMPRE e o tool call do
   agente nunca retorna. Todo `loadURL` aqui corre contra um `sleep` e chama `stop()` no
   estouro, aproveitando o que já renderizou.
+- **`depends` substitui o default**: declarar `depends` em `build.rpm`/`build.deb` no
+  package.json TROCA a lista inteira do electron-builder — não acrescenta. O default do rpm
+  inclui `at-spi2-core` e `libuuid`, que são `NEEDED` de verdade do binário do Electron
+  (`libatspi.so.0`, `libuuid.so.1`); sem eles o `dnf install` conclui e o app não abre num
+  Fedora enxuto (Server, spin, toolbox) — no Workstation passa despercebido porque já vêm
+  instalados. Compare com o default antes de mexer nessa lista.
 - **Servidor local**: a porta e o modelo do llama.cpp variam — confirme com o usuário antes de
   assumir `http://localhost:8080/v1`.
 

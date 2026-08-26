@@ -96,7 +96,7 @@ As bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos
 
 - **[Node.js](https://nodejs.org/)** 18+ com `npm`
 - Um **servidor de modelo compatível com OpenAI** rodando (ex.: llama.cpp)
-- Linux, Windows ou macOS
+- Linux (Ubuntu/Debian com `.deb`, Fedora com `.rpm`), Windows ou macOS
 
 Modelos com **function calling** são necessários (o agente depende disso). Para modelos de raciocínio (ex.: Qwen3), mantenha o **Nível de raciocínio** diferente de *Desligado* — sem pensar, eles costumam parar de chamar ferramentas. Um modelo **multimodal** habilita o retorno visual dos prints.
 
@@ -110,6 +110,13 @@ npm start
 ```
 
 > `npm start` compila o TypeScript (via `prestart`) e abre o app. Ele usa `--no-sandbox --ozone-platform=x11` (Linux); em Windows/macOS, rode `npm run build` e depois `npx electron .`.
+>
+> **Instaladores prontos:** os releases do GitHub publicam `.deb` (Ubuntu/Debian), `.rpm` (Fedora) e `.exe` (Windows), gerados automaticamente a cada tag `vX.Y.Z`.
+>
+> ```bash
+> sudo apt install ./pofuserver-coder-studio_1.3.0_amd64.deb   # Ubuntu/Debian
+> sudo dnf install ./pofuserver-coder-studio-1.3.0.x86_64.rpm  # Fedora
+> ```
 
 ### Servidor de exemplo com llama.cpp
 
@@ -142,24 +149,25 @@ O **nível de raciocínio** não fica aqui: ele mora no rodapé do compositor, a
 
 ## Estrutura do projeto
 
-O código-fonte é **TypeScript**. O `tsc` emite o `.js` ao lado de cada `.ts` (sem `outDir`), então o Electron continua carregando os mesmos caminhos de sempre, sem empacotador no caminho:
+O código-fonte é **TypeScript**, todo em `src/`. O `tsc` emite a saída em **`out/`** (separada da fonte, ignorada pelo git): `src/main.ts → out/main.js`, `src/preload.cts → out/preload.cjs` etc. O Electron carrega `out/main.js` (ver `main` do package.json) e o `index.html` carrega `out/renderer.js` — sem empacotador no caminho:
 
 ```
-├── main.ts           # Processo main: IPC de arquivos, processos, HTTP, captura e busca
-├── preload.cts       # Ponte contextBridge (.cts porque o preload é CommonJS → preload.cjs)
-├── index.html        # Interface e estilos
-├── tsconfig.json     # Único config do build
+├── index.html        # Interface e estilos (carrega out/renderer.js)
+├── tsconfig.json     # Único config do build (rootDir: src, outDir: out)
 ├── src/
+│   ├── main.ts       # Processo main: IPC de arquivos, processos, HTTP, captura e busca
+│   ├── preload.cts   # Ponte contextBridge (.cts porque o preload é CommonJS → preload.cjs)
 │   ├── renderer.ts   # Loop do agente, ferramentas, streaming, diff, render das mensagens
 │   ├── constants.ts  # system_prompt, padrões e limites
 │   ├── types.d.ts    # Tipos compartilhados (Settings, Chat, ElectronAPI…)
 │   ├── websearch.js  # Busca web (arquivo gerado noutro repositório — veja o cabeçalho)
 │   └── websearch.d.ts# Tipos do módulo acima
+├── out/              # Saída do build (gerada, não versionada)
 ├── docs/img/         # Imagens do README
 └── vendor/           # Bibliotecas de front-end (offline)
 ```
 
-Os `.js`/`.cjs` gerados são ignorados pelo git: `npm start` e `npm run dist` já rodam o build antes. Para compilar sozinho, `npm run build`; para só checar tipos, `npm run typecheck`.
+O `out/` é gerado e ignorado pelo git: `npm start` e `npm run dist` já rodam o build antes. Para compilar sozinho, `npm run build`; para só checar tipos, `npm run typecheck`.
 
 ---
 
@@ -171,9 +179,10 @@ Você pode usar, modificar, redistribuir e criar derivados, inclusive comercialm
 
 - Ícone do aplicativo gerado com ChatGPT (OpenAI)
 - Bibliotecas de terceiros e suas licenças estão listadas no [NOTICE](NOTICE)
+- Referencia de icones: https://feathericons.com
 
 ## Notas
 
 - Histórico e configurações ficam no diretório de dados do Electron (`app-store.json`)
 - Prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`, no mesmo diretório
-- Desenvolvido e testado principalmente no **Linux**, contra um **llama.cpp** local
+- Desenvolvido e testado principalmente no **Linux (Ubuntu 26.04) / Windows (11 PRO 25H2)**, contra um **llama.cpp** local

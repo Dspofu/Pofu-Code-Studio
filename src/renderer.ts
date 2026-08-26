@@ -427,7 +427,7 @@ function renderChatList() {
     const rename = document.createElement('button');
     rename.className = 'chat-action';
     rename.title = 'Renomear chat';
-    rename.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    rename.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
     rename.addEventListener('click', (e) => { e.stopPropagation(); beginRenameChat(id, nameSpan); });
     actions.appendChild(rename);
 
@@ -1352,7 +1352,7 @@ const tools = [
         properties: {
           filename: { type: 'string', description: 'Nome ou caminho relativo do arquivo' },
           offset: { type: 'number', description: 'Linha inicial da leitura (base 1). Padrão: 1.' },
-          limit: { type: 'number', description: `Máximo de linhas a retornar nesta leitura (teto: ${READ_FILE_MAX_LINES}).` }
+          limit: { type: 'number', description: `Máximo de linhas a retornar nesta leitura (teto: ${READ_FILE_MAX_LINES}). O tamanho real da janela também é limitado por um orçamento de caracteres derivado do contexto do modelo, então um "limit" alto não garante o arquivo inteiro — se o resultado avisar que restam linhas, continue com "offset".` }
         },
         required: ['filename']
       }
@@ -1401,7 +1401,9 @@ const tools = [
       name: 'search_files',
       description: 'Procura um texto ou padrão dentro dos arquivos do workspace e devolve arquivo, ' +
         'linha e o conteúdo da linha. Use para localizar onde algo é definido ou usado — é muito mais ' +
-        'barato que ler arquivos inteiros à procura. Ignora node_modules, dist, .git e binários.',
+        'barato que ler arquivos inteiros à procura. Ignora node_modules, dist, .git e binários. ' +
+        'O campo "totalFound" dá o NÚMERO TOTAL de ocorrências (mesmo quando "matches" está limitado ' +
+        'a max_results): se totalFound for bem maior que max_results, refine a busca em vez de aumentar o limite.',
       parameters: {
         type: 'object',
         properties: {
@@ -1452,7 +1454,10 @@ const tools = [
       description: 'Executa um comando shell no workspace. Comandos que terminam retornam stdout/stderr. ' +
         'Servidores/APIs/watchers são detectados automaticamente: assim que ficam prontos (banner de log ' +
         'ou ociosidade) retornam um PID e seguem rodando em SEGUNDO PLANO, sem travar o chat — você pode ' +
-        'continuar executando outros comandos (curl, testes, etc.) enquanto o servidor roda. Evite sudo.',
+        'continuar executando outros comandos (curl, testes, etc.) enquanto o servidor roda. Evite sudo. ' +
+        'Encadear comandos: em Windows o shell é cmd.exe — use "&" ou "&&" (";" é lido como argumento e quebra o comando); ' +
+        'em Linux/macOS é bash, onde ";" e "&&" funcionam. Se precisar de ";" no Windows, rode ' +
+        '"powershell -NoProfile -Command \"a; b\"".',
       parameters: {
         type: 'object',
         properties: {
@@ -3091,8 +3096,26 @@ function abreMenuPastas() {
     for (const caminho of recentes) {
       const item = document.createElement('div');
       item.className = 'folder-item';
-      item.innerText = caminho;
       item.title = caminho;
+
+      const label = document.createElement("span");
+      label.classList = "label-folder";
+      label.innerText = caminho;
+      item.appendChild(label);
+
+      const trash = document.createElement("button");
+      trash.className = "trash-folder";
+      trash.title = "Remover dos recentes";
+      trash.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash-2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
+      // Lixeira: remove a pasta dos recentes. stopPropagation impede que o clique
+      // também dispare a troca de workspace do item (que fecharia o menu).
+      trash.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.recentPaths = state.recentPaths.filter(p => p !== caminho);
+        persist();
+        abreMenuPastas(); // reabre o menu já sem o item removido
+      });
+      item.appendChild(trash);
       item.addEventListener('click', () => {
         menu.hidden = true;
         defineWorkspace(caminho);
@@ -3288,16 +3311,79 @@ function wireEvents() {
     if (appInfo.githubUrl) window.open(appInfo.githubUrl, '_blank');
   });
 
+  // Verificação de atualização (manual — ver o comentário de checkForUpdate)
+  el('btn-check-update').addEventListener('click', checkForUpdate);
+
   // Atualiza o contador de processos periodicamente (badge no cabeçalho)
   setInterval(refreshProcesses, 3000);
 }
 
 // Informações do app (URL do GitHub etc.) lidas do package.json via IPC
-let appInfo = { githubUrl: '', version: '', name: '' };
+let appInfo = { githubUrl: '', version: '', name: '', author: '', license: '' };
 async function loadAppInfo() {
   try { appInfo = await window.electronAPI.getAppInfo(); } catch (e) { /* ignora */ }
   const gh = el('btn-github');
   if (gh) gh.style.display = appInfo.githubUrl ? '' : 'none'; // esconde se não houver URL configurada
+
+  // "Pingo" de versão na sidebar + cards de "Informação do produto" (aba Visão geral).
+  // O get-app-info devolve { githubUrl, version, name, author, license } lidos do package.json.
+  const dot = el('info-version-dot');
+  if (dot && appInfo.version) dot.title = `Versão: ${appInfo.version}`;
+  const ver = el('info-version');
+  if (ver && appInfo.version) ver.innerText = appInfo.version;
+  const nome = el('info-product-name');
+  if (nome && appInfo.name) nome.innerText = appInfo.name;
+  const autor = el('info-product-author');
+  if (autor && appInfo.author) autor.innerText = appInfo.author;
+  const lic = el('info-product-license');
+  if (lic && appInfo.license) lic.innerText = appInfo.license;
+  const link = el('info-product-github');
+  if (link) {
+    if (appInfo.githubUrl) {
+      link.innerText = appInfo.githubUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+      link.title = appInfo.githubUrl;
+      link.style.cursor = 'pointer';
+      link.onclick = () => window.open(appInfo.githubUrl, '_blank');
+    } else {
+      link.innerText = '—';
+      link.onclick = null;
+    }
+  }
+  // O card de atualização começa em "pendente": o estado só muda quando o usuário
+  // clica em "Verificar" (checagem manual — ver checkForUpdate).
+  const upd = el('info-update-status');
+  if (upd) upd.innerText = 'Não verificado';
+}
+
+// Consulta o GitHub pela última versão publicada. É MANUAL (botão "Verificar") de
+// propósito: a API anônima do GitHub limita a 60 req/h por IP e abrir o app não
+// justificaria gastar esse orçamento. O resultado vai para o card "Atualização"
+// da aba Visão geral.
+async function checkForUpdate() {
+  const status = el('info-update-status');
+  const atual = el('info-update-current');
+  if (status) status.innerText = 'Verificando…';
+  if (atual && appInfo.version) atual.innerText = `v${appInfo.version}`;
+  let res;
+  try { res = await window.electronAPI.checkUpdate(); }
+  catch (e) { res = { success: false, error: String(e.message || e) }; }
+  if (!res || !res.success) {
+    if (status) status.innerText = 'Falha: ' + ((res && res.error) || 'erro desconhecido');
+    return;
+  }
+  if (status) {
+    status.innerText = res.maior
+      ? `Nova versão disponível: v${res.remota}`
+      : 'Você está na versão mais recente';
+  }
+  const link = el<HTMLAnchorElement>('info-update-link');
+  if (link) {
+    if (res.maior && res.releaseUrl) {
+      link.hidden = false;
+      link.href = res.releaseUrl;
+      link.innerText = 'Abrir página do release';
+    } else link.hidden = true;
+  }
 }
 
 // --------------------------------------------------------------------------
