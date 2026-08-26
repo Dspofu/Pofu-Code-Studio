@@ -97,7 +97,13 @@ jobs:
         run: |
           set -euo pipefail
           # Os jobs correm em paralelo: quem chega primeiro cria o release,
-          # os outros só anexam o instalador deles.
+          # os outros só anexam o instalador deles. O terceiro comando cobre o
+          # empate — dois jobs que passam pelo "view" antes de qualquer "create"
+          # tentam criar, e o perdedor morreria com "release already exists"
+          # DEPOIS do build inteiro, perdendo o instalador dele. Como os dois
+          # jobs Linux correm no mesmo runner e levam quase o mesmo tempo, esse
+          # empate é provável, não teórico.
           gh release view "$TAG" >/dev/null 2>&1 ||
-            gh release create "$TAG" --title "$TAG" --generate-notes
+            gh release create "$TAG" --title "$TAG" --generate-notes ||
+            gh release view "$TAG" >/dev/null
           gh release upload "$TAG" ${{ matrix.arquivos }} --clobber

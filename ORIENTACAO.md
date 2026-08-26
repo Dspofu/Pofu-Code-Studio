@@ -50,6 +50,7 @@ npm run build      # tsc: emite a saída em out/
 npm run typecheck  # só checagem de tipos, sem emitir
 npm start          # build + electron --no-sandbox . --ozone-platform=x11 (Linux)
 npm run dist       # build + .deb + .nsis
+npm run dist:fedora # build + .rpm (exige rpmbuild: apt install rpm / dnf install rpm-build)
 ```
 
 **Não há testes nem linter.** Validação = `npm run typecheck` + rodar o app e exercitar o fluxo

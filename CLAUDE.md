@@ -33,7 +33,9 @@ npm run build     # tsc: emite a saída em out/ (fonte em src/)
 npm run typecheck # só checagem, sem emitir
 npm start         # build + electron --no-sandbox . --ozone-platform=x11
 npm run dist      # build + empacota .deb + .nsis
-npm run dist:linux
+npm run dist:linux   # só o .deb
+npm run dist:fedora  # só o .rpm — exige o rpmbuild (Ubuntu: apt install rpm; Fedora: dnf install rpm-build)
+npm run dist:win     # só o .exe (NSIS)
 ```
 
 Não há testes nem linter. Verificação = `npm run typecheck` + rodar o app e exercitar o fluxo alterado.
@@ -174,6 +176,12 @@ que a ausência dele.
   termina de carregar (anúncio pendurado, websocket) fica preso PARA SEMPRE e o tool call do
   agente nunca retorna. Todo `loadURL` aqui corre contra um `sleep` e chama `stop()` no
   estouro, aproveitando o que já renderizou.
+- **`depends` substitui o default**: declarar `depends` em `build.rpm`/`build.deb` no
+  package.json TROCA a lista inteira do electron-builder — não acrescenta. O default do rpm
+  inclui `at-spi2-core` e `libuuid`, que são `NEEDED` de verdade do binário do Electron
+  (`libatspi.so.0`, `libuuid.so.1`); sem eles o `dnf install` conclui e o app não abre num
+  Fedora enxuto (Server, spin, toolbox) — no Workstation passa despercebido porque já vêm
+  instalados. Compare com o default antes de mexer nessa lista.
 - **Servidor local**: a porta e o modelo do llama.cpp variam — confirme com o usuário antes de
   assumir `http://localhost:8080/v1`.
 

@@ -100,7 +100,9 @@
         "nss",
         "libXtst",
         "libXScrnSaver",
-        "xdg-utils"
+        "xdg-utils",
+        "at-spi2-core",
+        "libuuid"
       ]
     },
     "win": {

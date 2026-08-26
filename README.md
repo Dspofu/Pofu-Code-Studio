@@ -112,6 +112,11 @@ npm start
 > `npm start` compila o TypeScript (via `prestart`) e abre o app. Ele usa `--no-sandbox --ozone-platform=x11` (Linux); em Windows/macOS, rode `npm run build` e depois `npx electron .`.
 >
 > **Instaladores prontos:** os releases do GitHub publicam `.deb` (Ubuntu/Debian), `.rpm` (Fedora) e `.exe` (Windows), gerados automaticamente a cada tag `vX.Y.Z`.
+>
+> ```bash
+> sudo apt install ./pofuserver-coder-studio_1.3.0_amd64.deb   # Ubuntu/Debian
+> sudo dnf install ./pofuserver-coder-studio-1.3.0.x86_64.rpm  # Fedora
+> ```
 
 ### Servidor de exemplo com llama.cpp
 
