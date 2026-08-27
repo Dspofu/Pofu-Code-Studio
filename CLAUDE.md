@@ -182,6 +182,29 @@ que a ausência dele.
   (`libatspi.so.0`, `libuuid.so.1`); sem eles o `dnf install` conclui e o app não abre num
   Fedora enxuto (Server, spin, toolbox) — no Workstation passa despercebido porque já vêm
   instalados. Compare com o default antes de mexer nessa lista.
+- **Ícone no Windows vem de dois lugares**: a JANELA lê o ícone embutido no `.exe` (o
+  `build/icon.ico`, gravado pelo electron-builder), mas a BARRA DE TAREFAS e as
+  NOTIFICAÇÕES resolvem pelo AUMID → atalho do Menu Iniciar. Por isso um ícone pode estar
+  certo na janela e errado nos outros dois ao mesmo tempo — não é defeito do `.ico`. O
+  `setAppUserModelId` usa um AUMID **diferente em dev**: o toast do Windows exige um
+  atalho carregando o AUMID e, quando não existe, o Electron cria um apontando para o
+  `electron.exe` do `node_modules`. Com o AUMID de produção, esse atalho de dev disputa a
+  resolução com o do instalador e VENCE (é mais antigo), e aí o app instalado exibe o
+  ícone do Electron. Se acontecer de novo: apague o `.lnk` órfão em
+  `%APPDATA%\Microsoft\Windows\Start Menu\Programs\` e confira com `Get-StartApps`.
+- **Fila de mensagens** (`filaMensagens`/`drenaFila`): mensagem escrita durante a geração
+  NÃO entra no histórico na hora — cairia no meio de um par `tool_call`/`tool` e o servidor
+  recusaria o payload inteiro pelo `tool_call` órfão. Ela espera a virada de turno, no topo
+  do `while` do `agentTurns`, único ponto em que toda chamada já tem a sua resposta. Entrega
+  de mensagem zera `iterations`: a trava existe contra o agente em looping, não contra a
+  conversa. Não converta isso em envio imediato.
+- **Tela parada durante o tool call**: os argumentos da ferramenta não passam por
+  `onContent`, então sem o `onToolCall` a UI fica congelada do fim do texto até o resultado
+  — num `write_file` grande, dezenas de segundos que parecem travamento. O
+  `criaCardFerramentaViva` desenha o progresso a partir do JSON **ainda incompleto**
+  (`criaLeitorStringJson`, que guarda escape partido entre deltas). O trabalho roda uma vez
+  por quadro e só sobre o pedaço novo, pelo mesmo motivo de custo O(n²) do
+  `criaEscritorStream` — não passe a varrer o acumulado inteiro a cada delta.
 - **Servidor local**: a porta e o modelo do llama.cpp variam — confirme com o usuário antes de
   assumir `http://localhost:8080/v1`.
 

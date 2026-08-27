@@ -61,6 +61,16 @@ O histórico é compactado automaticamente quando se aproxima do limite do model
 ### Processos sem travar o chat
 Servidores e watchers são detectados (por padrão de log ou ociosidade) e vão para segundo plano com PID. Tarefas demoradas são aguardadas com `wait_for_process`, numa chamada só.
 
+### Falar com o agente no meio da resposta
+O campo de texto continua **liberado enquanto o agente trabalha**. O que você escrever entra numa fila, aparece como chip acima do compositor e é entregue ao modelo na **próxima virada de turno** — logo depois da ferramenta em execução terminar, sem abortar nada. Dá para corrigir o rumo (*"na verdade usa outra pasta"*) sem esperar o fim nem perder o que já foi feito.
+
+Com o campo vazio o botão volta a ser **parar**; com algo escrito ele manda para a fila. Um chip pode ser retirado da fila enquanto não foi entregue, e uma mensagem nova reinicia a trava de iterações — o limite existe para barrar o agente em looping sozinho, não a conversa que você está conduzindo.
+
+### Progresso enquanto o arquivo é escrito
+Escrever um arquivo grande é a parte mais demorada de um turno, e é justamente quando **nada** chegava à tela: o texto da resposta já tinha acabado, o resultado da ferramenta ainda não existia. Dezenas de segundos parados, indistinguíveis de um travamento.
+
+Agora o card da ferramenta aparece assim que o modelo começa a ditar a chamada e mostra o andamento — arquivo de destino, linhas e bytes já recebidos, e as últimas linhas do que está sendo escrito. O título da janela acompanha (*"escrever arquivo: src/x.ts"*), e o mesmo card vira o card definitivo quando a chamada termina.
+
 ### Erros que dizem o que fazer
 Falha de conexão, chave inválida, modelo inexistente e erro do servidor viram mensagens com causa e passos — não uma exceção crua. Só falha transitória é repetida.
 
@@ -141,9 +151,10 @@ O **nível de raciocínio** não fica aqui: ele mora no rodapé do compositor, a
 
 1. Crie um chat e **escolha a pasta segura** (ícone de pasta no cabeçalho — o menu também lista as pastas recentes)
 2. Peça o que precisa — ex.: *"crie uma API Express com testes e valide os endpoints"*
-3. Acompanhe os cards de ferramenta, os diffs e os prints em tempo real
-4. Use **Auto/Manual** para decidir se comandos pedem confirmação, e **Raciocínio** para regular quanto o modelo pensa antes de agir
-5. `@` menciona um arquivo; o clipe (ou arrastar) anexa arquivos
+3. Acompanhe os cards de ferramenta, os diffs e os prints em tempo real — inclusive o progresso de um arquivo sendo escrito
+4. Precisou corrigir o rumo? Escreva sem parar a geração: a mensagem entra na fila e é lida na próxima etapa
+5. Use **Auto/Manual** para decidir se comandos pedem confirmação, e **Raciocínio** para regular quanto o modelo pensa antes de agir
+6. `@` menciona um arquivo; o clipe (ou arrastar) anexa arquivos
 
 ---
 

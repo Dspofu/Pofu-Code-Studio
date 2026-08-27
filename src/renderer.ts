@@ -35,6 +35,62 @@ let isRunning = false;
 let stopRequested = false;   // usuário pediu para parar a geração
 let abortController = null;   // aborta o fetch em streaming em andamento
 
+// Mensagens escritas ENQUANTO o agente responde. Não podem entrar no histórico na hora:
+// cairiam no meio de um par tool_call/tool e o servidor recusa o payload inteiro por causa
+// do tool_call órfão. Ficam aqui até a próxima virada de turno do loop (drenaFila), único
+// ponto em que toda chamada de ferramenta já tem a sua resposta e cabe um 'user' novo.
+let filaMensagens: { content: string, attachments?: any[] }[] = [];
+
+function enfileiraMensagem(content, attachments) {
+  filaMensagens.push({ content, attachments });
+  renderFila();
+  updateInputState();
+}
+
+// Renderiza os chips do que está esperando a vez, logo acima do campo de texto.
+function renderFila() {
+  const caixa = el('fila-msgs');
+  if (!caixa) return;
+  caixa.innerHTML = '';
+  caixa.style.display = filaMensagens.length ? 'flex' : 'none';
+  filaMensagens.forEach((m, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'fila-chip';
+    const icone = document.createElement('span');
+    icone.className = 'fila-icone';
+    icone.innerText = '⏳';
+    const texto = document.createElement('span');
+    texto.className = 'fila-texto';
+    const resumo = m.content || (m.attachments && m.attachments.length ? '📎 ' + m.attachments[0].name : '(vazio)');
+    texto.innerText = resumo;
+    texto.title = resumo;
+    const rm = document.createElement('button');
+    rm.className = 'attach-remove';
+    rm.innerText = '×';
+    rm.title = 'Tirar da fila';
+    rm.addEventListener('click', () => { filaMensagens.splice(i, 1); renderFila(); updateInputState(); });
+    chip.append(icone, texto, rm);
+    caixa.appendChild(chip);
+  });
+}
+
+// Passa a fila para o histórico do chat. Só é chamada na virada de turno; devolve quantas
+// mensagens entraram para quem precisa reagir (reiniciar a trava de iterações, persistir).
+function drenaFila(chat) {
+  if (!filaMensagens.length || !chat) return 0;
+  const lote = filaMensagens;
+  filaMensagens = [];
+  renderFila();
+  for (const m of lote) {
+    const msg: ChatMessage = { role: 'user', content: m.content };
+    if (m.attachments && m.attachments.length) msg.attachments = m.attachments;
+    chat.messages.push(msg);
+    renderUserMessage(m.content, m.attachments, chat.messages.length - 1);
+  }
+  forceScrollBottom();
+  return lote.length;
+}
+
 function stopAgent() {
   stopRequested = true;
   if (pendingConfirm) resolveConfirm('reject'); // fecha o modal de confirmação, se aberto
@@ -508,6 +564,8 @@ function renameActiveChat() {
 function switchChat(id) {
   if (!state.chats[id]) return;
   state.activeChatId = id;
+  filaMensagens = [];        // a fila é da conversa que estava aberta, não vai junto
+  renderFila();
   arquivosLidos = new Set(); // o que foi lido vale por conversa
   ultimaPoda = 0;
   avisouPoda = false;
@@ -574,31 +632,49 @@ function renderActiveChat() {
 const SEND_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
 const STOP_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 
+// Qual desenho o botão está exibindo agora. updateInputState roda a cada tecla digitada
+// (o botão alterna entre parar e enfileirar conforme o campo tem texto) e reescrever o
+// innerHTML a cada letra descartaria e recriaria o SVG à toa.
+let botaoAtual = '';
+
 function updateInputState() {
   const hasPath = !!(activeChat() && activeChat().path);
   const input = el('user-input');
   const btn = el('btn-send');
   const attach = el('btn-attach');
-  input.disabled = !hasPath || isRunning;
-  if (attach) attach.disabled = !hasPath || isRunning;
+  const hint = q<HTMLElement>('.composer-footer .composer-hint');
+  // O campo continua LIBERADO durante a geração: é o que permite escrever no meio da
+  // resposta. O que muda é o destino do texto — vai para a fila, não para uma requisição
+  // nova (ver enfileiraMensagem/drenaFila).
+  input.disabled = !hasPath;
+  if (attach) attach.disabled = !hasPath;
   document.body.classList.toggle('agent-running', isRunning);
 
-  // Enquanto roda, o botão de enviar vira botão de PARAR (sempre clicável)
-  if (isRunning) {
-    btn.disabled = false;
-    btn.classList.add('is-stop');
-    btn.title = 'Parar geração';
-    btn.innerHTML = STOP_SVG;
-  } else {
-    btn.disabled = !hasPath;
-    btn.classList.remove('is-stop');
-    btn.title = 'Enviar mensagem';
-    btn.innerHTML = SEND_SVG;
+  const temTexto = !!(input.value.trim() || pendingAttachments.length);
+  // Rodando e sem nada escrito, o botão é PARAR; com texto no campo ele volta a enviar
+  // (para a fila), senão não haveria como despachar a mensagem sem antes abortar a run.
+  const modo = (isRunning && !temTexto) ? 'parar' : (isRunning ? 'fila' : 'enviar');
+  if (modo !== botaoAtual) {
+    botaoAtual = modo;
+    btn.classList.toggle('is-stop', modo === 'parar');
+    btn.innerHTML = modo === 'parar' ? STOP_SVG : SEND_SVG;
   }
+  btn.disabled = !hasPath && modo !== 'parar';
+  btn.title = modo === 'parar' ? 'Parar geração'
+    : modo === 'fila' ? 'Enviar para a fila — o agente lê na próxima etapa'
+    : 'Enviar mensagem';
 
-  input.placeholder = hasPath
-    ? 'Peça algo, anexe arquivos (📎 ou arraste) ou peça para rodar um comando…'
-    : 'Selecione uma pasta de trabalho para este chat (ícone acima) →';
+  input.placeholder = !hasPath
+    ? 'Selecione uma pasta de trabalho para este chat (ícone acima) →'
+    : isRunning
+      ? 'Escreva agora — entra na fila e o agente lê ao terminar a etapa atual…'
+      : 'Peça algo, anexe arquivos (📎 ou arraste) ou peça para rodar um comando…';
+
+  if (hint) {
+    hint.innerText = isRunning
+      ? 'Enter põe na fila · o agente lê na próxima etapa · botão vazio para a geração'
+      : 'Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar';
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -995,31 +1071,232 @@ function summarizeToolResult(name, resultStr) {
   }
 }
 
-// Cria o card da chamada (cabeçalho + argumento). Retorna o elemento para preencher o resultado depois.
-function appendToolCall(name, args) {
+// Cria o card da chamada (cabeçalho + argumento). Retorna o elemento para preencher o
+// resultado depois. `cardVivo` é o card que já estava na tela mostrando o progresso do
+// stream (ver criaCardFerramentaViva): reaproveitá-lo evita o card piscar — sumir e
+// reaparecer no mesmo lugar — no instante em que os argumentos terminam de chegar.
+function appendToolCall(name, args, cardVivo: HTMLElement = null) {
   const meta = TOOL_META[name] || { icon: '🔧', label: name };
   const chatBox = el('chat-box');
+  const card = cardVivo || document.createElement('div');
+  card.className = 'tool-card'; // tira o 'viva': os argumentos pararam de chegar
+
+  let head = q<HTMLElement>('.tool-head', card);
+  if (!head) {
+    head = document.createElement('div');
+    head.className = 'tool-head';
+    head.innerHTML = `<span class="tool-icon"></span><span class="tool-title"></span>`;
+    card.appendChild(head);
+  }
+  q('.tool-icon', head).innerText = meta.icon;
+  q('.tool-title', head).innerText = meta.label;
+
+  // Progresso e prévia serviam enquanto o conteúdo chegava picado; agora vale o argumento
+  // final, que o summarizeToolCall formata direito.
+  const prog = q<HTMLElement>('.tool-progresso', card);
+  if (prog) prog.remove();
+  const previa = q<HTMLElement>('.tool-previa', card);
+  if (previa) previa.remove();
+
+  const argText = summarizeToolCall(name, args);
+  let arg = q<HTMLElement>('.tool-arg', card);
+  if (argText) {
+    if (!arg) {
+      arg = document.createElement('pre');
+      arg.className = 'tool-arg';
+      card.appendChild(arg);
+    }
+    arg.innerText = argText;
+  } else if (arg) {
+    arg.remove();
+  }
+
+  if (!cardVivo) chatBox.appendChild(card);
+  scrollChat();
+  return card;
+}
+
+// --------------------------------------------------------------------------
+//  Progresso da chamada de ferramenta enquanto ela ainda está chegando
+// --------------------------------------------------------------------------
+// Campo que carrega o grosso da chamada — é o que demora a chegar e o único que rende
+// progresso útil (linhas escritas). Nas outras ferramentas os argumentos são curtos.
+const CAMPO_LONGO = {
+  write_file: 'content',
+  edit_file: 'new_text',
+  execute_command: 'command'
+};
+// Primeiro campo curto que identifica o ALVO da chamada, para o cabeçalho do progresso.
+const CAMPOS_ALVO = ['filename', 'dirname', 'url', 'query', 'command', 'pid'];
+
+const ESCAPES_JSON = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' };
+
+// Lê, aos pedaços, uma string JSON que ainda está chegando — JSON.parse não serve aqui,
+// o objeto está incompleto por definição. `resto` guarda o que ficou pela metade (uma
+// barra invertida solta, um \u sem os quatro dígitos) para juntar ao pedaço seguinte:
+// sem isso, um \n partido entre dois deltas viraria um "n" literal na prévia.
+function criaLeitorStringJson() {
+  let resto = '';
+  let terminou = false;
+  return {
+    get terminou() { return terminou; },
+    consome(pedaco) {
+      if (terminou) return '';
+      const s = resto + pedaco;
+      resto = '';
+      let out = '';
+      let i = 0;
+      while (i < s.length) {
+        const c = s[i];
+        if (c === '"') { terminou = true; break; } // aspas não escapada: fim do valor
+        if (c !== '\\') { out += c; i++; continue; }
+        if (i + 1 >= s.length) { resto = s.slice(i); break; }
+        const e = s[i + 1];
+        if (e === 'u') {
+          if (i + 5 >= s.length) { resto = s.slice(i); break; }
+          out += String.fromCharCode(parseInt(s.substr(i + 2, 4), 16) || 0);
+          i += 6;
+          continue;
+        }
+        out += ESCAPES_JSON[e] || e;
+        i += 2;
+      }
+      return out;
+    }
+  };
+}
+
+// Posição logo depois das aspas que abrem o valor de `campo`, ou -1 se ainda não chegou.
+function inicioDoCampo(raw, campo) {
+  const m = new RegExp('"' + campo + '"\\s*:\\s*"').exec(raw);
+  return m ? m.index + m[0].length : -1;
+}
+
+// Valor de um campo curto, só depois que ele fechou — antes disso devolveria meio caminho.
+function campoCompleto(raw, campo) {
+  const ini = inicioDoCampo(raw, campo);
+  if (ini < 0) return null;
+  const leitor = criaLeitorStringJson();
+  const v = leitor.consome(raw.slice(ini));
+  return leitor.terminou ? v : null;
+}
+
+// Card da chamada SENDO ditada pelo modelo. Sem ele, um write_file de arquivo grande
+// deixa a tela congelada por dezenas de segundos: o texto da resposta já acabou, o
+// resultado da ferramenta ainda não existe e nada se mexe — indistinguível de travamento.
+// O trabalho pesado (varrer o conteúdo) roda uma vez por quadro e só sobre o pedaço que
+// chegou desde o último, pelo mesmo motivo de custo documentado em criaEscritorStream.
+function criaCardFerramentaViva() {
+  const chatBox = el('chat-box');
   const card = document.createElement('div');
-  card.className = 'tool-card';
+  card.className = 'tool-card viva';
 
   const head = document.createElement('div');
   head.className = 'tool-head';
   head.innerHTML = `<span class="tool-icon"></span><span class="tool-title"></span>`;
-  q('.tool-icon', head).innerText = meta.icon;
-  q('.tool-title', head).innerText = meta.label;
+  q('.tool-icon', head).innerText = '🔧';
+  q('.tool-title', head).innerText = 'Preparando chamada…';
   card.appendChild(head);
 
-  const argText = summarizeToolCall(name, args);
-  if (argText) {
-    const arg = document.createElement('pre');
-    arg.className = 'tool-arg';
-    arg.innerText = argText;
-    card.appendChild(arg);
-  }
+  const prog = document.createElement('div');
+  prog.className = 'tool-progresso';
+  prog.innerHTML = `<span class="pulso"></span><span class="prog-txt"></span>`;
+  card.appendChild(prog);
+  const progTxt = q<HTMLElement>('.prog-txt', prog);
 
   chatBox.appendChild(card);
   scrollChat();
-  return card;
+
+  let previaEl = null;
+  let nome = '';
+  let raw = '';
+  let lidoAte = -1;      // -1 enquanto o campo longo não começou
+  let leitor = null;
+  let alvo = '';
+  let linhas = 1, chars = 0;
+  let previa = '';
+  let quadro = 0;
+
+  const aplicar = () => {
+    quadro = 0;
+    const meta = TOOL_META[nome];
+    if (meta) {
+      q('.tool-icon', head).innerText = meta.icon;
+      q('.tool-title', head).innerText = meta.label;
+    }
+
+    // O alvo (arquivo/URL) costuma vir antes do campo longo; procurá-lo a cada quadro
+    // depois que o conteúdo começou a fluir varreria o raw inteiro toda vez — O(n²).
+    if (!alvo && (lidoAte < 0 || (leitor && leitor.terminou))) {
+      for (const campo of CAMPOS_ALVO) {
+        const v = campoCompleto(raw, campo);
+        if (v) { alvo = v; break; }
+      }
+    }
+
+    const campoLongo = CAMPO_LONGO[nome];
+    if (campoLongo && lidoAte < 0) {
+      const ini = inicioDoCampo(raw, campoLongo);
+      if (ini >= 0) { lidoAte = ini; leitor = criaLeitorStringJson(); }
+    }
+
+    if (lidoAte >= 0 && leitor && !leitor.terminou && raw.length > lidoAte) {
+      const novo = leitor.consome(raw.slice(lidoAte));
+      lidoAte = raw.length;
+      if (novo) {
+        chars += novo.length;
+        for (let i = 0; i < novo.length; i++) if (novo.charCodeAt(i) === 10) linhas++;
+        // A prévia guarda só a cauda: é onde o modelo está agora, e o custo de layout
+        // para de crescer com o tamanho do arquivo.
+        previa = (previa + novo).slice(-1200);
+      }
+    }
+
+    const cabeca = alvo ? clipMiddle(alvo, 60) : '';
+    if (lidoAte >= 0) {
+      progTxt.innerText = `${cabeca ? cabeca + '  ·  ' : ''}${linhas} linha(s) · ${fmtSize(chars)} recebidos…`;
+      if (!previaEl && previa) {
+        previaEl = document.createElement('pre');
+        previaEl.className = 'tool-previa';
+        card.appendChild(previaEl);
+      }
+      if (previaEl) {
+        // Só as últimas linhas: o bloco tem altura fixa e o começo do arquivo não diria
+        // nada sobre o andamento.
+        previaEl.innerText = previa.split('\n').slice(-6).join('\n');
+        previaEl.scrollLeft = previaEl.scrollWidth;
+      }
+    } else {
+      progTxt.innerText = `${cabeca ? cabeca + '  ·  ' : ''}recebendo argumentos… ${fmtSize(raw.length)}`;
+    }
+    scrollChat();
+  };
+
+  return {
+    el: card,
+    atualiza(nomeNovo, rawNovo) {
+      if (nomeNovo) nome = nomeNovo;
+      raw = rawNovo || '';
+      if (!quadro) quadro = requestAnimationFrame(aplicar);
+    },
+    // Título da janela durante a ditada. Sem isso o app anuncia "gerando resposta" pelo
+    // write_file inteiro, quando o que está acontecendo é a escrita de um arquivo.
+    tituloApp() {
+      const meta = TOOL_META[nome];
+      if (!meta) return '';
+      return alvo ? `${meta.label.toLowerCase()}: ${alvo}` : meta.label.toLowerCase();
+    },
+    // Descarrega o último quadro e devolve o elemento, para o appendToolCall reaproveitar.
+    encerra() {
+      if (quadro) { cancelAnimationFrame(quadro); quadro = 0; }
+      aplicar();
+      return card;
+    },
+    remove() {
+      if (quadro) { cancelAnimationFrame(quadro); quadro = 0; }
+      card.remove();
+    }
+  };
 }
 
 // Preenche (ou atualiza) o resultado dentro do card da chamada
@@ -1856,6 +2133,10 @@ async function submitUserMessage(userPrompt, attachments) {
     return;
   }
 
+  // O que sobrou na fila (a run anterior foi interrompida antes da virada de turno)
+  // entra antes da mensagem nova, para a ordem na tela bater com a do histórico.
+  drenaFila(chat);
+
   // Adiciona a mensagem do usuário (com anexos) ao histórico persistente do chat
   const userMsg: ChatMessage = { role: 'user', content: userPrompt };
   if (attachments && attachments.length) userMsg.attachments = attachments;
@@ -2049,7 +2330,7 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
 
 // Chamada em STREAMING (SSE): dispara os callbacks conforme o texto chega e
 // retorna a mensagem final montada (content, reasoning_content, tool_calls) + usage.
-async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent, onReasoning }) {
+async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent, onReasoning, onToolCall = null }) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
@@ -2102,6 +2383,9 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
             if (tc.id) toolAcc[i].id = tc.id;
             if (tc.function && tc.function.name) toolAcc[i].function.name = tc.function.name;
             if (tc.function && tc.function.arguments) toolAcc[i].function.arguments += tc.function.arguments;
+            // O acumulado (e não o delta) porque quem desenha o progresso precisa saber
+            // ONDE cada campo do JSON começou — e isso só se enxerga na string inteira.
+            if (onToolCall) onToolCall(i, toolAcc[i].function.name, toolAcc[i].function.arguments);
           }
         }
         if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -2256,6 +2540,11 @@ async function agentTurns(chat) {
 
   while (iterations < MAX_LOOP_ITERATIONS || !state.settings.safetyInteractions) {
     if (stopRequested) break;
+    // Virada de turno: aqui toda chamada de ferramenta do turno anterior já tem a sua
+    // resposta, então o histórico aguenta receber as mensagens que o usuário escreveu
+    // durante a geração. Instrução nova zera a trava de iterações — o limite existe para
+    // barrar o agente em looping sozinho, não a conversa que o usuário está conduzindo.
+    if (drenaFila(chat)) { iterations = 0; await persist(); }
     iterations++;
     showTyping();
     setAppTitle('pensando…');
@@ -2263,6 +2552,11 @@ async function agentTurns(chat) {
     // Elementos de streaming (criados sob demanda quando o primeiro token chega)
     let liveBody = null, liveReason = null;
     let escritorBody = null, escritorReason = null;
+    let cardsVivos = [];  // índice do tool_call -> card mostrando os argumentos chegarem
+    const limpaCardsVivos = () => {
+      for (const c of cardsVivos) if (c) c.remove();
+      cardsVivos = [];
+    };
     const onReasoning = (delta) => {
       hideTyping();
       setAppTitle('pensando…');
@@ -2280,6 +2574,16 @@ async function agentTurns(chat) {
         escritorBody = criaEscritorStream(liveBody); // texto puro enquanto digita; markdown ao finalizar
       }
       escritorBody.escreve(delta);
+    };
+    // Argumentos de ferramenta não passam por onContent: sem este callback, a tela fica
+    // completamente parada do fim do texto até o resultado da ferramenta — o que num
+    // write_file grande são dezenas de segundos que parecem travamento.
+    const onToolCall = (i, nome, argsBrutos) => {
+      hideTyping();
+      if (!cardsVivos[i]) cardsVivos[i] = criaCardFerramentaViva();
+      cardsVivos[i].atualiza(nome, argsBrutos);
+      const titulo = cardsVivos[i].tituloApp();
+      if (titulo) setAppTitle(titulo);
     };
 
     await hydrateShots(chat.messages); // recarrega do disco os prints que voltam ao modelo
@@ -2301,7 +2605,7 @@ async function agentTurns(chat) {
             ...(nivelThink.payload || {})
           },
           signal: abortController.signal,
-          onContent, onReasoning
+          onContent, onReasoning, onToolCall
         });
         lastErr = null;
         break;
@@ -2320,6 +2624,7 @@ async function agentTurns(chat) {
         // descarta o parcial da tentativa perdida (e o quadro pendente do escritor)
         if (liveReason) { escritorReason.descarta(); liveReason.details.remove(); liveReason = null; escritorReason = null; }
         if (liveBody) { escritorBody.descarta(); liveBody.parentElement.remove(); liveBody = null; escritorBody = null; }
+        limpaCardsVivos();
         await new Promise(r => setTimeout(r, REQUEST_RETRY_DELAY_MS * attempt));
         showTyping();
       }
@@ -2332,6 +2637,7 @@ async function agentTurns(chat) {
 
     if (!result) {
       hideTyping();
+      limpaCardsVivos();
       if (lastErr) appendErrorCard(classificaErroDeRequisicao(lastErr, apiUrl, model));
       else appendError('Requisição interrompida.');
       break;
@@ -2340,6 +2646,7 @@ async function agentTurns(chat) {
     hideTyping();
 
     if (result.apiError) {
+      limpaCardsVivos();
       appendError(`Erro da API: ${result.apiError}`);
       break;
     }
@@ -2347,6 +2654,9 @@ async function agentTurns(chat) {
     trackUsage(result.usage);
     const message = result.message;
     const aborted = result.aborted || stopRequested;
+    // Interrompido: os tool_calls não são guardados (ficariam órfãos), então os cards da
+    // ditada também não têm mais o que virar.
+    if (aborted) limpaCardsVivos();
 
     // A API responde 200 mesmo quando corta no limite de tokens; sem este aviso o corte
     // passa silencioso (e um tool_call cortado chega como JSON inválido logo abaixo).
@@ -2396,11 +2706,23 @@ async function agentTurns(chat) {
 
     // Sem chamadas de ferramenta → o agente terminou
     if (!message.tool_calls || message.tool_calls.length === 0) {
+      limpaCardsVivos();
+      // ...a não ser que o usuário tenha escrito algo enquanto ele respondia: a fila é
+      // entregue no topo do while e a conversa continua, em vez de encerrar a run e
+      // obrigar o usuário a mandar de novo.
+      if (filaMensagens.length && !stopRequested) { await persist(); continue; }
       break;
     }
 
+    // Os cards que já apareceram durante o stream viram os definitivos, na mesma ordem
+    // dos tool_calls: reaproveitá-los evita a chamada sumir e reaparecer na tela.
+    const cardsDoStream = cardsVivos.filter(Boolean);
+    cardsVivos = [];
+
     // Executa cada ferramenta solicitada
-    for (const toolCall of message.tool_calls) {
+    for (const [idx, toolCall] of message.tool_calls.entries()) {
+      const cardStream = cardsDoStream[idx] || null;
+      cardsDoStream[idx] = null;
       const fn = toolCall && toolCall.function;
       const name = (fn && fn.name) || '';
       let result;
@@ -2410,6 +2732,7 @@ async function agentTurns(chat) {
 
       if (!name) {
         // Modelos quantizados às vezes emitem tool_calls malformados
+        if (cardStream) cardStream.remove();
         result = JSON.stringify({ error: 'tool_call malformado (sem nome de função)' });
         appendToolLog(`⚠ tool_call ignorado (malformado)`);
       } else {
@@ -2424,10 +2747,11 @@ async function agentTurns(chat) {
           // Argumentos cortados ou corrompidos. Executar assim mesmo chamaria a ferramenta
           // com os campos undefined (write_file criaria um arquivo chamado "undefined"),
           // então devolve o erro ao modelo para ele refazer a chamada.
+          if (cardStream) cardStream.remove();
           result = JSON.stringify({ error: `Os argumentos de ${name} não são JSON válido — a chamada provavelmente foi cortada. Refaça a chamada com JSON completo; se o conteúdo for muito grande, divida em partes menores.` });
           appendToolLog(`⚠ ${name}: argumentos inválidos, chamada não executada`);
         } else {
-          const card = appendToolCall(name, args);
+          const card = appendToolCall(name, args, cardStream ? cardStream.encerra() : null);
           // Modo manual: pede confirmação para ações que executam/apagam
           const decision = await maybeConfirmTool(name, args);
           if (decision === 'reject') {
@@ -2472,6 +2796,8 @@ async function agentTurns(chat) {
       if (alteracao) toolMsg.alteracao = alteracao;
       chat.messages.push(toolMsg);
     }
+    // Sobra quando o modelo anuncia mais chamadas do que entrega de fato.
+    for (const c of cardsDoStream) if (c) c.remove();
 
     await persist();
   }
@@ -2847,6 +3173,7 @@ function renderAttachments() {
     chip.append(icon, name, size, rm);
     caixa.appendChild(chip);
   });
+  updateInputState(); // anexo sem texto também conta como "há algo para enviar"
 }
 
 function maybeRenameChat(chat) {
@@ -3173,22 +3500,32 @@ function wireEvents() {
     inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
   };
   const sendMessage = () => {
-    if (isRunning) return;
     const prompt = inputEl.value.trim();
-    if (!prompt && pendingAttachments.length === 0) return;
+    if (!prompt && pendingAttachments.length === 0) {
+      // Campo vazio mas com fila pendurada: sobrou de uma geração interrompida antes da
+      // virada de turno. Sem isto os chips ficariam encalhados, esperando o usuário
+      // adivinhar que precisa digitar QUALQUER coisa para despachá-los.
+      if (!isRunning && filaMensagens.length) runAgent();
+      return;
+    }
     const attachments = pendingAttachments.slice();
     inputEl.value = '';
     autoGrow();
     pendingAttachments = [];
     renderAttachments();
-    submitUserMessage(prompt, attachments);
+    // Com o agente rodando a mensagem NÃO vira requisição na hora: espera a virada de
+    // turno (drenaFila). Mandar agora quebraria o par tool_call/tool em aberto.
+    if (isRunning) enfileiraMensagem(prompt, attachments);
+    else submitUserMessage(prompt, attachments);
   };
-  // Botão único: envia quando ocioso, para a geração quando o agente está rodando
+  // Botão único: envia quando ocioso; rodando, para a geração se o campo está vazio e
+  // manda para a fila se há algo escrito — senão não haveria como despachar a mensagem
+  // sem antes abortar a resposta.
   el('btn-send').addEventListener('click', () => {
-    if (isRunning) stopAgent();
+    if (isRunning && !inputEl.value.trim() && pendingAttachments.length === 0) stopAgent();
     else sendMessage();
   });
-  inputEl.addEventListener('input', autoGrow);
+  inputEl.addEventListener('input', () => { autoGrow(); updateInputState(); });
   inputEl.addEventListener('keydown', (e) => {
     if (handleMentionKeydown(e)) return; // o menu de menção captura setas/Enter/Tab/Esc
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }

@@ -27,13 +27,23 @@ let mainWindow;
 // Precisa ser idêntico ao "build.appId" do package.json: o instalador NSIS grava esse
 // mesmo AUMID no atalho, e o Windows só associa a janela ao atalho (ícone correto na
 // barra de tarefas + fixar) quando os dois valores batem.
-app.setAppUserModelId("com.dspofu.pofusercoderstudio")
+// Em DESENVOLVIMENTO o AUMID é outro de propósito: o toast do Windows exige um atalho no
+// Menu Iniciar carregando o AUMID, e quando não existe nenhum o Electron cria um apontando
+// para o electron.exe do node_modules. Com o AUMID de produção, esse atalho de dev passa a
+// disputar a resolução com o do instalador — e vence, porque é mais antigo. Aí a barra de
+// tarefas e as notificações (que resolvem o ícone via AUMID -> atalho) exibem o ícone do
+// Electron, enquanto a janela continua certa (essa lê o ícone embutido no .exe, sem AUMID).
+app.setAppUserModelId(app.isPackaged ? "com.dspofu.pofusercoderstudio" : "com.dspofu.pofusercoderstudio.dev")
+
+// __dirname é out/ (ver tsconfig.json) e o assets/ fica na RAIZ do app — sem o "..", o
+// caminho não existe e o Electron ignora a opção `icon` em silêncio.
+const iconePath = join(__dirname, '..', 'assets', 'icon.png');
 
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 600,
-    icon: join(__dirname, 'assets', 'icon.png'), // usado no Linux/Windows em desenvolvimento (empacotado usa o ícone do build)
+    icon: iconePath, // Linux/Windows: no empacotado reforça o ícone do build na barra de tarefas
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -95,7 +105,8 @@ app.whenReady().then(() => {
   try {
     new Notification({
       title: packageJson.productName,
-      body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)]
+      body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)],
+      icon: iconePath // sem isso o toast usa só o ícone do atalho do AUMID, que já falhou uma vez
     }).show();
   } catch (e) { /* sem daemon de notificação (alguns Linux) — não bloqueia a abertura */ }
 
