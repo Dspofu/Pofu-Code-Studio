@@ -39,11 +39,18 @@ app.setAppUserModelId(app.isPackaged ? "com.dspofu.pofusercoderstudio" : "com.ds
 // caminho não existe e o Electron ignora a opção `icon` em silêncio.
 const iconePath = join(__dirname, '..', 'assets', 'icon.png');
 
+// No Windows EMPACOTADO quem manda é o ícone embutido no .exe: o build/icon.ico traz
+// 16/24/32/48 desenhados na mão, enquanto esta opção faria o Electron reduzir um PNG de
+// 1254px para 16px no título da janela — mais borrado do que o que já vinha. Em dev não
+// há .exe próprio (o processo é o electron.exe) e no Linux não existe recurso embutido,
+// então nesses dois casos a opção continua sendo a única fonte do ícone.
+const iconeDaJanela = (isWindows && app.isPackaged) ? undefined : iconePath;
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 600,
-    icon: iconePath, // Linux/Windows: no empacotado reforça o ícone do build na barra de tarefas
+    icon: iconeDaJanela,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -105,8 +112,10 @@ app.whenReady().then(() => {
   try {
     new Notification({
       title: packageJson.productName,
-      body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)],
-      icon: iconePath // sem isso o toast usa só o ícone do atalho do AUMID, que já falhou uma vez
+      body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)]
+      // Sem `icon` de propósito: no Windows ele vira uma imagem GRANDE dentro do toast
+      // (appLogoOverride), e o que se quer ali é só o ícone pequeno do app — que o
+      // Windows já pega sozinho pelo atalho do AUMID.
     }).show();
   } catch (e) { /* sem daemon de notificação (alguns Linux) — não bloqueia a abertura */ }
 
