@@ -147,8 +147,8 @@ npm start
 > **Instaladores prontos:** os releases do GitHub publicam `.deb` (Ubuntu/Debian), `.rpm` (Fedora) e `.exe` (Windows), gerados automaticamente a cada tag `vX.Y.Z`.
 >
 > ```bash
-> sudo apt install ./pofu-code-studio_1.3.0_amd64.deb   # Ubuntu/Debian
-> sudo dnf install ./pofu-code-studio-1.3.0.x86_64.rpm  # Fedora
+> sudo apt install ./pofu-code-studio_1.4.0_amd64.deb   # Ubuntu/Debian
+> sudo dnf install ./pofu-code-studio-1.4.0.x86_64.rpm  # Fedora
 > ```
 
 ### Servidor de exemplo com llama.cpp
