@@ -1,4 +1,4 @@
-# ORIENTACAO.md
+# AGENTS.md
 
 > Notas de trabalho do assistente de IA (eu) para este repositório.
 > **Convenções, armadilhas e o fluxo de ferramenta nova: veja [CLAUDE.md](CLAUDE.md)** — este arquivo
@@ -12,9 +12,11 @@
 ## 1. O que é o projeto em uma frase
 
 Desktop Electron que é um **agente de código**: fala com qualquer API REST compatível com
-OpenAI (llama.cpp, Ollama, vLLM) e dá ao modelo 16 ferramentas para mexer num workspace
+OpenAI (llama.cpp, Ollama, vLLM) e dá ao modelo 17 ferramentas para mexer num workspace
 ("pasta segura"), rodar comandos, chamar APIs, tirar print de páginas e buscar na web.
-Idioma de tudo: **pt-BR** (UI, comentários, commits, prompts).
+Idioma: **pt-BR para as pessoas** (UI, comentários, commits, docs), **inglês para o modelo**
+(system prompt, descrições das tools, `error`/`hint`/`note`) — o agente responde na língua de
+quem escreveu. Detalhes e o porquê: CLAUDE.md.
 
 ## 2. Mapa de arquivos
 
@@ -101,11 +103,12 @@ no `whenReady` (uma por abertura; `activate` só recria a janela no macOS).
 - Menções/anexos: `ensureMentionFiles` · `mentionScore` · `updateMentionMenu` · `renderMentionMenu` · `handleMentionKeydown` · `acceptMention` · `addMentionAttachment` · `readFileAsText` · `handleFiles` · `renderAttachments`
 - Uso/config/workspace: `maybeRenameChat` · `trackUsage` · `renderUsage` · `fetchModels` (popula dropdown **e** cards da aba Visão geral via `updateModelInfo`) · `refreshModelContext` · `applySettingsToForm` · `updateVisionStatus` · `readSettingsFromForm` · `encurtaCaminho` · `mostraCaminhoAtivo` · `registraPastaRecente` · `defineWorkspace` · `abreMenuPastas` (inclui lixeira dos recentes) · `wireEvents` · `loadAppInfo` (GitHub + versão + cards de produto) · `init`
 
-### Ferramentas do agente (16)
+### Ferramentas do agente (17)
 
 | Tool | IPC no main |
 |---|---|
 | list_files / read_file / write_file / edit_file / search_files / create_directory / delete_file | list-files / read-file / write-file / edit-file / search-files / create-directory / delete-file |
+| ask_user | **nenhum** — pergunta é UI pura (card com opções); o turno para até a resposta ou "Pular" |
 | execute_command / read_process_output / wait_for_process / list_processes / stop_process | execute-command / read-process-output / wait-for-process / list-processes / stop-process |
 | http_request / capture_page / web_search / fetch_url | http-request / capture-page / web-search / fetch-url |
 
@@ -122,13 +125,22 @@ resumos+`CONFIRM_TOOLS` se destrutiva). Detalhes em CLAUDE.md.
 - **Modal de config** (2 abas): `tab-geral` — cards do modelo ativo (`info-model-*`), uso
   (`usage-*`), **"Informação do produto"** (`#info-version` + `#info-product-name`);
   `tab-personalizacao` — `api-url`, `model-name`, `api-key`, sliders e toggles
-- **Modais**: processos, confirmação de ferramenta, viewer de imagem
+- **Modais**: processos, confirmação de ferramenta, **pergunta do agente** (`#question-modal`,
+  da `ask_user`), viewer de imagem
 - Libs: `vendor/*.min.js` via `<script>` global (declarados em `Window`, types.d.ts);
   módulos do app: `out/renderer.js` + `out/constants.js` no fim do body
 
 ## 7. Estado atual (2026-08)
 
-**Concluído nesta sessão** (validado com typecheck + build + teste funcional via harness
+**Concluído (não commitado ainda):**
+- ✅ Regra de idioma corrigida no ORIENTACAO/AGENTS.md: pt-BR para as pessoas, inglês para o
+  modelo, resposta na língua de quem escreveu (o `system_prompt` e o CLAUDE.md já estavam certos)
+- ✅ Renomeação `Pofuserver Coder Studio` → `Pofu Code Studio` (UI, docs, copyright, package.json,
+  URLs do repo `Dspofu/Pofu-Code-Studio`); typecheck passou; `git remote` e a pasta local ficaram
+  de propósito (o usuário renomeia a pasta depois)
+- ✅ `ORIENTACAO.md` virou `AGENTS.md` (convenção aberta de instruções para agentes de IA)
+
+**Concluído na sessão anterior** (validado com typecheck + build + teste funcional via harness
 headless com stub de electronAPI):
 - ✅ "Pingo" mostra a versão (`loadAppInfo` preenche `#info-version-dot` e `#info-version`)
 - ✅ Cards "Informação do produto" (ID duplicado corrigido: `#info-product-name`)
@@ -146,7 +158,8 @@ headless com stub de electronAPI):
 
 ## 8. Regras de ouro (resumo — o porquê está em CLAUDE.md)
 
-- pt-BR em tudo (UI, comentários, commits, prompts).
+- pt-BR para as pessoas (UI, comentários, commits, docs); inglês para o modelo (system prompt,
+  descrições das tools, `error`/`hint`/`note`); o agente responde na língua de quem escreveu (ver CLAUDE.md).
 - `edit_file` para alterar existente; `write_file` só para arquivo novo.
   **CUIDADO COM CRLF**: `index.html`, `src/renderer.ts`, `src/constants.ts` e `README.md`
   usam CRLF — `edit_file` multi-linha com `\n` não casa. Solução: script Node que

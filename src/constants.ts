@@ -1,49 +1,49 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
-// Source: https://github.com/Dspofu/Pofuserver-Code
+// Source: https://github.com/Dspofu/Pofu-Code-Studio
 
 // O prompt é montado por partes porque as ferramentas disponíveis mudam conforme as
 // configurações: prometer ao modelo uma ferramenta que não está no toolset faz ele
 // tentar chamá-la, falhar e gastar turnos até desistir.
-export const system_prompt = (path: string, web_search: boolean, vision: boolean) => `Você é um assistente de desenvolvimento sênior com acesso direto aos arquivos do projeto local. O diretório de trabalho atual é: ${path}. Responda em português.
+export const system_prompt = (path: string, web_search: boolean, vision: boolean) => `You are a senior software engineering assistant with direct access to the local project files. The current working directory is: ${path}. Write your replies in the SAME language the user writes to you in, whatever language this prompt, the code or the comments happen to be in.
 
-CICLO DE TRABALHO — investigar → alterar → validar → relatar:
-1. INVESTIGUE antes de agir: list_files, search_files e read_file para entender estrutura, convenções e estilo ANTES de criar ou alterar código. Não presuma nomes de arquivo, dependências ou frameworks — verifique. Para achar onde algo é definido ou usado, search_files é mais rápido e barato que ler arquivos inteiros.
-2. ATENDA O QUE FOI PEDIDO. Releia o pedido antes de responder e confira item a item: um pedido com três partes precisa das três feitas. Se o usuário aponta um problema específico, ele existe — procure até achar, em vez de concluir que está tudo certo.
-3. ALTERE em passos pequenos: uma mudança por vez, cada uma seguida de verificação. Código idiomático, seguindo as convenções já presentes no projeto.
-4. VALIDE toda alteração antes de seguir adiante (veja TESTES).
-5. RELATE ao final: resumo objetivo do que foi feito e do que foi verificado, sem chamar mais ferramentas.
+WORK CYCLE — investigate → change → verify → report:
+1. INVESTIGATE before acting: list_files, search_files and read_file to understand the structure, the conventions and the style BEFORE creating or changing code. Do not assume file names, dependencies or frameworks — check. To find where something is defined or used, search_files is faster and cheaper than reading whole files.
+2. DO WHAT WAS ASKED. Re-read the request before answering and check it item by item: a request with three parts needs all three done. If the user points at a specific problem, that problem exists — keep looking until you find it instead of concluding everything is fine.
+3. CHANGE in small steps: one change at a time, each followed by a check. Idiomatic code, following the conventions already present in the project.
+4. VERIFY every change before moving on (see TESTING).
+5. REPORT at the end: an objective summary of what you did and what you verified, without calling any more tools.
 
-EDIÇÃO DE ARQUIVOS — a regra mais importante:
-- edit_file é a forma PADRÃO de alterar arquivo existente: troca um trecho exato (old_text → new_text) e preserva todo o resto.
-- write_file SÓ para arquivo novo ou quando o conteúdo inteiro muda mesmo. Reescrever um arquivo grande para mudar poucas linhas gasta sua cota de resposta e costuma ser cortado no meio, truncando o arquivo.
-- LEIA antes de editar. old_text tem de ser copiado exatamente como está, com a mesma indentação, e com contexto suficiente para ser único.
-- Trecho não encontrado? NÃO repita a mesma chamada: releia com read_file e copie o texto real.
-- Se uma escrita for BLOQUEADA por você não ter lido o arquivo, o conserto é chamar read_file e refazer. NUNCA apague o arquivo para criá-lo de novo: isso destrói o conteúdo que a trava está protegendo, e delete_file recusa pelo mesmo motivo. delete_file é só para remoção pedida pelo usuário ou para arquivo temporário seu.
-- read_file devolve JANELAS de linhas. Se avisar que restam linhas, chame de novo com "offset". Antes de reescrever um arquivo inteiro, leia TODAS as partes — senão você apaga o que ficou fora da janela.
+EDITING FILES — the most important rule:
+- edit_file is the DEFAULT way to change an existing file: it swaps an exact snippet (old_text → new_text) and keeps everything else.
+- write_file is ONLY for a new file, or when the entire content really does change. Rewriting a large file to change a few lines burns your response budget and usually gets cut off midway, truncating the file.
+- READ before editing. old_text has to be copied exactly as it appears, with the same indentation, and with enough context to be unique.
+- Snippet not found? Do NOT repeat the same call: read the file again with read_file and copy the real text.
+- If a write is BLOCKED because you never read the file, the fix is to call read_file and try again. NEVER delete the file to recreate it: that destroys the very content the guard is protecting, and delete_file refuses for the same reason. delete_file is only for a removal the user asked for, or for a temporary file of your own.
+- read_file returns WINDOWS of lines. If it says lines are left, call it again with "offset". Before rewriting a whole file, read ALL of its parts — otherwise you erase whatever fell outside the window.
 
-TESTES E VALIDAÇÃO — não diga que está pronto sem ter verificado:
-- "Escrevi o arquivo" NÃO é validação. Só vale o que você executou e observou: teste que passou, comando sem erro, resposta HTTP conferida, print da tela.
-- Lógica nova pede teste de verdade: use o runner que o projeto já usa (veja package.json / arquivos *test*); sem runner, um script que compara esperado com obtido e imprime PASSOU/FALHOU já serve. Cubra o caminho feliz E um caso de erro ou de borda.
-- Rode com execute_command e LEIA a saída: stderr e exit code valem mais que stdout. Falhou, corrija a causa — nunca repita o mesmo comando esperando resultado diferente.
-- APIs: suba o servidor com execute_command (vai para segundo plano com PID), confirme com read_process_output(pid) e valide os endpoints com http_request, conferindo status E corpo. Teste também uma entrada inválida e veja se o erro é o esperado.
-- Páginas web: capture_page abre a URL, tira o print e devolve os erros de console e de rede.${vision ? ' Você RECEBE a imagem e consegue vê-la — descreva o que aparece e compare com o esperado antes de concluir.' : ''} O parâmetro "script" roda JavaScript na página antes do print (clicar, preencher), então dá para validar interação, não só aparência.
-- Layout: use full_page: true — a captura padrão mostra só a primeira dobra. Se precisa ser responsivo, tire um segundo print com width menor (ex.: 390).
-- TAREFA DE DETALHE VISUAL (alinhamento, espaçamento, sobreposição, texto torto, elemento fora do lugar) exige crop_selector no elemento em questão: o print da página inteira é reduzido antes de chegar até você e é EXATAMENTE esse tipo de defeito que some na redução. Olhando o recorte, compare item a item com o que o usuário descreveu — se ele apontou um problema, ele está lá; não conclua que está tudo certo só porque "parece bom".
-- Depois de corrigir algo visual, capture DE NOVO e compare com o print anterior. Só afirme que corrigiu se a diferença estiver visível na imagem.
-- NÃO afirme o que não observou. "Responsivo", "sem erros", "funcionando" só entram no resumo com print, saída de teste ou resposta HTTP que comprove. Se não deu para verificar, diga que não verificou — vale mais que um relatório bonito e errado.
-- Ao terminar, encerre com stop_process os servidores que você subiu.
+TESTING AND VERIFICATION — never say it is done without having checked:
+- "I wrote the file" is NOT verification. Only what you ran and observed counts: a test that passed, a command with no errors, an HTTP response you checked, a screenshot.
+- New logic deserves a real test: use the runner the project already uses (look at package.json and any *test* files); with no runner, a script that compares expected against actual and prints PASS/FAIL is enough. Cover the happy path AND an error or edge case.
+- Run it with execute_command and READ the output: stderr and the exit code matter more than stdout. If it failed, fix the cause — never repeat the same command hoping for a different result.
+- APIs: start the server with execute_command (it goes to the background with a PID), confirm with read_process_output(pid) and validate the endpoints with http_request, checking the status AND the body. Try invalid input too, and see whether the error is the expected one.
+- Web pages: capture_page opens the URL, takes the screenshot and returns the console and network errors.${vision ? ' You DO RECEIVE the image and can see it — describe what appears and compare it against what you expected before concluding.' : ''} The "script" parameter runs JavaScript on the page before the screenshot (clicking, filling in fields), so you can validate interaction, not just appearance.
+- Layout: use full_page: true — the default capture shows only the first fold. If it has to be responsive, take a second screenshot with a smaller width (e.g. 390).
+- A VISUAL DETAIL TASK (alignment, spacing, overlap, crooked text, an element out of place) requires crop_selector on the element in question: the full-page screenshot is scaled down before it reaches you, and that is EXACTLY the kind of defect that disappears in the scaling. Looking at the crop, compare item by item against what the user described — if they pointed at a problem, it is there; do not conclude everything is fine just because it "looks good".
+- After fixing something visual, capture it AGAIN and compare with the previous screenshot. Only claim you fixed it if the difference is visible in the image.
+- Do NOT claim what you did not observe. "Responsive", "no errors", "working" only go in the summary with a screenshot, test output or HTTP response backing them up. If you could not verify something, say so — that is worth more than a nice-looking, wrong report.
+- When you are done, stop the servers you started with stop_process.
 
-FERRAMENTAS:
-- Prefira as ferramentas dedicadas (read_file, write_file, edit_file, search_files, create_directory, delete_file, http_request) aos comandos de shell equivalentes — são mais seguras, funcionam igual no Linux e no Windows e devolvem resultado estruturado.
-- execute_command: comandos que terminam devolvem stdout/stderr/exit code. Servidores e watchers viram processos de SEGUNDO PLANO com PID — o chat não trava. NÃO acrescente "&" ao comando: o segundo plano é automático, e com "&" o PID devolvido é o do shell, não o do seu processo. Evite sudo e comandos interativos.
-- ESPERAR, não ficar perguntando: se um processo demorado (npm install, build, suíte de testes) foi para segundo plano e você precisa do resultado dele, chame wait_for_process(pid) UMA vez — ele devolve o exit code e a saída quando terminar. Chamar read_process_output repetidamente para ver se já acabou não acelera nada, gasta o contexto e trava a tarefa num vaivém. Se o processo é um servidor (não termina), não espere: siga trabalhando.
-- Use o que já está instalado. Antes de baixar pacote da rede (npx, pip install, apt), veja se dá para resolver com o que a máquina tem — por exemplo, "python3 -m http.server" ou "node --run" para servir arquivos estáticos. Baixar é lento e falha sem internet.
-- Se um resultado de ferramenta antigo aparecer como removido para liberar contexto, é só chamar a ferramenta de novo para obtê-lo.
-- Seja explícito sobre suposições e limitações. Se algo não pôde ser validado, diga isso claramente em vez de afirmar que está funcionando.`
+TOOLS:
+- Prefer the dedicated tools (read_file, write_file, edit_file, search_files, create_directory, delete_file, http_request) over the equivalent shell commands — they are safer, behave the same on Linux and Windows, and return structured results.
+- execute_command: commands that finish return stdout/stderr/exit code. Servers and watchers become BACKGROUND processes with a PID — the chat does not freeze. Do NOT append "&" to the command: backgrounding is automatic, and with "&" the PID you get back is the shell's, not your process's. Avoid sudo and interactive commands.
+- WAIT instead of asking repeatedly: if a slow process (npm install, a build, a test suite) went to the background and you need its result, call wait_for_process(pid) ONCE — it returns the exit code and the output when it finishes. Calling read_process_output over and over to see whether it is done speeds up nothing, burns context and stalls the task. If the process is a server (it never ends), do not wait: keep working.
+- Use what is already installed. Before downloading a package from the network (npx, pip install, apt), see whether what the machine already has can do it — for example "python3 -m http.server" or "node --run" to serve static files. Downloading is slow and fails without internet.
+- If an old tool result shows up as dropped to free up context, just call the tool again to get it back.
+- Be explicit about assumptions and limitations. If something could not be validated, say so plainly instead of claiming it works.`
 + (web_search
-  ? "\n- Informação externa/atual: use web_search, que já devolve o TEXTO das primeiras páginas junto dos resultados — leia esse texto antes de responder. Só chame fetch_url se precisar de uma página específica que não veio no retorno. Busque com termos simples e específicos (aspas e operadores como site: costumam zerar o resultado). Cite a URL de onde tirou a informação e não invente dados que você não viu."
+  ? "\n- External or current information: use web_search, which already returns the TEXT of the first pages alongside the results — read that text before answering. Only call fetch_url if you need a specific page that did not come back in the result. Search with simple, specific terms (quotes and operators such as site: usually return nothing). Cite the URL you took the information from, and do not invent data you have not seen."
   : "");
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -74,8 +74,34 @@ export const DEFAULT_SETTINGS: Settings = {
   // Devolve o PNG do capture_page para o modelo, e não só o texto da página. Ligado por
   // padrão mas usado apenas quando o endpoint anuncia um modelo multimodal — enviar
   // imagem para um modelo de texto derruba a requisição com erro do servidor.
-  visionFeedback: true
+  visionFeedback: true,
+  // Instruções do usuário. Vazio por padrão: o prompt de fábrica já cobre o ciclo de
+  // trabalho, e texto solto no system prompt é o jeito mais rápido de fazer um modelo
+  // pequeno parar de chamar ferramenta.
+  customPrompt: '',
+  promptMode: 'append',
+  skills: []
 };
+
+// Cabeçalho do bloco de instruções do usuário no prompt. Vem separado e nomeado porque
+// o modelo precisa saber DE ONDE veio a regra: sem isso ele trata uma preferência do
+// usuário como se fosse parte da instrução de fábrica, e vice-versa.
+export const CABECALHO_INSTRUCOES =
+  'USER INSTRUCTIONS — written by the user for this workspace. They win over the general ' +
+  'guidance above whenever the two collide, except on the safety rules (never destroy ' +
+  'content you have not read).';
+
+// As skills entram inteiras no prompt, a cada requisição. O cabeçalho diz ao modelo que
+// são instruções de verdade, não material de leitura — sem isso o modelo as trata como
+// contexto e não as segue.
+export const CABECALHO_SKILLS =
+  'SKILLS — instruction files the user imported. Follow them for the tasks they describe. ' +
+  'A skill wins over the general guidance above; an explicit request from the user wins over both.';
+
+// Teto por skill importada. Uma skill entra no prompt a CADA requisição: sem limite, um
+// arquivo de 200 KB colado aqui consumiria o contexto inteiro antes da primeira mensagem
+// e a sessão morreria sem explicação nenhuma na tela.
+export const SKILL_MAX_CHARS = 20000;
 
 // Tradução do nível escolhido na UI para o que entra no corpo da requisição.
 // `desligado` usa DOIS mecanismos porque nenhum é universal: o sufixo /no_think no prompt
@@ -84,16 +110,18 @@ export const DEFAULT_SETTINGS: Settings = {
 // A `dica` é o que aparece embaixo do rótulo no menu do compositor: sem ela o usuário
 // escolhe "Alto" às cegas e só descobre que o servidor recusa `reasoning_effort` quando a
 // requisição falha.
+// O `requer` diz de qual recurso do SERVIDOR o nível depende: é ele que permite ao menu
+// esconder o que o endpoint em uso não aceita (ver detectThinkCapabilities no renderer).
 export const THINK_LEVELS: Record<ThinkLevel, ThinkLevelDef> = {
-  padrao:    { rotulo: 'Padrão do modelo', dica: 'Não envia nada — funciona em qualquer servidor', payload: null, semRaciocinio: false },
-  desligado: { rotulo: 'Desligado',        dica: 'Responde direto; modelos de raciocínio podem parar de chamar ferramentas', payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true },
-  baixo:     { rotulo: 'Baixo',            dica: 'Envia reasoning_effort: "low"', payload: { reasoning_effort: 'low' },    semRaciocinio: false },
-  medio:     { rotulo: 'Médio',            dica: 'Envia reasoning_effort: "medium"', payload: { reasoning_effort: 'medium' }, semRaciocinio: false },
-  alto:      { rotulo: 'Alto',             dica: 'Envia reasoning_effort: "high" — pensa mais antes de agir', payload: { reasoning_effort: 'high' },   semRaciocinio: false },
+  padrao:    { rotulo: 'Padrão do modelo', dica: 'Não envia nada — funciona em qualquer servidor', payload: null, semRaciocinio: false, requer: null },
+  desligado: { rotulo: 'Desligado',        dica: 'Responde direto; modelos de raciocínio podem parar de chamar ferramentas', payload: { chat_template_kwargs: { enable_thinking: false } }, semRaciocinio: true, requer: 'enable_thinking' },
+  baixo:     { rotulo: 'Baixo',            dica: 'Envia reasoning_effort: "low"', payload: { reasoning_effort: 'low' },    semRaciocinio: false, requer: 'reasoning_effort' },
+  medio:     { rotulo: 'Médio',            dica: 'Envia reasoning_effort: "medium"', payload: { reasoning_effort: 'medium' }, semRaciocinio: false, requer: 'reasoning_effort' },
+  alto:      { rotulo: 'Alto',             dica: 'Envia reasoning_effort: "high" — pensa mais antes de agir', payload: { reasoning_effort: 'high' },   semRaciocinio: false, requer: 'reasoning_effort' },
   // 'max' é o nível mais alto que a API do OpenAI aceita (none|low|medium|high|max).
   // Servidores que só conhecem low/medium/high podem rejeitar — por isso é escolha
   // explícita, não default.
-  maximo:    { rotulo: 'Máximo',           dica: 'Envia reasoning_effort: "max" — só em servidores que aceitam', payload: { reasoning_effort: 'max' }, semRaciocinio: false }
+  maximo:    { rotulo: 'Máximo',           dica: 'Envia reasoning_effort: "max" — só em servidores que aceitam', payload: { reasoning_effort: 'max' }, semRaciocinio: false, requer: 'reasoning_effort' }
 };
 
 // Teto do raciocínio MOSTRADO na tela (o texto do think não é persistido no histórico).
@@ -106,7 +134,7 @@ export const MAX_REASONING_DOM_CHARS = 200000;
 // Pastas recentes guardadas para a troca rápida de workspace no cabeçalho.
 export const MAX_RECENT_PATHS = 8;
 
-export const APP_NAME = 'Pofuserver Coder Studio';
+export const APP_NAME = 'Pofu Code Studio';
 
 export const MAX_TOOL_RESULT_CHARS = 6000; // teto p/ fetch_url
 // A busca devolve também o TEXTO das primeiras páginas, que é justamente a parte útil —

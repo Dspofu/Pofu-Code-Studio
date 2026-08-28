@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
-// Source: https://github.com/Dspofu/Pofuserver-Code
+// Source: https://github.com/Dspofu/Pofu-Code-Studio
 
 // ============================================================================
 // ARQUIVO GERADO — não edite aqui.

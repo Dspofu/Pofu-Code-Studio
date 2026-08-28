@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
-// Source: https://github.com/Dspofu/Pofuserver-Code
+// Source: https://github.com/Dspofu/Pofu-Code-Studio
 
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification } from 'electron';
 import { dirname, join } from 'path';
@@ -167,15 +167,15 @@ function looksBinary(buf) {
 // chama manda o orçamento real, derivado do n_ctx do modelo.
 ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
   let st;
-  try { st = statSync(filePath); } catch (e) { return { success: false, error: `Arquivo não encontrado: ${filePath}` }; }
-  if (st.isDirectory()) return { success: false, error: `"${filePath}" é uma pasta — use list_files.` };
+  try { st = statSync(filePath); } catch (e) { return { success: false, error: `File not found: ${filePath}` }; }
+  if (st.isDirectory()) return { success: false, error: `"${filePath}" is a directory — use list_files.` };
   if (st.size > READ_MAX_BYTES) {
-    return { success: false, error: `Arquivo grande demais (${(st.size / 1e6).toFixed(1)} MB, teto ${READ_MAX_BYTES / 1e6} MB). Use search_files para localizar o trecho ou execute_command com head/sed.` };
+    return { success: false, error: `File too large (${(st.size / 1e6).toFixed(1)} MB, cap ${READ_MAX_BYTES / 1e6} MB). Use search_files to locate the snippet, or execute_command with head/sed.` };
   }
 
   const buf = readFileSync(filePath);
   if (looksBinary(buf)) {
-    return { success: false, binary: true, size: st.size, error: `Arquivo binário (${st.size} bytes) — conteúdo não é texto legível.` };
+    return { success: false, binary: true, size: st.size, error: `Binary file (${st.size} bytes) — the content is not readable text.` };
   }
   const text = buf.toString('utf-8');
   if (text === '') return { success: true, empty: true, total: 0, content: '', size: 0 };
@@ -187,7 +187,7 @@ ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
   const total = allLines.length;
   const start = Math.max(1, Math.floor(opts.offset > 0 ? opts.offset : 1));
   if (start > total) {
-    return { success: false, total, error: `O arquivo tem ${total} linha(s); o offset ${start} está além do fim.` };
+    return { success: false, total, error: `The file has ${total} line(s); offset ${start} is past the end.` };
   }
   const want = Math.min(Math.max(1, Math.floor(opts.limit > 0 ? opts.limit : maxLines)), maxLines);
 
@@ -410,10 +410,10 @@ ipcMain.handle('write-file', async (event, filePath, content, opts = {}) => {
   if (existed && opts.requireRead) {
     return {
       success: false,
-      error: `O arquivo ${filePath} já existe e não foi lido nesta conversa — sobrescrevê-lo apagaria conteúdo desconhecido.`,
+      error: `File ${filePath} already exists and has not been read in this conversation — overwriting it would erase content you have never seen.`,
       // Sem a última frase o modelo contornava o bloqueio apagando o arquivo e criando
       // de novo, que é exatamente a perda de conteúdo que a trava existe para impedir.
-      hint: 'Chame read_file neste arquivo e refaça. Para mudar só um trecho, edit_file preserva o resto. NÃO apague o arquivo para recriá-lo: isso destrói o que você ainda não leu, e delete_file recusa pelo mesmo motivo.'
+      hint: 'Call read_file on this file and try again. To change only part of it, edit_file keeps the rest. DO NOT delete the file to recreate it: that destroys what you have not read yet, and delete_file refuses for the same reason.'
     };
   }
 
@@ -435,42 +435,83 @@ ipcMain.handle('write-file', async (event, filePath, content, opts = {}) => {
 // cortada no limite, produzindo arquivos truncados.
 ipcMain.handle('edit-file', async (event, filePath, oldText, newText, replaceAll = false) => {
   if (typeof oldText !== 'string' || oldText === '') {
-    return { success: false, error: 'old_text vazio. Informe o trecho exato a substituir (use write_file para criar um arquivo novo).' };
+    return { success: false, error: 'Empty old_text. Provide the exact snippet to replace (use write_file to create a new file).' };
   }
-  if (oldText === newText) return { success: false, error: 'old_text e new_text são idênticos — nada a fazer.' };
+  // O modelo às vezes manda número ou objeto aqui; sem o String() o texto gravado no
+  // arquivo viraria "[object Object]".
+  newText = String(newText ?? '');
+  if (oldText === newText) return { success: false, error: 'old_text and new_text are identical — nothing to do.' };
 
   let original;
   try { original = readFileSync(filePath, 'utf-8'); }
-  catch (e) { return { success: false, error: `Arquivo não encontrado: ${filePath}. Use write_file para criá-lo.` }; }
+  catch (e) { return { success: false, error: `File not found: ${filePath}. Use write_file to create it.` }; }
 
-  let count = 0, at = 0, first = -1;
-  while ((at = original.indexOf(oldText, at)) !== -1) {
-    if (first === -1) first = at;
-    count++; at += oldText.length;
+  const conta = (agulha) => {
+    let n = 0, at = 0, first = -1;
+    while ((at = original.indexOf(agulha, at)) !== -1) {
+      if (first === -1) first = at;
+      n++; at += agulha.length;
+    }
+    return { n, first };
+  };
+
+  let alvo = oldText, troca = newText;
+  let { n: count, first } = conta(alvo);
+
+  // Arquivo em CRLF: o read_file entrega as linhas com o \r no fim e o modelo copia o
+  // trecho sem ele, então a busca exata NUNCA casava — e a dica ainda mandava reler,
+  // num vaivém que não convergia (sintoma clássico no Windows). A busca é refeita na
+  // quebra de linha do próprio arquivo.
+  if (count === 0 && original.includes('\r\n') && !oldText.includes('\r')) {
+    const emCRLF = oldText.replace(/\n/g, '\r\n');
+    const r = conta(emCRLF);
+    if (r.n > 0) { alvo = emCRLF; count = r.n; first = r.first; }
   }
+
+  // O texto que ENTRA acompanha a quebra de linha do arquivo. Vale também quando o
+  // old_text casou de primeira (trecho de uma linha só, sem \n nenhum): gravar o
+  // new_text em LF no meio de um arquivo CRLF deixa quebras misturadas, e o edit_file
+  // seguinte — que copia do read_file, em CRLF — não casaria mais nessa região.
+  if (original.includes('\r\n') && /(^|[^\r])\n/.test(troca)) troca = troca.replace(/\r?\n/g, '\r\n');
 
   if (count === 0) {
     // Quase sempre a diferença é indentação/espaço no fim da linha, e o modelo fica
     // tentando a mesma edição em loop. Dizer QUAL é a diferença encerra o loop.
-    const norm = (s) => s.replace(/[ \t]+/g, ' ').replace(/[ \t]+$/gm, '').trim();
+    const norm = (s) => s.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/[ \t]+$/gm, '').trim();
     const hint = norm(original).includes(norm(oldText))
-      ? 'O trecho existe mas com espaços/indentação diferentes — releia o arquivo com read_file e copie o texto exatamente como está.'
-      : 'Releia o arquivo com read_file: o conteúdo pode ter mudado ou o trecho não existe.';
-    return { success: false, error: `Trecho não encontrado em ${filePath}.`, hint };
+      ? 'The snippet is there but with different whitespace or indentation — read the file again with read_file and copy the text exactly as it appears.'
+      : 'Read the file again with read_file: the content may have changed, or the snippet is not in this file.';
+    return { success: false, error: `Snippet not found in ${filePath}.`, hint };
   }
   if (count > 1 && !replaceAll) {
     return {
       success: false, occurrences: count,
-      error: `O trecho aparece ${count} vezes em ${filePath}.`,
-      hint: 'Inclua linhas de contexto ao redor para tornar old_text único, ou passe replace_all: true para trocar todas.'
+      error: `The snippet appears ${count} times in ${filePath}.`,
+      hint: 'Add surrounding context lines to make old_text unique, or pass replace_all: true to replace every occurrence.'
     };
   }
 
-  const updated = replaceAll ? original.split(oldText).join(newText) : original.replace(oldText, newText);
-  writeFileSync(filePath, updated, 'utf-8');
+  // split/join e NÃO replace(): mesmo com pattern string, o replace continua expandindo
+  // $&, $$, $1 e $` DENTRO do texto de substituição. Um new_text com "$$var" (PHP, sed,
+  // LaTeX) era gravado corrompido e ainda voltava success: true — o pior jeito de errar.
+  // Como o caso ambíguo já saiu acima, aqui o split/join serve aos dois modos.
+  const updated = original.split(alvo).join(troca);
+
+  try { writeFileSync(filePath, updated, 'utf-8'); }
+  catch (err) {
+    // Somente-leitura, arquivo aberto por outro programa, pasta protegida: sem esta
+    // captura a exceção subia crua ("EPERM: operation not permitted"), sem dica, e o
+    // agente repetia a mesma edição.
+    return {
+      success: false,
+      error: `Could not write to ${filePath}: ${err.message}`,
+      hint: 'The file may be read-only or open in another program. Check it with execute_command before trying again.'
+    };
+  }
+
   return {
     success: true,
-    replacements: replaceAll ? count : 1,
+    replacements: count,
     line: original.slice(0, first).split('\n').length, // linha da primeira substituição
     linesBefore: original.split('\n').length,
     linesAfter: updated.split('\n').length,
@@ -512,7 +553,7 @@ ipcMain.handle('check-update', async () => {
     if (!m) return { success: false, error: 'Nenhum repositório GitHub configurado no package.json.' };
     const [ , owner, repo ] = m;
     const resp = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {
-      headers: { 'User-Agent': 'Pofuserver-Coder-Studio', Accept: 'application/vnd.github+json' },
+      headers: { 'User-Agent': 'Pofu-Code-Studio', Accept: 'application/vnd.github+json' },
       signal: AbortSignal.timeout(12000)
     });
     if (resp.status === 404) return { success: false, error: 'Nenhum release publicado ainda.' };
@@ -549,8 +590,8 @@ ipcMain.handle('delete-file', async (event, filePath, opts = {}) => {
   if (opts.requireRead && existsSync(filePath)) {
     return {
       success: false,
-      error: `O arquivo ${filePath} não foi lido nesta conversa — apagá-lo removeria conteúdo que você não viu.`,
-      hint: 'Se a intenção é alterar o conteúdo, use edit_file ou leia com read_file e reescreva. Se a remoção foi mesmo pedida pelo usuário, leia o arquivo antes para confirmar que é o certo.'
+      error: `File ${filePath} has not been read in this conversation — deleting it would remove content you have never seen.`,
+      hint: 'If the goal is to change the content, use edit_file, or read it with read_file and rewrite it. If the user really asked for the removal, read the file first to confirm it is the right one.'
     };
   }
 
@@ -561,7 +602,7 @@ ipcMain.handle('delete-file', async (event, filePath, opts = {}) => {
   const linhas = anterior != null ? anterior.split('\n').length : 0;
   unlinkSync(filePath);
   return {
-    success: true, linhasApagadas: linhas,
+    success: true, deletedLines: linhas,
     snapshotId: anterior != null ? salvaInstantaneo(filePath, anterior, true, '') : null
   };
 });
@@ -581,7 +622,7 @@ const SEARCH_MAX_RESULTS = 200;
 
 ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   const query = String(opts.query || '');
-  if (!query) return { success: false, error: 'query vazia' };
+  if (!query) return { success: false, error: 'Empty query.' };
 
   let re;
   try {
@@ -589,7 +630,7 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
       ? new RegExp(query, opts.caseSensitive ? 'g' : 'gi')
       : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), opts.caseSensitive ? 'g' : 'gi');
   } catch (e) {
-    return { success: false, error: `Regex inválida: ${e.message}` };
+    return { success: false, error: `Invalid regex: ${e.message}` };
   }
 
   // Filtro de nome de arquivo no estilo glob (*.js, *.test.*), aplicado ao caminho relativo
@@ -788,9 +829,9 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       resolve({
         command, pid: child.pid, finished: false, backgrounded: true, reason,
         stdout: entry.stdout, stderr: entry.stderr,
-        note: `Processo iniciado em segundo plano (PID ${child.pid}) — ${reason}. ` +
-              `O chat NÃO travou. Use read_process_output(${child.pid}) para ver os logs, ` +
-              `list_processes para listar, e stop_process(${child.pid}) para encerrar.`
+        note: `Process moved to the background (PID ${child.pid}) — ${reason}. ` +
+              `The chat is NOT stuck. Use read_process_output(${child.pid}) to see the logs, ` +
+              `list_processes to list them, and stop_process(${child.pid}) to terminate it.`
       });
     };
 
@@ -846,7 +887,7 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       clearTimeout(hardTimer); clearTimeout(idleTimer);
       resolve({
         command, stdout: entry.stdout, stderr: entry.stderr,
-        error: code === 0 ? null : `Processo encerrou com código ${code}`,
+        error: code === 0 ? null : `Process exited with code ${code}`,
         exitCode: code, finished: true
       });
     });
@@ -856,7 +897,7 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
 // Lê o output acumulado de um processo em segundo plano
 ipcMain.handle('read-process-output', async (event, pid) => {
   const entry = procs.get(pid);
-  if (!entry) return { success: false, error: `Nenhum processo em segundo plano com PID ${pid}` };
+  if (!entry) return { success: false, error: `No background process with PID ${pid}` };
   return {
     success: true, pid, command: entry.command, status: entry.status,
     uptimeSec: Math.round((Date.now() - entry.startedAt) / 1000),
@@ -870,7 +911,7 @@ ipcMain.handle('read-process-output', async (event, pid) => {
 // parado no main até o processo sair (ou até o prazo), e volta UMA resposta.
 ipcMain.handle('wait-for-process', async (event, pid, timeoutMs = 120000) => {
   const entry = procs.get(pid);
-  if (!entry) return { success: false, error: `Nenhum processo em segundo plano com PID ${pid}` };
+  if (!entry) return { success: false, error: `No background process with PID ${pid}` };
 
   const limite = clamp(timeoutMs, 1000, 600000);
   const inicio = Date.now();
@@ -894,8 +935,8 @@ ipcMain.handle('wait-for-process', async (event, pid, timeoutMs = 120000) => {
     waitedSec: esperou,
     stdout: entry.stdout, stderr: entry.stderr,
     note: terminou
-      ? `O processo terminou depois de ~${esperou}s.`
-      : `Ainda rodando após ${esperou}s (prazo esgotado). Se for um servidor, isso é o esperado — siga o trabalho e use read_process_output quando precisar dos logs.`
+      ? `The process finished after ~${esperou}s.`
+      : `Still running after ${esperou}s (deadline reached). If it is a server, that is expected — carry on and use read_process_output when you need the logs.`
   };
 });
 
@@ -955,7 +996,7 @@ ipcMain.handle('save-store', async (event, data) => {
   }
 });
 
-// Atualiza o título da janela (ex.: "Pofuserver Coder Studio — pensando…")
+// Atualiza o título da janela (ex.: "Pofu Code Studio — pensando…")
 ipcMain.on('set-title', (event, title) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win && typeof title === 'string' && title.trim()) win.setTitle(title);
@@ -1172,8 +1213,8 @@ ipcMain.handle('web-search', async (event, query, maxResults = 5) => {
     if (!out || !out.results.length) {
       return {
         success: false,
-        error: `Nenhum provedor de busca retornou resultado útil para "${query}".`,
-        hint: 'Tente termos mais simples e específicos (sem aspas nem operadores como site:).'
+        error: `No search provider returned a useful result for "${query}".`,
+        hint: 'Try simpler, more specific terms (no quotes and no operators such as site:).'
       };
     }
     return {
@@ -1226,7 +1267,7 @@ ipcMain.handle('http-request', async (event, url, opts = {}) => {
     return {
       success: true, url, status: resp.status, statusText: resp.statusText,
       ok: resp.ok, ms: Date.now() - started, headers,
-      body: body.length > 20000 ? body.slice(0, 20000) + '\n…[corpo truncado]' : body,
+      body: body.length > 20000 ? body.slice(0, 20000) + '\n…[body truncated]' : body,
       bodyBytes: body.length
     };
   } catch (err) {
@@ -1234,8 +1275,8 @@ ipcMain.handle('http-request', async (event, url, opts = {}) => {
     // O erro de conexão recusada é o caso mais comum (servidor não subiu); dizer isso
     // direto evita que o modelo trate como bug da aplicação e saia editando código.
     const hint = /ECONNREFUSED|fetch failed|refused/i.test(msg)
-      ? 'Nada escutando nessa porta. Suba o servidor com execute_command (ele fica em segundo plano) e confira os logs com read_process_output antes de tentar de novo.'
-      : (/timed out|aborted|TimeoutError/i.test(msg) ? 'A requisição estourou o tempo limite — o servidor pode estar travado ou lento.' : undefined);
+      ? 'Nothing is listening on that port. Start the server with execute_command (it goes to the background) and check the logs with read_process_output before trying again.'
+      : (/timed out|aborted|TimeoutError/i.test(msg) ? 'The request timed out — the server may be hung or slow.' : undefined);
     return { success: false, url, error: msg, hint, ms: Date.now() - started };
   }
 });
@@ -1375,7 +1416,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
         return { x: r.x, y: r.y, width: r.width, height: r.height };
       })()`).catch(() => null);
       if (!medida || medida.width < 1 || medida.height < 1) {
-        recorteFalhou = `Elemento "${opts.cropSelector}" não encontrado (ou sem tamanho) — capturei a página toda.`;
+        recorteFalhou = `Element "${opts.cropSelector}" not found (or has no size) — captured the whole page instead.`;
       } else {
         await sleep(250); // o scrollIntoView precisa assentar antes de medir de novo
         const r2 = await wc.executeJavaScript(`(() => {
@@ -1394,7 +1435,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     }
 
     const image = rect ? await wc.capturePage(rect) : await wc.capturePage();
-    if (image.isEmpty()) return { success: false, error: 'A captura saiu vazia (a página não chegou a renderizar).' };
+    if (image.isEmpty()) return { success: false, error: 'The capture came out empty (the page never rendered).' };
 
     const file = join(shotsDir(), `shot-${Date.now()}.png`);
     writeFileSync(file, image.toPNG());
@@ -1415,7 +1456,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
   } catch (err) {
     const msg = String(err && err.message || err);
     const hint = /ERR_CONNECTION_REFUSED|ERR_FAILED|ERR_EMPTY_RESPONSE/i.test(msg)
-      ? 'A página não respondeu. Confirme que o servidor está no ar (list_processes / read_process_output) antes de capturar.'
+      ? 'The page did not respond. Confirm the server is up (list_processes / read_process_output) before capturing.'
       : undefined;
     return { success: false, url, error: msg, hint };
   } finally {
@@ -1450,7 +1491,7 @@ function htmlToText(html) {
 const FETCH_MIN_TEXTO_UTIL = 400;
 
 ipcMain.handle('fetch-url', async (event, url, maxChars = 8000) => {
-  let statusHttp = null, viaNavegador = false, texto = '', erroHttp = null;
+  let statusHttp = null, viaBrowser = false, texto = '', erroHttp = null;
   try {
     // Sem timeout, um servidor que aceita a conexão e nunca responde deixa o tool call
     // pendurado para sempre e o agente trava esperando.
@@ -1473,16 +1514,16 @@ ipcMain.handle('fetch-url', async (event, url, maxChars = 8000) => {
     const html = await renderizaHtml(url);
     if (html) {
       const rend = htmlToText(html);
-      if (rend.trim().length > texto.trim().length) { texto = rend; viaNavegador = true; }
+      if (rend.trim().length > texto.trim().length) { texto = rend; viaBrowser = true; }
     }
   }
 
   if (!texto.trim()) {
-    return { success: false, url, status: statusHttp, error: erroHttp || 'A página não devolveu texto legível.' };
+    return { success: false, url, status: statusHttp, error: erroHttp || 'The page returned no readable text.' };
   }
   return {
-    success: true, url, status: statusHttp, viaNavegador,
+    success: true, url, status: statusHttp, viaBrowser,
     content: texto.slice(0, maxChars),
-    truncado: texto.length > maxChars || undefined
+    truncated: texto.length > maxChars || undefined
   };
 });

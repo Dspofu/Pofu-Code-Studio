@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
-// Source: https://github.com/Dspofu/Pofuserver-Code
+// Source: https://github.com/Dspofu/Pofu-Code-Studio
 
 // Declarações GLOBAIS (o arquivo não tem import/export de propósito): main e renderer
 // enxergam estes tipos sem precisar importar nada, e nenhum .js a mais é emitido para o
@@ -15,6 +15,29 @@ type ThinkLevel = 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto' | 'maximo'
 /** Modo de execução de comandos: 'manual' abre o modal de confirmação. */
 type ExecMode = 'manual' | 'auto';
 
+/** O que fazer com as instruções que o usuário escreveu nas configurações. */
+type PromptMode = 'append' | 'replace';
+
+/**
+ * Instruções importadas de um arquivo (o SKILL.md do Claude Code e afins). O conteúdo
+ * das skills ATIVAS entra no prompt de sistema a cada requisição — por isso `chars`
+ * fica visível na lista: é orçamento de contexto gasto em toda mensagem.
+ */
+interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  arquivo: string;
+  ativa: boolean;
+}
+
+/** Uma opção do card de pergunta (ask_user). */
+interface OpcaoPergunta {
+  label: string;
+  description?: string;
+}
+
 interface ThinkLevelDef {
   rotulo: string;
   dica: string;
@@ -22,6 +45,31 @@ interface ThinkLevelDef {
   payload: Record<string, unknown> | null;
   /** Se verdadeiro, o prompt de sistema ainda ganha o sufixo /no_think. */
   semRaciocinio: boolean;
+  /**
+   * Recurso que o SERVIDOR precisa aceitar para este nível existir no menu.
+   * `null` = não manda nada e funciona em qualquer endpoint (ver SuporteRaciocinio).
+   */
+  requer: 'enable_thinking' | 'reasoning_effort' | null;
+}
+
+/** O que o endpoint ANUNCIOU sobre raciocínio (preenchido por detectThink*). */
+interface SuporteRaciocinio {
+  /** O endpoint disse alguma coisa a respeito; falso = nada detectado. */
+  detectado: boolean;
+  /** Aceita `chat_template_kwargs.enable_thinking`. */
+  enableThinking: boolean;
+  /** Aceita `reasoning_effort`. */
+  reasoningEffort: boolean;
+  /** Níveis de reasoning_effort enumerados pelo template (null = não enumerou). */
+  valores: Set<string> | null;
+  /** De onde veio a informação — mostrado no rodapé do menu. */
+  origem: string;
+  /**
+   * O servidor devolveu o chat template. Template lido SEM marca de raciocínio é
+   * resposta conclusiva ("este modelo não tem modo de pensar"), diferente do
+   * silêncio de um endpoint que nem expõe /props.
+   */
+  templateLido: boolean;
 }
 
 interface Settings {
@@ -41,6 +89,12 @@ interface Settings {
   visionFeedback: boolean;
   /** Esconde a janela de console que o Windows abriria a cada execute_command. */
   hideCommandConsole: boolean;
+  /** Instruções escritas pelo usuário, somadas ao prompt de sistema (ou no lugar dele). */
+  customPrompt: string;
+  /** 'append' soma ao prompt padrão; 'replace' usa só o texto do usuário. */
+  promptMode: PromptMode;
+  /** Skills importadas. As ativas entram no prompt de sistema. */
+  skills: Skill[];
 }
 
 /** Anexo de arquivo preso à mensagem do usuário. */

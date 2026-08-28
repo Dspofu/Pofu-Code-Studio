@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
-<!-- Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved. -->
+<!-- Copyright 2026-present the Pofu Code Studio authors. All rights reserved. -->
 
-# Pofuserver Coder Studio
+# Pofu Code Studio
 
 **Agente de código em desktop** (Electron) que se conecta a **qualquer API REST compatível com OpenAI** — [llama.cpp](https://github.com/ggml-org/llama.cpp), [Ollama](https://ollama.com/), [vLLM](https://github.com/vllm-project/vllm) — e trabalha direto nos arquivos do seu projeto: lê, edita, busca, roda comandos, chama APIs e **tira print das páginas que constrói**.
 
@@ -38,6 +38,7 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 | `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido |
 | `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente |
 | `search_files` | Busca por texto/regex no projeto, com filtro glob |
+| `ask_user` | **Faz uma pergunta e espera a resposta**, em card com opções clicáveis |
 | `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
 | `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
 | `wait_for_process` | **Espera** um processo demorado terminar e devolve o exit code |
@@ -53,7 +54,7 @@ Cada escrita, edição ou remoção mostra **o que exatamente mudou** — colori
 `capture_page` renderiza a página num navegador oculto e devolve o print. Com um modelo **multimodal**, a imagem volta para o modelo: ele descreve o que apareceu e compara com o esperado, em vez de deduzir pelo código. Use `full_page` para a página inteira e `crop_selector` para conferir detalhe em tamanho cheio.
 
 ### Validação de verdade
-O prompt exige evidência: teste executado, exit code lido, resposta HTTP conferida ou print observado. "Escrevi o arquivo" não conta como validação, e o que não pôde ser verificado é declarado como não verificado.
+O prompt exige evidência: teste executado, exit code lido, resposta HTTP conferida ou print observado. "Escrevi o arquivo" não conta como validação, e o que não pôde ser verificado é declarado como não verificado. As instruções e as descrições das ferramentas são escritas **em inglês** — é a língua em que os modelos foram treinados a seguir instrução e a chamar ferramenta —, e o agente responde **na língua em que você escrever**.
 
 ### Contexto que não estoura
 O histórico é compactado automaticamente quando se aproxima do limite do modelo: resultados antigos de ferramenta passam a ir encurtados **no envio**, e continuam completos na tela. O botão **Compactar**, ao lado do campo de texto, libera contexto na hora.
@@ -81,18 +82,40 @@ Cada chat trabalha dentro de **uma pasta** — o agente não enxerga nada fora d
 
 ![Troca da pasta segura](docs/img/pasta-segura.png)
 
+### O agente pergunta quando trava de verdade
+
+Quando o pedido tem duas leituras que levam a trabalhos diferentes, o agente para e **pergunta**, em vez de escolher no escuro e refazer depois:
+
+![Card de pergunta do agente](docs/img/pergunta.png)
+
+O card mostra as opções que o modelo propôs; dá para marcar uma (ou várias, quando ele pede), escrever uma resposta própria no campo de texto, ou **Pular**. Pular é uma resposta válida: o agente decide sozinho e diz qual suposição adotou, em vez de ficar preso. O turno fica parado até você responder, e o **Parar** fecha o card junto com o resto.
+
+A ferramenta é `ask_user`, e as instruções pedem que ela seja usada com parcimônia — só quando a resposta muda o trabalho, nunca para o que dá para descobrir lendo o projeto, e sempre depois de já ter feito tudo que não dependia da resposta.
+
+### Instruções suas e skills
+
+Em *Ajustes → Instruções do agente* há um campo de **system prompt**: o que você escrever ali entra no prompt em toda mensagem, valendo para regras do projeto (*"aqui é pnpm, não npm"*) e preferências de trabalho. Por padrão o texto é **somado** às instruções de fábrica; o interruptor *Substituir o prompt padrão* descarta as de fábrica e deixa só o seu texto — inclusive as regras de ler antes de sobrescrever e de validar antes de dizer que terminou, então é escolha para quem vai reescrever esse comportamento.
+
+Logo abaixo ficam as **skills**: arquivos de instrução (o `SKILL.md` do Claude Code e parecidos) que você importa e liga por chave.
+
+![Skills importadas](docs/img/skills.png)
+
+O `name` e o `description` saem do frontmatter YAML quando existe; sem frontmatter, o app usa o título `#` do arquivo e a primeira linha de texto. Reimportar o mesmo arquivo **atualiza** a skill em vez de duplicar, que é o fluxo de quem está escrevendo uma. Cada linha mostra o custo em tokens **por mensagem**, porque é isso que uma skill ativa é: conteúdo somado ao prompt em toda requisição — não um anexo que se lê uma vez. Skill desligada não entra no prompt.
+
 ### Nível de raciocínio no próprio compositor
 O seletor **Raciocínio** fica ao lado do campo de mensagem, junto do Auto/Manual — quanto o modelo deve pensar é decisão que se toma na hora de escrever o pedido, não algo para lembrar dentro de um modal com a resposta já em andamento. Um clique abre os níveis, cada um com o que ele exige do servidor:
 
 ![Seletor de raciocínio no compositor](docs/img/raciocinio.png)
 
-| Nível | O que é enviado |
-|---|---|
-| Padrão do modelo | nada — funciona em qualquer servidor |
-| Desligado | `enable_thinking: false` + `/no_think` no prompt |
-| Baixo / Médio / Alto | `reasoning_effort: low \| medium \| high` |
+| Nível | O que é enviado | Aparece quando |
+|---|---|---|
+| Padrão do modelo | nada — funciona em qualquer servidor | sempre |
+| Desligado | `enable_thinking: false` + `/no_think` no prompt | o servidor anuncia raciocínio ligável |
+| Baixo / Médio / Alto / Máximo | `reasoning_effort: low \| medium \| high \| max` | o servidor anuncia `reasoning_effort` |
 
-O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning_effort` é extensão recente e servidor antigo recusa o que não conhece. Se um nível der erro, volte para o padrão.
+O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning_effort` é extensão recente e servidor antigo recusa o que não conhece.
+
+**A lista sai do servidor, não de um palpite.** Ao escolher o modelo, o app pergunta ao endpoint o que ele aceita — as `capabilities` do `/v1/models`, o `chat_template` do `/props` (llama.cpp) e o `/api/show` (Ollama) — e só mostra os níveis confirmados; o rodapé do menu diz de onde veio a informação. Um modelo sem modo de raciocínio fica só com *Padrão*, e um nível salvo que o servidor novo não aceita volta para *Padrão* sozinho, em vez de derrubar a primeira mensagem com um HTTP 400. Endpoint que não responde nada disso (vLLM, OpenAI, gateways) continua mostrando todos os níveis — silêncio não é prova de que não suporta.
 
 ### Sem janela de console piscando
 No Windows, cada comando do agente abria um terminal por cima do app — e uma tarefa longa dispara dezenas deles. Em *Ajustes → Ferramentas*, **Ocultar o console dos comandos** vem **ligado** e a janela não aparece mais. Desligue só para acompanhar ao vivo o que está sendo executado.
@@ -113,8 +136,8 @@ Modelos com **function calling** são necessários (o agente depende disso). Par
 ## Instalação
 
 ```bash
-git clone https://github.com/Dspofu/Pofuserver-Code.git
-cd Pofuserver-Code
+git clone https://github.com/Dspofu/Pofu-Code-Studio.git
+cd Pofu-Code-Studio
 npm install
 npm start
 ```
@@ -124,8 +147,8 @@ npm start
 > **Instaladores prontos:** os releases do GitHub publicam `.deb` (Ubuntu/Debian), `.rpm` (Fedora) e `.exe` (Windows), gerados automaticamente a cada tag `vX.Y.Z`.
 >
 > ```bash
-> sudo apt install ./pofuserver-coder-studio_1.3.0_amd64.deb   # Ubuntu/Debian
-> sudo dnf install ./pofuserver-coder-studio-1.3.0.x86_64.rpm  # Fedora
+> sudo apt install ./pofu-code-studio_1.3.0_amd64.deb   # Ubuntu/Debian
+> sudo dnf install ./pofu-code-studio-1.3.0.x86_64.rpm  # Fedora
 > ```
 
 ### Servidor de exemplo com llama.cpp
@@ -144,8 +167,11 @@ Engrenagem → aba **Ajustes**:
 4. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
 5. **Ocultar o console dos comandos** — ligado por padrão (veja acima)
 6. **Busca na web**, temperatura, top-p, máximo de tokens e timeout de comando
+7. **Instruções (system prompt)** e **skills** — veja a seção acima
 
 O **nível de raciocínio** não fica aqui: ele mora no rodapé do compositor, ao lado do campo de mensagem.
+
+O que está salvo é lido **na abertura do app**, não só quando você entra nas configurações: o endpoint salvo é consultado assim que a janela sobe, e daí saem a lista de modelos, o tamanho de contexto, o suporte a imagem e os níveis de raciocínio. Um valor estragado no arquivo de configuração (endpoint vazio, temperatura fora de faixa, nível que não existe mais) volta ao padrão em vez de falhar na primeira mensagem.
 
 ## Como usar
 

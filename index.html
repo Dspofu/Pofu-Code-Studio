@@ -1,13 +1,13 @@
 <!DOCTYPE html>
 <!-- SPDX-License-Identifier: Apache-2.0 -->
-<!-- Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved. -->
+<!-- Copyright 2026-present the Pofu Code Studio authors. All rights reserved. -->
 <!-- Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE. -->
-<!-- Source: https://github.com/Dspofu/Pofuserver-Code -->
+<!-- Source: https://github.com/Dspofu/Pofu-Code-Studio -->
 
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
-  <title>Pofuserver Coder Studio</title>
+  <title>Pofu Code Studio</title>
 
   <link rel="stylesheet" href="vendor/github-dark.min.css">
   <script src="vendor/tailwind.min.js"></script>
@@ -1982,6 +1982,112 @@
     .think-item.active { color: var(--accent-2, #38bdf8); }
     .think-item .think-item-hint { font-size: 0.68rem; color: var(--muted-2); }
 
+    /* ---- Card de pergunta do agente (ask_user) ---- */
+    .question-box {
+      background: var(--surface-2);
+      border: 1px solid var(--border-2);
+      border-radius: 14px;
+      padding: 20px;
+      width: min(560px, 92vw);
+      max-height: 86vh;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+    }
+
+    .question-chip {
+      align-self: flex-start;
+      font-size: 0.64rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent-2, #38bdf8);
+      border: 1px solid var(--border-2);
+      border-radius: 999px;
+      padding: 3px 9px;
+    }
+
+    .question-title { font-size: 0.98rem; font-weight: 600; color: var(--text); line-height: 1.4; }
+
+    .question-options { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
+
+    .question-opt {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 10px 12px;
+      border: 1px solid var(--border-2);
+      border-radius: 10px;
+      background: var(--surface-3);
+      cursor: pointer;
+      text-align: left;
+      color: var(--text);
+    }
+
+    .question-opt:hover { border-color: var(--accent-2, #38bdf8); }
+    /* O anel de foco do Chromium é laranja no escuro e parece uma TERCEIRA cor de
+       estado — ao lado do azul de selecionado, dá a impressão de que a opção com foco
+       também está marcada. Aqui o foco é o mesmo azul, mas afastado da borda: anel é
+       anel, borda é seleção. */
+    .question-opt:focus { outline: none; }
+    .question-opt:focus-visible { outline: 2px solid var(--accent-2, #38bdf8); outline-offset: 2px; }
+    .question-opt.selected { border-color: var(--accent-2, #38bdf8); background: var(--surface-1, var(--surface-3)); }
+    .question-opt .opt-mark {
+      flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px;
+      border: 1px solid var(--border-2); border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem; color: var(--accent-2, #38bdf8);
+    }
+    .question-opt.selected .opt-mark { border-color: var(--accent-2, #38bdf8); }
+    .question-opt .opt-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .question-opt .opt-label { font-size: 0.83rem; font-weight: 600; }
+    .question-opt .opt-desc { font-size: 0.72rem; color: var(--muted-2); line-height: 1.4; }
+
+    .question-free {
+      width: 100%; resize: vertical; min-height: 62px;
+      padding: 9px 11px; border-radius: 10px;
+      border: 1px solid var(--border-2); background: var(--surface-3);
+      color: var(--text); font-size: 0.82rem; font-family: inherit; outline: none;
+    }
+    .question-free:focus { border-color: var(--accent-2, #38bdf8); }
+
+    .question-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* ---- Skills importadas ---- */
+    .skill-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 9px 11px; border: 1px solid var(--border-2);
+      border-radius: 10px; background: var(--surface-3); margin-bottom: 7px;
+    }
+    .skill-row .skill-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .skill-row .skill-name { font-size: 0.82rem; font-weight: 600; color: var(--text); }
+    .skill-row .skill-desc {
+      font-size: 0.71rem; color: var(--muted-2); line-height: 1.4;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .skill-row .skill-meta { font-size: 0.66rem; color: var(--muted-2); }
+    .skill-row.inativa .skill-name, .skill-row.inativa .skill-desc { opacity: 0.5; }
+    .skill-empty { font-size: 0.74rem; color: var(--muted-2); padding: 4px 0 8px; }
+
+    .prompt-textarea {
+      width: 100%; min-height: 120px; resize: vertical;
+      padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border-2); background: var(--surface-3);
+      color: var(--text); font-size: 0.82rem; font-family: inherit;
+      line-height: 1.5; outline: none;
+    }
+    .prompt-textarea:focus { border-color: var(--accent-2, #38bdf8); }
+
+    /* Rodapé do menu: diz se a lista de níveis foi confirmada pelo servidor. */
+    .think-menu-nota {
+      margin-top: 4px;
+      padding: 6px 9px 2px;
+      border-top: 1px solid var(--border-2);
+      font-size: 0.66rem;
+      line-height: 1.35;
+      color: var(--muted-2);
+    }
+
     .proc-header-btn { position: relative; }
     .proc-header-btn.has-active { border-color: var(--accent); color: var(--accent-2); }
 
@@ -2356,6 +2462,30 @@
             </div>
 
             <div class="cfg-section">
+              <div class="cfg-section-title">Instruções do agente</div>
+              <div class="config-group">
+                <label for="input-custom-prompt">Instruções (system prompt)</label>
+                <textarea id="input-custom-prompt" class="prompt-textarea" placeholder="Ex.: este projeto usa pnpm, não npm. Sempre rode os testes antes de dizer que terminou."></textarea>
+                <span class="cfg-hint">Vai junto do prompt de sistema em toda mensagem. Vale para regras do projeto e preferências suas — quanto mais curto e concreto, melhor o modelo segue.</span>
+              </div>
+              <div class="switch-row">
+                <div class="switch-text">
+                  <span class="switch-title">Substituir o prompt padrão</span>
+                  <span class="cfg-hint">Desligado, seu texto é <strong>somado</strong> às instruções de fábrica. Ligado, elas são <strong>descartadas</strong> e só o seu texto vale — inclusive as regras de ler antes de sobrescrever e de validar antes de dizer que terminou. Só ligue se for reescrever esse comportamento.</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="check-prompt-replace"><span class="switch-slider"></span></label>
+              </div>
+            </div>
+
+            <div class="cfg-section">
+              <div class="cfg-section-title">Skills</div>
+              <span class="cfg-hint">Arquivos de instrução (<code>SKILL.md</code> e afins) que o agente passa a seguir. O conteúdo das skills ativas entra no prompt a cada mensagem, então o tamanho aparece na lista: é contexto gasto em toda a conversa.</span>
+              <div id="skill-list" style="margin-top:10px;"></div>
+              <input type="file" id="skill-input" accept=".md,.markdown,.txt" multiple hidden>
+              <button id="btn-import-skill" class="btn-icon" style="font-size:0.75rem;padding:8px 12px;">Importar skill…</button>
+            </div>
+
+            <div class="cfg-section">
               <div class="cfg-section-title">Segurança de uso</div>
               <div class="switch-row">
                 <div class="switch-text">
@@ -2415,6 +2545,20 @@
         <button id="confirm-reject" class="btn-secondary">Rejeitar</button>
         <button id="confirm-always" class="btn-secondary">Sempre permitir</button>
         <button id="confirm-approve" class="btn-primary">Executar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card de pergunta: o agente para e espera a resposta (ferramenta ask_user). -->
+  <div id="question-modal" class="modal-overlay">
+    <div class="question-box">
+      <span class="question-chip" id="question-chip">Pergunta</span>
+      <div class="question-title" id="question-title"></div>
+      <div class="question-options" id="question-options"></div>
+      <textarea class="question-free" id="question-free" placeholder="Outro — escreva sua resposta (opcional)"></textarea>
+      <div class="question-actions">
+        <button id="question-skip" class="btn-secondary">Pular</button>
+        <button id="question-send" class="btn-primary">Responder</button>
       </div>
     </div>
   </div>

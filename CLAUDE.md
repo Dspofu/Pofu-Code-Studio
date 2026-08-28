@@ -4,13 +4,20 @@ Orientações para o Claude Code trabalhar neste repositório.
 
 ## O que é o projeto
 
-**Pofuserver Coder Studio** — app desktop Electron que é um *agente de código*: conecta-se a
+**Pofu Code Studio** — app desktop Electron que é um *agente de código*: conecta-se a
 qualquer API REST compatível com OpenAI (llama.cpp, Ollama, vLLM…) e dá ao modelo ferramentas
 para ler/escrever/editar/apagar arquivos do workspace, buscar por conteúdo no projeto, rodar
 comandos no terminal (com processos em segundo plano), chamar APIs por HTTP, tirar print de
 páginas web, pesquisar na web e anexar arquivos ao chat.
 
-Idioma do projeto: **português**. Commits, comentários, prompts e UI são em pt-BR — mantenha isso.
+Idioma: **pt-BR para as pessoas, inglês para o modelo**. Commits, comentários, documentação e
+UI são em português — mantenha isso. Já tudo que é ENVIADO ao modelo (o `system_prompt`, as
+descrições das ferramentas e seus parâmetros, e os `error`/`hint`/`note` que voltam de uma tool
+call) é em **inglês**, porque é a língua em que os modelos foram treinados a seguir instrução e
+a chamar ferramenta. O agente **não é preso a idioma nenhum**: o prompt manda responder na língua
+de quem escreveu, porque o app é usado fora do Brasil — não volte a fixar pt-BR ali. Ao mexer
+nessas strings, olhe para quem elas vão: card de ferramenta, modal e mensagem de erro na tela
+são da INTERFACE e continuam em pt-BR.
 
 ## Estrutura
 
@@ -110,6 +117,18 @@ que a ausência dele.
   (troca de trecho exato). Reescrever tudo com `write_file` gasta tokens de saída à toa e a
   geração é cortada no meio, truncando o arquivo. O prompt e as descrições das ferramentas
   reforçam isso — não afrouxe.
+- **A substituição do `edit_file` é `split/join`, nunca `replace`**: mesmo com pattern string,
+  o `String.prototype.replace` continua expandindo `$&`, `` $` ``, `$'`, `$1` e `$$` DENTRO do
+  texto de substituição. Um `new_text` com `$$var` (PHP, sed, LaTeX) era gravado corrompido e
+  ainda voltava `success: true` — erro silencioso, do tipo que só aparece muito depois. O
+  `split(alvo).join(troca)` é literal e serve aos dois modos, porque o caso ambíguo já saiu
+  antes com erro.
+- **Quebra de linha do `edit_file`**: o `read_file` entrega as linhas de um arquivo CRLF com o
+  `\r`, e o modelo copia o trecho sem ele — a busca exata nunca casava, e a dica ainda mandava
+  reler, num vaivém que não convergia. Por isso a busca é refeita com o `old_text` convertido
+  para CRLF, e o `new_text` é normalizado para a quebra do arquivo **mesmo quando o `old_text`
+  casou de primeira**: trecho de uma linha só não passa pelo fallback, e gravar LF no meio de um
+  arquivo CRLF deixa quebras misturadas que quebram a edição SEGUINTE.
 - **Prints e visão**: `capture_page` abre a URL numa `BrowserWindow` oculta (`offscreen: true`,
   necessário para o `capturePage()` não sair em branco) e devolve `{ text, image }`. O PNG vai
   para `userData/screenshots`; no histórico fica só o **caminho** (o base64 mora em `shotCache`,
@@ -205,6 +224,37 @@ que a ausência dele.
   (`criaLeitorStringJson`, que guarda escape partido entre deltas). O trabalho roda uma vez
   por quadro e só sobre o pedaço novo, pelo mesmo motivo de custo O(n²) do
   `criaEscritorStream` — não passe a varrer o acumulado inteiro a cada delta.
+- **Configurações no boot**: o `init` chama `applySettingsToForm()` ANTES do `fetchModels()`.
+  O `fetchModels` lê o endpoint do campo `#api-url`, e esse campo nasce com o valor fixo do
+  index.html; enquanto o formulário só era preenchido ao ABRIR as configurações, a consulta da
+  abertura ia para `localhost:8080` em vez do endpoint salvo — de calado, quando havia algo
+  respondendo lá. É essa ordem que faz `n_ctx`, visão e níveis de raciocínio chegarem certos já
+  na primeira mensagem. O `migraSettings` também valida o que veio do disco (store é JSON
+  editável): endpoint vazio, `thinkLevel` que não existe mais, número fora de faixa.
+- **Detecção do raciocínio**: não existe campo padrão no `/v1/models` para isso — quem responde
+  são as `capabilities` (Ollama anuncia `thinking`), o `chat_template` do `/props` do llama.cpp
+  e o `/api/show` do Ollama. Três situações diferentes, e juntá-las estraga o menu: detectou
+  algo → só o confirmado; leu o template e ele não fala de raciocínio → só *Padrão*; não leu
+  nada → mostra tudo, porque silêncio não é prova de que não suporta. A sonda roda uma vez por
+  par endpoint+modelo: o `refreshModelContext` é chamado a cada requisição.
+- **`ask_user` não passa pelo main**: a pergunta é UI pura, então ela quebra o fluxo de
+  quatro passos da tabela acima — não tem `ipcMain.handle` nem entrada no preload, só o
+  schema, o `case` no `runTool` e o modal. O turno do agente fica PARADO na promessa até
+  o clique, igual ao modal de confirmação; por isso `stopAgent` precisa resolver
+  `pendingQuestion` além do `pendingConfirm`, senão o botão Parar deixa o card aberto com
+  o turno congelado atrás dele. Resposta vazia (nada marcado, nada escrito) vira "pulou":
+  devolver `answered: true` sem conteúdo faria o agente seguir achando que foi respondido.
+- **Opção de pergunta em dois formatos**: o schema do `ask_user` declara `options` como
+  array de STRING porque é o que um modelo pequeno sob gramática consegue emitir, mas os
+  modelos grandes mandam `{label, description}`. O `normalizaOpcoes` aceita os dois — o
+  schema não é contrato, é sugestão, e recusar um dos formatos jogaria a chamada fora.
+- **Skills entram INTEIRAS no prompt, a cada requisição**: não são anexo que se lê uma
+  vez. Daí o `SKILL_MAX_CHARS` e o custo em tokens mostrado em cada linha da lista — sem
+  isso, dois arquivos grandes comem o contexto antes da primeira mensagem e a sessão morre
+  sem explicação na tela. Skill desligada não é enviada.
+- **`promptMode: 'replace'` só vale com texto**: substituir o prompt de fábrica por vazio
+  deixaria o modelo sem instrução nenhuma e ele para de chamar ferramenta — por isso o
+  `buildSystem` só troca quando o campo tem conteúdo.
 - **Servidor local**: a porta e o modelo do llama.cpp variam — confirme com o usuário antes de
   assumir `http://localhost:8080/v1`.
 

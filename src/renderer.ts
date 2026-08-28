@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026-present the Pofuserver Coder Studio authors. All rights reserved.
+// Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
-// Source: https://github.com/Dspofu/Pofuserver-Code
+// Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_TOOL_RESULT_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_TOOL_RESULT_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -94,6 +94,7 @@ function drenaFila(chat) {
 function stopAgent() {
   stopRequested = true;
   if (pendingConfirm) resolveConfirm('reject'); // fecha o modal de confirmação, se aberto
+  if (pendingQuestion) resolveQuestion(true);   // e o card de pergunta, que também segura o turno
   if (abortController) { try { abortController.abort(); } catch (e) { } }
 }
 
@@ -173,6 +174,254 @@ function hideConfirmModal() {
   if (modal) modal.classList.remove('active');
 }
 
+// --------------------------------------------------------------------------
+//  Skills importadas
+// --------------------------------------------------------------------------
+// Uma skill é um arquivo de instruções (o SKILL.md do Claude Code e parecidos). O
+// conteúdo das ATIVAS entra no prompt de sistema a cada requisição — é por isso que a
+// lista mostra o tamanho: não é um anexo, é orçamento de contexto gasto em toda mensagem.
+
+// O frontmatter YAML é o formato que os arquivos de skill usam, mas não dá para exigir:
+// arquivo de instrução escrito à mão raramente tem. Sem ele, o nome sai do arquivo e a
+// descrição, da primeira linha de texto de verdade.
+function leSkill(nomeArquivo, texto) {
+  const conteudo = String(texto || '').replace(/\r\n/g, '\n').trim();
+  let nome = '', descricao = '', corpo = conteudo;
+
+  const fm = conteudo.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (fm) {
+    corpo = conteudo.slice(fm[0].length).trim();
+    for (const linha of fm[1].split('\n')) {
+      const par = linha.match(/^\s*(name|description)\s*:\s*(.*)$/i);
+      if (!par) continue;
+      const valor = par[2].trim().replace(/^["']|["']$/g, '');
+      if (par[1].toLowerCase() === 'name') nome = valor; else descricao = valor;
+    }
+  }
+  if (!nome) {
+    const titulo = corpo.match(/^#\s+(.+)$/m);
+    nome = titulo ? titulo[1].trim() : nomeArquivo.replace(/\.(md|markdown|txt)$/i, '');
+  }
+  if (!descricao) {
+    const primeira = corpo.split('\n').find(l => l.trim() && !l.trim().startsWith('#'));
+    descricao = (primeira || '').trim().slice(0, 160);
+  }
+  return {
+    id: 'skill_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    name: nome.slice(0, 80),
+    description: descricao,
+    content: corpo.slice(0, SKILL_MAX_CHARS),
+    arquivo: nomeArquivo,
+    ativa: true,
+    cortada: corpo.length > SKILL_MAX_CHARS
+  };
+}
+
+async function importarSkills(fileList) {
+  const arquivos = Array.from<File>(fileList || []);
+  let importadas = 0;
+  for (const arq of arquivos) {
+    const texto = await readFileAsText(arq);
+    if (texto == null) { appendError(`Não consegui ler ${arq.name}.`); continue; }
+    const skill = leSkill(arq.name, texto);
+    if (!skill.content) { appendError(`${arq.name} está vazio — nada para importar.`); continue; }
+    if (skill.cortada) {
+      logSystem(`A skill "${skill.name}" foi cortada em ${SKILL_MAX_CHARS} caracteres: ela vai inteira no prompt a cada mensagem, e o resto não caberia no contexto.`);
+    }
+    delete skill.cortada;
+    // Reimportar o mesmo arquivo ATUALIZA a skill em vez de duplicar: editar o SKILL.md
+    // e importar de novo é o fluxo normal de quem está escrevendo uma.
+    const antiga = state.settings.skills.findIndex(k => k.arquivo === skill.arquivo);
+    if (antiga >= 0) { skill.ativa = state.settings.skills[antiga].ativa; state.settings.skills[antiga] = skill; }
+    else state.settings.skills.push(skill);
+    importadas++;
+  }
+  if (importadas) { renderSkillList(); persist(); }
+}
+
+function renderSkillList() {
+  const lista = el('skill-list');
+  if (!lista) return;
+  lista.innerHTML = '';
+  const skills = state.settings.skills || [];
+  if (!skills.length) {
+    const vazio = document.createElement('div');
+    vazio.className = 'skill-empty';
+    vazio.innerText = 'Nenhuma skill importada.';
+    lista.appendChild(vazio);
+    return;
+  }
+  for (const skill of skills) {
+    const linha = document.createElement('div');
+    linha.className = 'skill-row' + (skill.ativa ? '' : ' inativa');
+
+    const corpo = document.createElement('div');
+    corpo.className = 'skill-body';
+    const nome = document.createElement('span');
+    nome.className = 'skill-name';
+    nome.innerText = skill.name;
+    const desc = document.createElement('span');
+    desc.className = 'skill-desc';
+    desc.innerText = skill.description || '(sem descrição)';
+    const meta = document.createElement('span');
+    meta.className = 'skill-meta';
+    // O custo aparece em tokens porque é assim que ele é sentido: some do contexto da
+    // conversa toda, não do arquivo.
+    meta.innerText = `${skill.arquivo} · ~${Math.round(skill.content.length / CHARS_PER_TOKEN).toLocaleString('pt-BR')} tokens por mensagem`;
+    corpo.append(nome, desc, meta);
+
+    const liga = document.createElement('label');
+    liga.className = 'switch';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = !!skill.ativa;
+    check.title = 'Usar esta skill';
+    check.addEventListener('change', () => { skill.ativa = check.checked; renderSkillList(); persist(); });
+    const slider = document.createElement('span');
+    slider.className = 'switch-slider';
+    liga.append(check, slider);
+
+    const remove = document.createElement('button');
+    remove.className = 'btn-icon';
+    remove.style.cssText = 'border:none;padding:4px 8px;font-size:0.75rem;';
+    remove.innerText = '✕';
+    remove.title = 'Remover skill';
+    remove.addEventListener('click', () => {
+      state.settings.skills = state.settings.skills.filter(k => k.id !== skill.id);
+      renderSkillList(); persist();
+    });
+
+    linha.append(corpo, liga, remove);
+    lista.appendChild(linha);
+  }
+}
+
+// O que as skills e as instruções do usuário acrescentam ao prompt de sistema.
+function blocoInstrucoes() {
+  let extra = '';
+  const proprio = String(state.settings.customPrompt || '').trim();
+  if (proprio && state.settings.promptMode !== 'replace') {
+    extra += `\n\n${CABECALHO_INSTRUCOES}\n${proprio}`;
+  }
+  const ativas = (state.settings.skills || []).filter(k => k.ativa && k.content);
+  if (ativas.length) {
+    extra += `\n\n${CABECALHO_SKILLS}\n` +
+      ativas.map(k => `\n## ${k.name}${k.description ? ` — ${k.description}` : ''}\n${k.content}`).join('\n');
+  }
+  return extra;
+}
+
+// --------------------------------------------------------------------------
+//  Card de pergunta ao usuário (ferramenta ask_user)
+// --------------------------------------------------------------------------
+// Mesmo desenho do modal de confirmação — promessa guardada, resolvida no clique —,
+// e não um card solto no chat: o turno do agente fica PARADO esperando a resposta, e
+// um card que rola para fora da tela deixaria o app parecendo travado. Pular é uma
+// resposta válida: o agente segue com o que já sabe em vez de ficar preso.
+let pendingQuestion = null;
+const MAX_OPCOES_PERGUNTA = 6;   // acima disso vira formulário, e a pergunta perde a graça
+
+function askUserQuestion(args) {
+  return new Promise((resolve) => {
+    pendingQuestion = { resolve };
+    showQuestionModal(args);
+  });
+}
+
+// O schema pede opção como STRING (é o que um modelo pequeno com gramática consegue
+// emitir), mas modelo grande manda {label, description}. Recusar um dos dois formatos
+// desperdiçaria a chamada inteira, então os dois são aceitos.
+function normalizaOpcoes(brutas): OpcaoPergunta[] {
+  if (!Array.isArray(brutas)) return [];
+  return brutas
+    .map(o => (o && typeof o === 'object')
+      ? { label: String(o.label ?? o.name ?? o.value ?? ''), description: o.description ? String(o.description) : '' }
+      : { label: String(o ?? ''), description: '' })
+    .filter(o => o.label.trim())
+    .slice(0, MAX_OPCOES_PERGUNTA);
+}
+
+function showQuestionModal(args) {
+  const modal = el('question-modal');
+  const opcoes = normalizaOpcoes(args.options);
+  const multi = !!args.multi_select;
+
+  el('question-chip').innerText = String(args.header || 'Pergunta').slice(0, 24);
+  el('question-title').innerText = String(args.question || 'O agente fez uma pergunta.');
+
+  const caixa = el('question-options');
+  caixa.innerHTML = '';
+  const escolhidas = new Set<number>();
+
+  opcoes.forEach((op, i) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'question-opt';
+    const marca = document.createElement('span');
+    marca.className = 'opt-mark';
+    const texto = document.createElement('span');
+    texto.className = 'opt-text';
+    const rotulo = document.createElement('span');
+    rotulo.className = 'opt-label';
+    rotulo.innerText = op.label;
+    texto.appendChild(rotulo);
+    if (op.description) {
+      const desc = document.createElement('span');
+      desc.className = 'opt-desc';
+      desc.innerText = op.description;
+      texto.appendChild(desc);
+    }
+    item.append(marca, texto);
+    item.addEventListener('click', () => {
+      if (multi) {
+        escolhidas.has(i) ? escolhidas.delete(i) : escolhidas.add(i);
+      } else {
+        escolhidas.clear();
+        escolhidas.add(i);
+      }
+      caixa.querySelectorAll<HTMLElement>('.question-opt').forEach((btn, idx) => {
+        const marcado = escolhidas.has(idx);
+        btn.classList.toggle('selected', marcado);
+        q<HTMLElement>('.opt-mark', btn).innerText = marcado ? '✓' : '';
+      });
+    });
+    caixa.appendChild(item);
+  });
+
+  const livre = el('question-free');
+  livre.value = '';
+  // Sem opção nenhuma a pergunta é aberta, e o campo de texto passa a ser a resposta
+  // inteira — não um "outro" ao lado das alternativas.
+  livre.placeholder = opcoes.length
+    ? (multi ? 'Outro — pode marcar mais de uma opção acima e complementar aqui' : 'Outro — escreva sua resposta')
+    : 'Escreva sua resposta';
+
+  pendingQuestion.coletar = () => ({
+    answered: true,
+    selected: [...escolhidas].sort((a, b) => a - b).map(i => opcoes[i].label),
+    notes: String(livre.value || '').trim()
+  });
+
+  modal.classList.add('active');
+  setTimeout(() => { const alvo = caixa.querySelector('button') || livre; alvo && alvo.focus(); }, 30);
+}
+
+// Uma resposta vazia (nada marcado, nada escrito) não ajuda o agente em nada e ainda o
+// faz seguir achando que foi respondido — vira "pulou", que é o que de fato aconteceu.
+function resolveQuestion(pulou) {
+  const pendente = pendingQuestion;
+  if (!pendente) return;
+  const modal = el('question-modal');
+  if (modal) modal.classList.remove('active');
+  pendingQuestion = null;
+  let resposta = pulou ? null : (pendente.coletar ? pendente.coletar() : null);
+  if (resposta && !resposta.selected.length && !resposta.notes) resposta = null;
+  pendente.resolve(resposta || {
+    answered: false,
+    reason: 'The user skipped the question. Decide with what you already know, state the assumption you made, and carry on.'
+  });
+}
+
 function updateExecModeUI() {
   document.querySelectorAll<HTMLElement>('#exec-mode .exec-opt').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.mode === state.settings.execMode);
@@ -196,13 +445,164 @@ function updateThinkUI() {
   });
 }
 
+// --------------------------------------------------------------------------
+//  O que o SERVIDOR aceita de raciocínio
+// --------------------------------------------------------------------------
+// Não existe campo padrão no /v1/models dizendo "este modelo tem modo de pensar", então
+// a detecção junta as três fontes que EXISTEM de verdade:
+//   1. `capabilities` do /v1/models — o Ollama anuncia "thinking" ali;
+//   2. `chat_template` do /props do llama.cpp — é o template que decide se
+//      `enable_thinking` e `reasoning_effort` significam alguma coisa; se o nome não
+//      aparece nele, mandar o campo não muda nada (ou o servidor recusa);
+//   3. `/api/show` do Ollama, que devolve capabilities e template do modelo.
+// Vale a pena: `reasoning_effort` num servidor que não conhece o campo volta 400 e
+// derruba a conversa, e o usuário só descobria isso na primeira mensagem.
+const suporteThink: SuporteRaciocinio = {
+  detectado: false, enableThinking: false, reasoningEffort: false, valores: null, origem: '',
+  templateLido: false
+};
+
+// Marca no `suporteThink` o que este texto (chat template, JSON do /props) revela.
+function leSinaisDeRaciocinio(texto: string, origem: string) {
+  if (!texto) return;
+  let achou = false;
+  if (texto.includes('enable_thinking')) { suporteThink.enableThinking = true; achou = true; }
+  if (texto.includes('reasoning_effort')) {
+    suporteThink.reasoningEffort = true;
+    achou = true;
+    // Quando o template ENUMERA os níveis aceitos (o gpt-oss escreve "low"/"medium"/
+    // "high" no prompt), oferecer um nível fora da lista é pedir 400 na primeira
+    // mensagem. Sem enumeração, `valores` fica null e todos os níveis seguem valendo.
+    const vistos = new Set<string>();
+    for (const v of ['low', 'medium', 'high', 'max']) {
+      if (texto.includes("'" + v + "'") || texto.includes('"' + v + '"')) vistos.add(v);
+    }
+    if (vistos.size) suporteThink.valores = vistos;
+  }
+  if (achou) { suporteThink.detectado = true; suporteThink.origem = origem; }
+}
+
+// Capacidades declaradas no próprio /v1/models (mesma leitura que o detectVision faz).
+// "thinking" diz que dá para LIGAR/DESLIGAR o raciocínio; não promete os níveis do
+// reasoning_effort — esses só entram se aparecerem no template.
+function detectThinkCapabilities(json, modelId: string) {
+  const all = [...(json.models || []), ...(json.data || [])];
+  const daMesmaId = all.filter(m => [m.id, m.name, m.model].filter(Boolean).includes(modelId));
+  const pool = daMesmaId.length ? daMesmaId : all;
+  const temThink = pool.some(m =>
+    (m.capabilities || []).some(c => /think|reason/i.test(String(c))));
+  if (temThink) {
+    suporteThink.enableThinking = true;
+    suporteThink.detectado = true;
+    suporteThink.origem = suporteThink.origem || 'capabilities do /models';
+  }
+}
+
+// O /props e o /api/show ficam na RAIZ do servidor, não sob /v1.
+const raizDoEndpoint = (apiUrl: string) =>
+  String(apiUrl).replace(/\/+$/, '').replace(/\/v\d+$/, '');
+
+// A detecção roda uma vez por (endpoint, modelo): o refreshModelContext é chamado a CADA
+// requisição e sondar sempre custaria duas conexões por mensagem sem mudar nada.
+let sondaThinkFeita = '';
+
+// Ponto ÚNICO de detecção, chamado pelo fetchModels (modal de configurações) e pelo
+// refreshModelContext (antes de cada requisição). Reavalia do zero quando o par
+// endpoint+modelo muda: o que o modelo anterior anunciava não vale para o novo.
+function detectThink(json, apiUrl: string, modelo: string) {
+  const chave = `${apiUrl}::${modelo}`;
+  if (!modelo || sondaThinkFeita === chave) return;
+  sondaThinkFeita = chave;
+  Object.assign(suporteThink, {
+    detectado: false, enableThinking: false, reasoningEffort: false, valores: null, origem: '',
+    templateLido: false
+  });
+  detectThinkCapabilities(json, modelo);
+  buildThinkMenu();   // já reflete o que veio no /models
+  updateThinkUI();
+  sondaRaciocinio(apiUrl, modelo);  // /props e /api/show chegam depois e refazem o menu
+}
+
+async function sondaRaciocinio(apiUrl: string, modelo: string) {
+  const raiz = raizDoEndpoint(apiUrl);
+  const auth: Record<string, string> = {};
+  if (state.settings.apiKey) auth['Authorization'] = `Bearer ${state.settings.apiKey}`;
+
+  // llama.cpp / llama-server
+  try {
+    const res = await fetch(`${raiz}/props`, { headers: auth, signal: AbortSignal.timeout(3000) });
+    if (res.ok) {
+      const props = await res.json();
+      const template = String(props.chat_template || '');
+      // Só o TEMPLATE conta como resposta conclusiva. Versão do llama.cpp que não o
+      // devolve deixa `templateLido` falso, e aí o silêncio volta a valer como "não sei".
+      if (template) suporteThink.templateLido = true;
+      leSinaisDeRaciocinio(template || JSON.stringify(props), 'chat_template do /props');
+    }
+  } catch (e) { /* endpoint sem /props (vLLM, OpenAI, gateways): tenta a próxima fonte */ }
+
+  // Ollama — as capacidades do modelo só existem no /api/show, que é POST.
+  try {
+    const res = await fetch(`${raiz}/api/show`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelo }),
+      signal: AbortSignal.timeout(3000)
+    });
+    if (res.ok) {
+      const info = await res.json();
+      if ((info.capabilities || []).some(c => /think|reason/i.test(String(c)))) {
+        suporteThink.enableThinking = true;
+        suporteThink.detectado = true;
+        suporteThink.origem = suporteThink.origem || 'capabilities do /api/show';
+      }
+      const template = String(info.template || '');
+      if (template) suporteThink.templateLido = true;
+      leSinaisDeRaciocinio(template, 'template do /api/show');
+    }
+  } catch (e) { /* não é Ollama */ }
+
+  buildThinkMenu();
+  updateThinkUI();
+}
+
+// Níveis que o endpoint confirmou aceitar. São três situações diferentes, e tratar as
+// três como uma só é o que estragaria a lista:
+//   • detectou algo  → só o que foi confirmado;
+//   • leu o template e ele não fala de raciocínio → o modelo NÃO tem modo de pensar,
+//     e oferecer "Desligado"/"Alto" seria oferecer botão que não faz nada;
+//   • não conseguiu ler nada (vLLM, OpenAI, gateways) → mostra todos, porque silêncio
+//     do servidor não é prova de que ele não suporta.
+function niveisDisponiveis(): ThinkLevel[] {
+  const todos = Object.keys(THINK_LEVELS) as ThinkLevel[];
+  if (!suporteThink.detectado) {
+    return suporteThink.templateLido ? todos.filter(c => !THINK_LEVELS[c].requer) : todos;
+  }
+  return todos.filter(chave => {
+    const nivel = THINK_LEVELS[chave];
+    if (!nivel.requer) return true;  // 'padrao' não acrescenta campo nenhum
+    if (nivel.requer === 'enable_thinking') return suporteThink.enableThinking;
+    if (!suporteThink.reasoningEffort) return false;
+    const valor = String((nivel.payload as any)?.reasoning_effort || '');
+    return !suporteThink.valores || suporteThink.valores.has(valor);
+  });
+}
+
 // O menu sai do próprio THINK_LEVELS: uma lista fixa no HTML sairia de sincronia com as
 // constantes assim que um nível novo entrasse (foi o que aconteceu com o <select> antigo).
 function buildThinkMenu() {
   const menu = el('think-menu');
   if (!menu) return;
   menu.innerHTML = '';
-  for (const chave of Object.keys(THINK_LEVELS) as ThinkLevel[]) {
+  const disponiveis = niveisDisponiveis();
+  // O nível salvo pode ter sumido ao trocar de modelo ou de endpoint. Mantê-lo escolhido
+  // mandaria na próxima requisição justamente o campo que este servidor não conhece.
+  if (!disponiveis.includes(nivelThinkAtual())) {
+    state.settings.thinkLevel = 'padrao';
+    state.settings.noThink = false;
+    persist();
+  }
+  for (const chave of disponiveis) {
     const nivel = THINK_LEVELS[chave];
     const item = document.createElement('div');
     item.className = 'think-item';
@@ -227,6 +627,17 @@ function buildThinkMenu() {
     });
     menu.appendChild(item);
   }
+
+  // Sem esta nota o usuário não entende por que os níveis mudaram sozinhos ao trocar de
+  // modelo — nem saberia que a lista veio do servidor, e não de um palpite do app.
+  const nota = document.createElement('div');
+  nota.className = 'think-menu-nota';
+  nota.innerText = suporteThink.detectado
+    ? `Níveis confirmados pelo servidor (${suporteThink.origem}).`
+    : suporteThink.templateLido
+      ? 'O template deste modelo não tem modo de raciocínio — não há o que ajustar.'
+      : 'O servidor não informou o que aceita — todos os níveis estão à mostra.';
+  menu.appendChild(nota);
 }
 
 function fechaThinkMenu() {
@@ -390,7 +801,7 @@ function seguirAposCarregarImagens(raiz) {
   }
 }
 
-// Atualiza o título da janela: "Pofuserver Coder Studio — <status>" (ou só o nome quando ocioso)
+// Atualiza o título da janela: "Pofu Code Studio — <status>" (ou só o nome quando ocioso)
 let ultimoTitulo = '';
 function setAppTitle(status) {
   const title = status ? `${APP_NAME} — ${status}` : APP_NAME;
@@ -418,9 +829,45 @@ async function persist() {
 // O controle de raciocínio era um liga/desliga (noThink) e virou um nível. Quem já tinha
 // desligado precisa continuar desligado depois de atualizar, senão o modelo volta a
 // pensar sozinho e o usuário não faz ideia do porquê.
+// Faixa aceita de cada número. O store é um JSON no disco: uma versão mais nova, uma
+// edição à mão ou um campo que mudou de significado deixam ali valores que o app não
+// aguenta (maxTokens negativo, temperatura 50), e o sintoma só apareceria na primeira
+// requisição — longe demais da causa para o usuário ligar uma coisa à outra.
+const LIMITES_SETTINGS = {
+  temperature: [0, 2], topP: [0, 1], maxTokens: [256, 1000000], cmdTimeout: [1, 3600]
+};
+
 function migraSettings(salvas) {
   const s = { ...DEFAULT_SETTINGS, ...(salvas || {}) };
   if (salvas && salvas.thinkLevel === undefined && salvas.noThink) s.thinkLevel = 'desligado';
+
+  // A barra no fim faria o endpoint virar ".../v1//models" e a raiz do /props sair errada.
+  s.apiUrl = String(s.apiUrl || '').trim().replace(/\/+$/, '') || DEFAULT_SETTINGS.apiUrl;
+  s.model = String(s.model || '');
+  s.apiKey = String(s.apiKey || '');
+  for (const chave of Object.keys(LIMITES_SETTINGS)) {
+    const [min, max] = LIMITES_SETTINGS[chave];
+    const num = Number(s[chave]);
+    s[chave] = Number.isFinite(num) ? Math.min(Math.max(num, min), max) : DEFAULT_SETTINGS[chave];
+  }
+  // Nível salvo por uma versão que tinha outros níveis não existe mais no THINK_LEVELS,
+  // e o menu ficaria sem nenhum item marcado.
+  if (!THINK_LEVELS[s.thinkLevel]) s.thinkLevel = DEFAULT_SETTINGS.thinkLevel;
+  if (s.execMode !== 'manual' && s.execMode !== 'auto') s.execMode = DEFAULT_SETTINGS.execMode;
+  s.customPrompt = String(s.customPrompt || '');
+  if (s.promptMode !== 'append' && s.promptMode !== 'replace') s.promptMode = DEFAULT_SETTINGS.promptMode;
+  // Skill sem conteúdo (store editado à mão, importação interrompida) entraria no prompt
+  // como um cabeçalho solto, que só confunde o modelo.
+  s.skills = (Array.isArray(s.skills) ? s.skills : [])
+    .filter(k => k && k.content)
+    .map(k => ({
+      id: String(k.id || 'skill_' + Math.random().toString(36).slice(2)),
+      name: String(k.name || k.arquivo || 'skill'),
+      description: String(k.description || ''),
+      content: String(k.content).slice(0, SKILL_MAX_CHARS),
+      arquivo: String(k.arquivo || ''),
+      ativa: k.ativa !== false
+    }));
   return s;
 }
 
@@ -898,6 +1345,7 @@ const TOOL_META = {
   wait_for_process: { icon: '⏳', label: 'Aguardar processo' },
   list_processes: { icon: '📋', label: 'Processos' },
   stop_process: { icon: '⛔', label: 'Parar processo' },
+  ask_user: { icon: '💬', label: 'Pergunta' },
   web_search: { icon: '🔎', label: 'Buscar na web' },
   fetch_url: { icon: '🌐', label: 'Ler página' }
 };
@@ -922,6 +1370,11 @@ function summarizeToolCall(name, args) {
       const alvo = (args.filename || '') + (args.replace_all ? '  (todas as ocorrências)' : '');
       if (!args.old_text) return alvo;
       return `${alvo}\n\n− ${corte(args.old_text).replace(/\n/g, '\n− ')}\n+ ${corte(args.new_text).replace(/\n/g, '\n+ ')}`;
+    }
+    case 'ask_user': {
+      const opcoes = normalizaOpcoes(args.options);
+      return String(args.question || '') +
+        (opcoes.length ? '\n' + opcoes.map(o => '• ' + o.label).join('\n') : '');
     }
     case 'search_files':
       return (args.query || '') + (args.file_pattern ? `   em ${args.file_pattern}` : '');
@@ -956,7 +1409,7 @@ function summarizeToolResult(name, resultStr) {
         if (erro && erro.error) return `⚠ ${erro.error}`;
       } catch (e) { /* não era JSON: segue como conteúdo do arquivo */ }
     }
-    const m = resultStr.match(/^\[Arquivo ".*?" — linhas (\d+)–(\d+) de (\d+)\]/);
+    const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)\]/);
     if (m) {
       const restam = Number(m[3]) - Number(m[2]);
       return restam > 0
@@ -993,7 +1446,7 @@ function summarizeToolResult(name, resultStr) {
     case 'write_file': {
       if (!data.success) return data.error || resultStr;
       const cabec = data.created ? `✓ Arquivo criado · ${data.lines} linha(s)` : `✓ Arquivo salvo · ${data.lines} linha(s)`;
-      return data.aviso ? `${cabec}\n⚠ ${data.aviso}` : cabec;
+      return data.warning ? `${cabec}\n⚠ ${data.warning}` : cabec;
     }
     case 'edit_file': {
       if (!data.success) return `⚠ ${data.error}${data.hint ? '\n' + data.hint : ''}`;
@@ -1004,6 +1457,13 @@ function summarizeToolResult(name, resultStr) {
       const delta = temContagem ? data.linesAfter - data.linesBefore : 0;
       const saldo = delta === 0 ? '' : `  (${delta > 0 ? '+' : ''}${delta} linha${Math.abs(delta) > 1 ? 's' : ''})`;
       return `✓ Editado · ${onde}${saldo}`;
+    }
+    case 'ask_user': {
+      if (!data.answered) return '↷ pergunta pulada';
+      const partes = [];
+      if (data.selected && data.selected.length) partes.push(data.selected.join(' · '));
+      if (data.notes) partes.push(data.notes);
+      return '✓ ' + partes.join('\n');
     }
     case 'search_files': {
       if (!data.success) return `⚠ ${data.error}`;
@@ -1565,28 +2025,28 @@ function hideTyping() {
 
 function truncate(str, max) {
   if (typeof str !== 'string') str = String(str);
-  return str.length > max ? str.slice(0, max) + `\n… (truncado, ${str.length} caracteres)` : str;
+  return str.length > max ? str.slice(0, max) + `\n… (truncated, ${str.length} characters)` : str;
 }
 
 // Formata para o modelo a janela de linhas que o processo main já recortou. O recorte
 // acontece lá (só as linhas pedidas cruzam o IPC); aqui fica apenas a apresentação:
 // cabeçalho com a faixa lida e rodapé dizendo como pedir a continuação.
 function formatFileWindow(filename, res, budget) {
-  if (!res || !res.success) return JSON.stringify({ error: (res && res.error) || 'falha ao ler o arquivo' });
-  if (res.empty) return `Arquivo "${filename}" está vazio.`;
+  if (!res || !res.success) return JSON.stringify({ error: (res && res.error) || 'could not read the file' });
+  if (res.empty) return `File "${filename}" is empty.`;
 
   let charNote = '';
   if (res.charClipped) {
-    charNote = `\n\n[… conteúdo desta janela cortado em ${budget} caracteres (linhas muito longas)]`;
+    charNote = `\n\n[… this window was cut at ${budget} characters (very long lines)]`;
   }
 
   // Arquivo cabe inteiro na janela: volta direto, sem cabeçalho (o caso comum).
   if (res.start === 1 && res.end === res.total && !charNote) return res.content;
 
-  const header = `[Arquivo "${filename}" — linhas ${res.start}–${res.end} de ${res.total}]`;
+  const header = `[File "${filename}" — lines ${res.start}–${res.end} of ${res.total}]`;
   let footer = charNote;
   if (res.end < res.total) {
-    footer += `\n\n[… restam ${res.total - res.end} linha(s). Para continuar, chame read_file com offset=${res.end + 1}]`;
+    footer += `\n\n[… ${res.total - res.end} line(s) left. To continue, call read_file with offset=${res.end + 1}]`;
   }
   return `${header}\n${res.content}${footer}`;
 }
@@ -1607,11 +2067,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'list_files',
-      description: 'Lista arquivos e pastas do diretório de trabalho (ou de uma subpasta).',
+      description: 'Lists files and folders in the working directory (or in a subfolder).',
       parameters: {
         type: 'object',
         properties: {
-          subpath: { type: 'string', description: 'Subpasta relativa opcional (padrão: raiz do workspace)' }
+          subpath: { type: 'string', description: 'Optional relative subfolder (default: workspace root)' }
         }
       }
     }
@@ -1620,16 +2080,16 @@ const tools = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Lê o conteúdo de um arquivo do workspace. A maioria dos arquivos volta INTEIRA; ' +
-        'só os muito grandes são divididos em JANELAS de linhas. Se o resultado avisar que restam ' +
-        'linhas, chame read_file de novo com "offset" na linha indicada para ler o restante — o ' +
-        'arquivo NÃO é cortado silenciosamente. Antes de reescrever um arquivo grande, leia todas as partes.',
+      description: 'Reads the content of a file in the workspace. Most files come back WHOLE; ' +
+        'only very large ones are split into WINDOWS of lines. If the result says lines are left, ' +
+        'call read_file again with "offset" set to the line it indicates — the file is NEVER ' +
+        'truncated silently. Before rewriting a large file, read every part of it.',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Nome ou caminho relativo do arquivo' },
-          offset: { type: 'number', description: 'Linha inicial da leitura (base 1). Padrão: 1.' },
-          limit: { type: 'number', description: `Máximo de linhas a retornar nesta leitura (teto: ${READ_FILE_MAX_LINES}). O tamanho real da janela também é limitado por um orçamento de caracteres derivado do contexto do modelo, então um "limit" alto não garante o arquivo inteiro — se o resultado avisar que restam linhas, continue com "offset".` }
+          filename: { type: 'string', description: 'File name or relative path' },
+          offset: { type: 'number', description: 'First line to read (1-based). Default: 1.' },
+          limit: { type: 'number', description: `Maximum number of lines to return in this read (cap: ${READ_FILE_MAX_LINES}). The real window size is also bounded by a character budget derived from the model context, so a high "limit" does not guarantee the whole file — if the result says lines are left, continue with "offset".` }
         },
         required: ['filename']
       }
@@ -1639,14 +2099,14 @@ const tools = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Cria um arquivo novo ou SOBRESCREVE por completo um existente. Para alterar ' +
-        'parte de um arquivo que já existe use edit_file — reescrever tudo gasta muito mais tokens ' +
-        'e a resposta pode ser cortada no meio, truncando o arquivo.',
+      description: 'Creates a new file or COMPLETELY OVERWRITES an existing one. To change part of ' +
+        'a file that already exists, use edit_file — rewriting everything costs far more tokens and ' +
+        'the response may be cut off midway, truncating the file.',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Nome do arquivo a ser salvo' },
-          content: { type: 'string', description: 'Conteúdo completo a ser escrito no arquivo' }
+          filename: { type: 'string', description: 'Name of the file to save' },
+          content: { type: 'string', description: 'Full content to write to the file' }
         },
         required: ['filename', 'content']
       }
@@ -1656,17 +2116,17 @@ const tools = [
     type: 'function',
     function: {
       name: 'edit_file',
-      description: 'Forma PADRÃO de alterar um arquivo existente: troca o trecho exato old_text por ' +
-        'new_text, preservando o resto do arquivo. Leia o arquivo antes e copie old_text exatamente ' +
-        'como está (mesma indentação), incluindo linhas de contexto suficientes para o trecho ser ' +
-        'único. Falha sem alterar nada se o trecho não existir ou aparecer mais de uma vez.',
+      description: 'The DEFAULT way to change an existing file: replaces the exact snippet old_text ' +
+        'with new_text, keeping the rest of the file untouched. Read the file first and copy old_text ' +
+        'exactly as it appears (same indentation), including enough surrounding lines to make it ' +
+        'unique. Fails without changing anything if the snippet is missing or appears more than once.',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Caminho relativo do arquivo a editar' },
-          old_text: { type: 'string', description: 'Trecho exato que será substituído (copiado do arquivo)' },
-          new_text: { type: 'string', description: 'Texto que entra no lugar (use string vazia para remover)' },
-          replace_all: { type: 'boolean', description: 'Substituir todas as ocorrências em vez de exigir trecho único (padrão: false)' }
+          filename: { type: 'string', description: 'Relative path of the file to edit' },
+          old_text: { type: 'string', description: 'Exact snippet to be replaced (copied from the file)' },
+          new_text: { type: 'string', description: 'Text that takes its place (use an empty string to delete it)' },
+          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique snippet (default: false)' }
         },
         required: ['filename', 'old_text', 'new_text']
       }
@@ -1676,19 +2136,20 @@ const tools = [
     type: 'function',
     function: {
       name: 'search_files',
-      description: 'Procura um texto ou padrão dentro dos arquivos do workspace e devolve arquivo, ' +
-        'linha e o conteúdo da linha. Use para localizar onde algo é definido ou usado — é muito mais ' +
-        'barato que ler arquivos inteiros à procura. Ignora node_modules, dist, .git e binários. ' +
-        'O campo "totalFound" dá o NÚMERO TOTAL de ocorrências (mesmo quando "matches" está limitado ' +
-        'a max_results): se totalFound for bem maior que max_results, refine a busca em vez de aumentar o limite.',
+      description: 'Searches for text or a pattern inside the workspace files and returns the file, ' +
+        'the line number and the line content. Use it to find where something is defined or used — it ' +
+        'is far cheaper than reading whole files looking for it. Skips node_modules, dist, .git and ' +
+        'binaries. The "totalFound" field gives the TOTAL number of matches (even when "matches" is ' +
+        'capped at max_results): if totalFound is much larger than max_results, refine the search ' +
+        'instead of raising the limit.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Texto a procurar (ou expressão regular, se regex=true)' },
-          regex: { type: 'boolean', description: 'Interpretar query como expressão regular (padrão: false)' },
-          case_sensitive: { type: 'boolean', description: 'Diferenciar maiúsculas de minúsculas (padrão: false)' },
-          file_pattern: { type: 'string', description: 'Filtro de arquivos no estilo glob (ex: *.js, src/**/*.test.js)' },
-          max_results: { type: 'number', description: 'Máximo de linhas de resultado (padrão 60, teto 200)' }
+          query: { type: 'string', description: 'Text to search for (or a regular expression, if regex=true)' },
+          regex: { type: 'boolean', description: 'Treat query as a regular expression (default: false)' },
+          case_sensitive: { type: 'boolean', description: 'Match case (default: false)' },
+          file_pattern: { type: 'string', description: 'Glob-style file filter (e.g. *.js, src/**/*.test.js)' },
+          max_results: { type: 'number', description: 'Maximum number of result lines (default 60, cap 200)' }
         },
         required: ['query']
       }
@@ -1698,11 +2159,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'create_directory',
-      description: 'Cria uma pasta (e as pastas pai necessárias) no workspace.',
+      description: 'Creates a folder (and any missing parent folders) in the workspace.',
       parameters: {
         type: 'object',
         properties: {
-          dirname: { type: 'string', description: 'Caminho relativo da pasta a criar (ex: src/components)' }
+          dirname: { type: 'string', description: 'Relative path of the folder to create (e.g. src/components)' }
         },
         required: ['dirname']
       }
@@ -1712,13 +2173,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'delete_file',
-      description: 'Apaga um arquivo do workspace. Use APENAS quando o usuário pediu a remoção, ou para ' +
-        'um arquivo temporário que você mesmo criou. Nunca apague um arquivo existente para "recomeçar" ' +
-        'uma edição que não deu certo — para corrigir conteúdo, use edit_file ou write_file.',
+      description: 'Deletes a file from the workspace. Use it ONLY when the user asked for the removal, ' +
+        'or for a temporary file you created yourself. Never delete an existing file to "start over" ' +
+        'after a failed edit — to fix content, use edit_file or write_file.',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Nome ou caminho relativo do arquivo a apagar' }
+          filename: { type: 'string', description: 'Name or relative path of the file to delete' }
         },
         required: ['filename']
       }
@@ -1728,17 +2189,17 @@ const tools = [
     type: 'function',
     function: {
       name: 'execute_command',
-      description: 'Executa um comando shell no workspace. Comandos que terminam retornam stdout/stderr. ' +
-        'Servidores/APIs/watchers são detectados automaticamente: assim que ficam prontos (banner de log ' +
-        'ou ociosidade) retornam um PID e seguem rodando em SEGUNDO PLANO, sem travar o chat — você pode ' +
-        'continuar executando outros comandos (curl, testes, etc.) enquanto o servidor roda. Evite sudo. ' +
-        'Encadear comandos: em Windows o shell é cmd.exe — use "&" ou "&&" (";" é lido como argumento e quebra o comando); ' +
-        'em Linux/macOS é bash, onde ";" e "&&" funcionam. Se precisar de ";" no Windows, rode ' +
-        '"powershell -NoProfile -Command \"a; b\"".',
+      description: 'Runs a shell command in the workspace. Commands that finish return stdout/stderr. ' +
+        'Servers, APIs and watchers are detected automatically: as soon as they are ready (log banner or ' +
+        'idleness) they return a PID and keep running in the BACKGROUND without blocking the chat — you ' +
+        'can go on running other commands (curl, tests, and so on) while the server is up. Avoid sudo. ' +
+        'Chaining commands: on Windows the shell is cmd.exe — use "&" or "&&" (";" is read as an argument ' +
+        'and breaks the command); on Linux/macOS it is bash, where ";" and "&&" both work. If you really ' +
+        'need ";" on Windows, run "powershell -NoProfile -Command \"a; b\"".',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'Comando shell para rodar (ex: npm run dev, node app.js, curl localhost:3000)' }
+          command: { type: 'string', description: 'Shell command to run (e.g. npm run dev, node app.js, curl localhost:3000)' }
         },
         required: ['command']
       }
@@ -1748,12 +2209,12 @@ const tools = [
     type: 'function',
     function: {
       name: 'read_process_output',
-      description: 'Lê os logs (stdout/stderr) acumulados de um processo em segundo plano pelo seu PID. ' +
-        'Útil para verificar se um servidor subiu bem ou depurar erros.',
+      description: 'Reads the logs (stdout/stderr) collected so far from a background process, by PID. ' +
+        'Useful to check whether a server started correctly, or to debug errors.',
       parameters: {
         type: 'object',
         properties: {
-          pid: { type: 'number', description: 'PID retornado por execute_command' }
+          pid: { type: 'number', description: 'PID returned by execute_command' }
         },
         required: ['pid']
       }
@@ -1763,15 +2224,15 @@ const tools = [
     type: 'function',
     function: {
       name: 'wait_for_process',
-      description: 'ESPERA um processo de segundo plano TERMINAR e devolve o exit code com toda a saída. ' +
-        'Use sempre que precisar do resultado de algo demorado (npm install, build, suíte de testes) em vez ' +
-        'de chamar read_process_output várias vezes perguntando se já acabou — isso desperdiça chamadas e ' +
-        'não acelera nada. Para servidores, que não terminam, NÃO espere: siga trabalhando.',
+      description: 'WAITS for a background process to FINISH and returns its exit code with the full ' +
+        'output. Use it whenever you need the result of something slow (npm install, a build, a test ' +
+        'suite) instead of calling read_process_output over and over to ask whether it is done — that ' +
+        'wastes calls and speeds up nothing. For servers, which never finish, do NOT wait: keep working.',
       parameters: {
         type: 'object',
         properties: {
-          pid: { type: 'number', description: 'PID retornado por execute_command' },
-          timeout_ms: { type: 'number', description: 'Tempo máximo de espera em ms (padrão 120000, teto 600000)' }
+          pid: { type: 'number', description: 'PID returned by execute_command' },
+          timeout_ms: { type: 'number', description: 'Maximum time to wait, in ms (default 120000, cap 600000)' }
         },
         required: ['pid']
       }
@@ -1781,7 +2242,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'list_processes',
-      description: 'Lista os processos em segundo plano (PID, comando, status, tempo de execução).',
+      description: 'Lists the background processes (PID, command, status, uptime).',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -1789,11 +2250,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'stop_process',
-      description: 'Encerra um processo em segundo plano (e seu grupo) pelo PID retornado por execute_command.',
+      description: 'Terminates a background process (and its process group) by the PID returned by execute_command.',
       parameters: {
         type: 'object',
         properties: {
-          pid: { type: 'number', description: 'PID do processo a encerrar' }
+          pid: { type: 'number', description: 'PID of the process to terminate' }
         },
         required: ['pid']
       }
@@ -1803,17 +2264,17 @@ const tools = [
     type: 'function',
     function: {
       name: 'http_request',
-      description: 'Faz uma requisição HTTP e devolve status, cabeçalhos e corpo separados. Use para ' +
-        'validar APIs (inclusive as que você mesmo subiu com execute_command): confira o status E o ' +
-        'corpo, e teste também entradas inválidas para ver se o erro retornado é o esperado.',
+      description: 'Makes an HTTP request and returns status, headers and body separately. Use it to ' +
+        'validate APIs (including ones you started yourself with execute_command): check the status AND ' +
+        'the body, and try invalid input too, to see whether the error you get back is the expected one.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'URL completa (ex: http://localhost:3000/api/itens)' },
-          method: { type: 'string', description: 'GET, POST, PUT, PATCH, DELETE… (padrão: GET)' },
-          headers: { type: 'object', description: 'Cabeçalhos extras, ex: { "Authorization": "Bearer x" }' },
-          body: { type: 'string', description: 'Corpo da requisição (JSON como string). Content-Type: application/json é assumido se parecer JSON.' },
-          timeout_ms: { type: 'number', description: 'Tempo limite em milissegundos (padrão 15000)' }
+          url: { type: 'string', description: 'Full URL (e.g. http://localhost:3000/api/items)' },
+          method: { type: 'string', description: 'GET, POST, PUT, PATCH, DELETE… (default: GET)' },
+          headers: { type: 'object', description: 'Extra headers, e.g. { "Authorization": "Bearer x" }' },
+          body: { type: 'string', description: 'Request body (JSON as a string). Content-Type: application/json is assumed when it looks like JSON.' },
+          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 15000)' }
         },
         required: ['url']
       }
@@ -1823,23 +2284,52 @@ const tools = [
     type: 'function',
     function: {
       name: 'capture_page',
-      description: 'Abre uma URL num navegador oculto, tira um PRINT da tela e devolve o que aconteceu: ' +
-        'erros de console, requisições que falharam, título e texto visível da página. Use para validar ' +
-        'visualmente páginas e interfaces que você criou ou alterou, e para depurar erros de JavaScript ' +
-        'que não aparecem no terminal. O servidor precisa estar no ar.',
+      description: 'Opens a URL in a hidden browser, takes a SCREENSHOT and returns what happened: ' +
+        'console errors, failed requests, the page title and its visible text. Use it to visually verify ' +
+        'pages and interfaces you created or changed, and to debug JavaScript errors that never show up ' +
+        'in the terminal. The server has to be up.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'URL a abrir (ex: http://localhost:5173)' },
-          width: { type: 'number', description: 'Largura da janela em px (padrão 1280)' },
-          height: { type: 'number', description: 'Altura da janela em px (padrão 800)' },
-          wait_ms: { type: 'number', description: 'Espera após o carregamento, para a página montar (padrão 700)' },
-          full_page: { type: 'boolean', description: 'Captura a PÁGINA INTEIRA, não só a primeira dobra. Use ao validar um layout — sem isso você não vê o rodapé nem o que depende de rolagem.' },
-          crop_selector: { type: 'string', description: 'Recorta a captura neste elemento CSS e a envia em tamanho CHEIO. Use sempre que a tarefa for de DETALHE (alinhamento, espaçamento, sobreposição, texto torto): no print da página inteira a imagem é reduzida e esse tipo de defeito desaparece. Ex: ".roleta", "#cabecalho".' },
-          selector: { type: 'string', description: 'Espera este seletor CSS aparecer antes do print (ex: #app .lista)' },
-          script: { type: 'string', description: 'JavaScript executado na página ANTES do print, para interagir ou medir. Use "return" para devolver um valor. Ex: document.querySelector("#salvar").click(); return document.body.innerText;' }
+          url: { type: 'string', description: 'URL to open (e.g. http://localhost:5173)' },
+          width: { type: 'number', description: 'Window width in px (default 1280)' },
+          height: { type: 'number', description: 'Window height in px (default 800)' },
+          wait_ms: { type: 'number', description: 'Wait after load, so the page can mount (default 700)' },
+          full_page: { type: 'boolean', description: 'Captures the WHOLE PAGE, not just the first fold. Use it when validating a layout — without it you never see the footer or anything below the scroll.' },
+          crop_selector: { type: 'string', description: 'Crops the capture to this CSS element and sends it at FULL size. Use it whenever the task is about DETAIL (alignment, spacing, overlap, crooked text): in a full-page screenshot the image is scaled down and exactly that kind of defect disappears. E.g. ".wheel", "#header".' },
+          selector: { type: 'string', description: 'Waits for this CSS selector to appear before the screenshot (e.g. #app .list)' },
+          script: { type: 'string', description: 'JavaScript run on the page BEFORE the screenshot, to interact or measure. Use "return" to send a value back. E.g. document.querySelector("#save").click(); return document.body.innerText;' }
         },
         required: ['url']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description: 'Asks the user a question and WAITS for the answer, shown as a card with ' +
+        'clickable options. Use it only when the request is genuinely ambiguous AND the readings ' +
+        'lead to different work — never for something you can settle by reading the project, and ' +
+        'never to ask permission for what you were already asked to do. Prefer ONE question with ' +
+        '2 to 4 concrete options over a paragraph of open questions. Do everything that does not ' +
+        'depend on the answer BEFORE asking. The user may skip: if that happens, decide for ' +
+        'yourself, say which assumption you made, and carry on.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'The question, complete and specific.' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'The choices, 2 to 4 of them, each a short label. They must be real ' +
+              'alternatives, not "yes/no" for something you should decide yourself. Leave it out ' +
+              'for an open question and the user answers in free text.'
+          },
+          multi_select: { type: 'boolean', description: 'Let the user pick more than one option (default: false).' },
+          header: { type: 'string', description: 'Very short label for the card, up to 24 characters (e.g. "Database", "Approach").' }
+        },
+        required: ['question']
       }
     }
   }
@@ -1851,15 +2341,16 @@ const webTools = [
     type: 'function',
     function: {
       name: 'web_search',
-      description: 'Pesquisa na web e retorna os resultados (título, URL e resumo) E o TEXTO já extraído ' +
-        'das primeiras páginas, em "paginas". Na maioria das vezes a resposta está aí e não é preciso ' +
-        'chamar fetch_url depois. Tenta vários buscadores em cascata até um responder. ' +
-        'Use termos simples e específicos — evite aspas e operadores como site:, que costumam zerar a busca.',
+      description: 'Searches the web and returns the results (title, URL and snippet) AND the TEXT ' +
+        'already extracted from the first pages, under "paginas". Most of the time the answer is right ' +
+        'there and no follow-up fetch_url is needed. It tries several search engines in turn until one ' +
+        'responds. Use simple, specific terms — avoid quotes and operators such as site:, which usually ' +
+        'return nothing.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Termos de busca' },
-          max_results: { type: 'number', description: 'Quantidade de resultados (1-10, padrão 5)' }
+          query: { type: 'string', description: 'Search terms' },
+          max_results: { type: 'number', description: 'How many results (1-10, default 5)' }
         },
         required: ['query']
       }
@@ -1869,12 +2360,12 @@ const webTools = [
     type: 'function',
     function: {
       name: 'fetch_url',
-      description: 'Baixa uma página da web e retorna seu conteúdo em texto legível. ' +
-        'Use para ler o conteúdo de um resultado retornado por web_search.',
+      description: 'Downloads a web page and returns its content as readable text. ' +
+        'Use it to read a result returned by web_search.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'URL completa da página a ler' }
+          url: { type: 'string', description: 'Full URL of the page to read' }
         },
         required: ['url']
       }
@@ -1988,8 +2479,8 @@ async function runTool(name, args, workspace) {
       // feita a partir de leitura parcial. Avisar aqui é o último ponto em que dá
       // para o modelo perceber e restaurar o conteúdo.
       if (res.success && !res.created && res.previousLines > 20 && res.lines < res.previousLines * 0.5) {
-        res.aviso = `ATENÇÃO: o arquivo tinha ${res.previousLines} linhas e agora tem ${res.lines}. ` +
-          `Se não era para remover esse tanto, releia o arquivo por completo (read_file com offset) e restaure o que faltou.`;
+        res.warning = `WARNING: the file had ${res.previousLines} lines and now has ${res.lines}. ` +
+          `If you did not mean to remove that much, read the whole file again (read_file with offset) and restore what is missing.`;
       }
       return comAlteracao(res, args.filename);
     }
@@ -1998,6 +2489,11 @@ async function runTool(name, args, workspace) {
         `${workspace}/${args.filename}`, args.old_text, args.new_text ?? '', !!args.replace_all
       );
       return comAlteracao(res, args.filename);
+    }
+    if (name === 'ask_user') {
+      // Parar durante a pergunta não pode deixar o modal aberto esperando ninguém.
+      if (stopRequested) return JSON.stringify({ answered: false, reason: 'The run was stopped by the user.' });
+      return JSON.stringify(await askUserQuestion(args));
     }
     if (name === 'search_files') {
       const res = await window.electronAPI.searchFiles(workspace, {
@@ -2013,7 +2509,7 @@ async function runTool(name, args, workspace) {
     if (name === 'delete_file') {
       const alvo = `${workspace}/${args.filename}`;
       const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(alvo) });
-      return comAlteracao(res, args.filename, { apagado: true, removidas: res.linhasApagadas || 0 });
+      return comAlteracao(res, args.filename, { apagado: true, removidas: res.deletedLines || 0 });
     }
     if (name === 'execute_command') {
       const timeoutMs = (state.settings.cmdTimeout || 25) * 1000;
@@ -2088,21 +2584,21 @@ async function runTool(name, args, workspace) {
       // Record<string, any> porque o resumo é montado por partes: os campos abaixo só
       // entram quando a captura realmente teve seletor, recorte ou script.
       const resumo: Record<string, any> = {
-        ok: true, url: res.url, titulo: res.title, status: res.httpStatus,
-        tamanho: `${res.width}x${res.height}`,
-        erros_de_console: (res.console || []).filter(c => c.level === 'error').map(c => c.text).slice(0, 15),
-        avisos_de_console: (res.console || []).filter(c => c.level === 'warning').map(c => c.text).slice(0, 5),
-        falhas_de_rede: (res.netErrors || []).slice(0, 10),
-        texto_visivel: res.text
+        ok: true, url: res.url, title: res.title, status: res.httpStatus,
+        size: `${res.width}x${res.height}`,
+        console_errors: (res.console || []).filter(c => c.level === 'error').map(c => c.text).slice(0, 15),
+        console_warnings: (res.console || []).filter(c => c.level === 'warning').map(c => c.text).slice(0, 5),
+        network_failures: (res.netErrors || []).slice(0, 10),
+        visible_text: res.text
       };
-      if (args.selector) resumo.seletor_encontrado = res.selectorFound;
-      if (res.recorte) resumo.recortado_em = res.recorte;
-      if (res.recorteFalhou) resumo.aviso_do_recorte = res.recorteFalhou;
-      if (res.scriptResult !== undefined) resumo.resultado_do_script = res.scriptResult;
-      if (res.scriptError) resumo.erro_no_script = res.scriptError;
-      resumo.print = visionEnabled()
-        ? 'A imagem do print acompanha este resultado — analise-a.'
-        : 'Print salvo e exibido ao usuário (o modelo atual não recebe imagens; use o texto e os erros acima).';
+      if (args.selector) resumo.selector_found = res.selectorFound;
+      if (res.recorte) resumo.cropped_to = res.recorte;
+      if (res.recorteFalhou) resumo.crop_warning = res.recorteFalhou;
+      if (res.scriptResult !== undefined) resumo.script_result = res.scriptResult;
+      if (res.scriptError) resumo.script_error = res.scriptError;
+      resumo.screenshot = visionEnabled()
+        ? 'The screenshot image comes attached to this result — look at it.'
+        : 'Screenshot saved and shown to the user (the current model does not receive images; rely on the text and the errors above).';
 
       return {
         text: truncate(JSON.stringify(resumo), MAX_TOOL_RESULT_CHARS),
@@ -2117,7 +2613,7 @@ async function runTool(name, args, workspace) {
       const res = await window.electronAPI.fetchUrl(args.url, 8000);
       return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
     }
-    return `Ferramenta desconhecida: ${name}`;
+    return `Unknown tool: ${name}`;
   } catch (err) {
     return JSON.stringify({ error: err.message });
   }
@@ -2526,7 +3022,14 @@ async function agentTurns(chat) {
   // em paralelo e pode chegar depois do primeiro turno — o prompt precisa acompanhar,
   // senão o modelo é informado de que "vê" prints quando ainda não recebe imagem.
   const buildSystem = () => {
-    let s = system_prompt(chat.path, state.settings.webSearch, visionEnabled());
+    // 'replace' descarta o prompt de fábrica INTEIRO — é escolha explícita do usuário,
+    // avisada na tela, e só vale se ele escreveu alguma coisa: substituir por vazio
+    // deixaria o agente sem instrução nenhuma e ele pararia de chamar ferramenta.
+    const proprio = String(state.settings.customPrompt || '').trim();
+    let s = (state.settings.promptMode === 'replace' && proprio)
+      ? proprio
+      : system_prompt(chat.path, state.settings.webSearch, visionEnabled());
+    s += blocoInstrucoes();
     if (semRaciocinio) s += ' /no_think';
     ultimoSystemChars = s.length; // entra na conta do orçamento do histórico
     return s;
@@ -2824,7 +3327,7 @@ function sanitizeToolCalls(toolCalls) {
 // --------------------------------------------------------------------------
 //  Compactação de contexto
 // --------------------------------------------------------------------------
-const PODA_AVISO = '[resultado antigo removido para liberar contexto — chame a ferramenta de novo se precisar deste conteúdo]';
+const PODA_AVISO = '[old result dropped to free up context — call the tool again if you need this content]';
 
 // Decide o que substituir nos resultados de ferramenta para o payload caber no contexto.
 // Devolve índice -> novo conteúdo. A mensagem NUNCA é removida: um tool_call sem o 'tool'
@@ -2936,9 +3439,9 @@ function toApiMessages(messages) {
 
 function buildAttachmentBlock(attachments) {
   return attachments.map(a => {
-    if (a.binary) return `[Arquivo anexado: ${a.name} — binário (${fmtSize(a.size)}), conteúdo não incluído]`;
-    const suffix = a.truncated ? ` (truncado em ${fmtSize(a.content.length)})` : '';
-    return `[Arquivo anexado: ${a.name}${suffix}]\n\`\`\`\n${a.content}\n\`\`\``;
+    if (a.binary) return `[Attached file: ${a.name} — binary (${fmtSize(a.size)}), content not included]`;
+    const suffix = a.truncated ? ` (truncated at ${fmtSize(a.content.length)})` : '';
+    return `[Attached file: ${a.name}${suffix}]\n\`\`\`\n${a.content}\n\`\`\``;
   }).join('\n\n') + '\n\n';
 }
 
@@ -3265,6 +3768,7 @@ async function fetchModels() {
 
     updateModelInfo(models.find(m => m.id === select.value) || models[0]);
     detectVision(json, select.value);
+    detectThink(json, apiUrl, select.value);
     updateVisionStatus();
     status.innerText = `${models.length} modelo(s) disponível(is)` +
       (modelSupportsVision ? ' — multimodal: o agente vê os prints do capture_page.' : '.');
@@ -3310,6 +3814,7 @@ async function refreshModelContext() {
     const m = models.find(x => x.id === model) || models[0];
     if (m) updateModelInfo(m);
     detectVision(json, model);
+    detectThink(json, apiUrl, model);
   } catch (e) { /* silencioso: não atrapalha o envio */ }
 }
 
@@ -3330,6 +3835,9 @@ function applySettingsToForm() {
   el('check-websearch').checked = s.webSearch;
   el('check-vision').checked = s.visionFeedback;
   el('check-hide-console').checked = s.hideCommandConsole !== false;
+  el('input-custom-prompt').value = s.customPrompt || '';
+  el('check-prompt-replace').checked = s.promptMode === 'replace';
+  renderSkillList();
   updateVisionStatus();
 }
 
@@ -3357,6 +3865,10 @@ function readSettingsFromForm() {
   state.settings.webSearch = el('check-websearch').checked;
   state.settings.visionFeedback = el('check-vision').checked;
   state.settings.hideCommandConsole = el('check-hide-console').checked;
+  state.settings.customPrompt = el('input-custom-prompt').value;
+  state.settings.promptMode = el('check-prompt-replace').checked ? 'replace' : 'append';
+  // As skills não são lidas daqui: o interruptor e o ✕ já gravam sozinhos, e reler uma
+  // lista que o formulário não guarda apagaria o que foi importado nesta sessão.
 }
 
 // --------------------------------------------------------------------------
@@ -3626,12 +4138,27 @@ function wireEvents() {
   });
 
   // Modal de confirmação de execução
+  const skillInput = el('skill-input');
+  el('btn-import-skill').addEventListener('click', () => skillInput.click());
+  skillInput.addEventListener('change', () => { importarSkills(skillInput.files); skillInput.value = ''; });
+
+  el('question-send').addEventListener('click', () => resolveQuestion(false));
+  el('question-skip').addEventListener('click', () => resolveQuestion(true));
+  el('question-free').addEventListener('keydown', (e: KeyboardEvent) => {
+    // Enter envia; Shift+Enter quebra linha, como no compositor.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); resolveQuestion(false); }
+  });
+
   el('confirm-approve').addEventListener('click', () => resolveConfirm('approve'));
   el('confirm-always').addEventListener('click', () => resolveConfirm('always'));
   el('confirm-reject').addEventListener('click', () => resolveConfirm('reject'));
   el('confirm-modal').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); resolveConfirm('approve'); }
     if (e.key === 'Escape') { e.preventDefault(); resolveConfirm('reject'); }
+  });
+  // Esc no card de pergunta é "pular", não "cancelar": o agente segue trabalhando.
+  el('question-modal').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); resolveQuestion(true); }
   });
 
   // Painel de processos
@@ -3734,11 +4261,18 @@ async function init() {
   renderAttachments();
   renderUsage();
   updateExecModeUI();   // reflete o modo salvo (auto/manual)
+  // Os campos do modal precisam estar com o que está SALVO antes do fetchModels abaixo:
+  // ele lê o endpoint do próprio campo, e o applySettingsToForm só rodava ao abrir as
+  // configurações — até lá o campo tinha o valor fixo do index.html, e a abertura do app
+  // consultava um servidor que não é o do usuário (silenciosamente, quando o padrão
+  // respondia). É também o que faz n_ctx, visão e níveis de raciocínio virem certos já
+  // na primeira mensagem, sem precisar abrir as configurações uma vez.
+  applySettingsToForm();
   buildThinkMenu();     // monta o menu a partir de THINK_LEVELS
   updateThinkUI();      // reflete o nível de raciocínio salvo
   refreshProcesses();   // popula o badge de processos
   loadAppInfo();        // carrega URL do GitHub etc. do package.json
-  // Tenta descobrir os modelos do endpoint padrão já na abertura
+  // Já na abertura: modelos, n_ctx, visão e níveis de raciocínio do endpoint salvo
   fetchModels();
 }
 

@@ -2,7 +2,7 @@
 
 > **Status (2026-08):** todas as tarefas abaixo foram concluídas e validadas nesta sessão
 > (typecheck + build + teste funcional via harness headless com stub de `electronAPI`).
-> Detalhes do "por quê" e das decisões: ORIENTACAO.md §7 e CLAUDE.md.
+> Detalhes do "por quê" e das decisões: AGENTS.md §7 e CLAUDE.md.
 
 ## Pendências antigas
 
