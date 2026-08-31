@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage } from 'electron';
 import { dirname, join } from 'path';
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from 'fs';
 import { tmpdir } from 'os';
@@ -201,12 +201,20 @@ ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
     chars += ln.length + 1;
   }
   let content = chunk.join('\n');
-  let charClipped = false;
-  if (content.length > maxChars) { content = content.slice(0, maxChars); charClipped = true; }
+  let charClipped = false, lineChars = 0;
+  if (content.length > maxChars) {
+    // Só chega aqui quando a PRIMEIRA linha, sozinha, passa do orçamento — o laço acima já
+    // barra as demais. O corte cai no meio dela, e é isso que precisa ser dito: sem o
+    // tamanho real da linha, o rodapé mandava continuar na linha seguinte e o resto desta
+    // sumia calado. Era o que fazia o agente abandonar a ferramenta e ler pelo terminal.
+    lineChars = chunk[0].length;
+    content = content.slice(0, maxChars);
+    charClipped = true;
+  }
 
   return {
     success: true, content, total, size: st.size,
-    start, end: start - 1 + chunk.length, charClipped
+    start, end: start - 1 + chunk.length, charClipped, lineChars
   };
 });
 
@@ -1465,10 +1473,53 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
 });
 
 // Rehidrata um print salvo (histórico recarregado) para reenviá-lo ao modelo
+// Imagem que o USUÁRIO anexou. Vai para o mesmo lugar (e a mesma poda) dos prints do
+// capture_page porque tem a mesma necessidade: o histórico guarda só o CAMINHO, já que
+// base64 no app-store.json infla o arquivo a cada imagem colada, e o chat precisa
+// continuar mostrando a imagem depois de reabrir o app.
+ipcMain.handle('save-attachment-image', async (event, dataUrl, nome) => {
+  try {
+    const img = nativeImage.createFromDataURL(String(dataUrl || ''));
+    if (img.isEmpty()) return { success: false, error: 'the file did not decode as an image' };
+    const size = img.getSize();
+    // Mesma redução do print, pelo mesmo motivo: foto de celular tem 4000px de largura e
+    // custa milhares de tokens de visão sem mostrar nada a mais do que 1024 já mostra.
+    const paraModelo = size.width > SHOT_MODEL_WIDTH ? img.resize({ width: SHOT_MODEL_WIDTH }) : img;
+    const limpo = String(nome || 'anexo').replace(/[^\w.-]+/g, '_').slice(-40);
+    const file = join(shotsDir(), `anexo-${Date.now()}-${limpo}.png`);
+    const png = paraModelo.toPNG();
+    writeFileSync(file, png);
+    pruneShots();
+    return {
+      success: true, path: file, width: size.width, height: size.height,
+      dataUrl: 'data:image/png;base64,' + png.toString('base64')
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Assinatura dos formatos que o servidor consegue decodificar. A checagem existe porque um
+// arquivo que não é imagem, mandado como `image_url`, faz o servidor recusar a REQUISIÇÃO
+// INTEIRA com 400 ("Failed to load image or audio file") — e a conversa morre nas três
+// tentativas. Aconteceu de verdade: um anexo de menção (@arquivo.md) foi confundido com
+// imagem e o markdown saiu rotulado como PNG. Melhor a imagem faltar do que o turno morrer.
+function tipoDaImagem(buf) {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return 'image/bmp';
+  if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
 ipcMain.handle('read-image', async (event, filePath) => {
   try {
     const buf = readFileSync(filePath);
-    return { success: true, dataUrl: 'data:image/png;base64,' + buf.toString('base64') };
+    const tipo = tipoDaImagem(buf);
+    if (!tipo) return { success: false, error: `"${filePath}" is not a decodable image` };
+    return { success: true, dataUrl: `data:${tipo};base64,` + buf.toString('base64') };
   } catch (err) {
     return { success: false, error: err.message };
   }

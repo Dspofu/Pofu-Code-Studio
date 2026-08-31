@@ -1,44 +1,51 @@
-# Corrigir/Terminar
+# Pendências
 
-> **Status (2026-08):** todas as tarefas abaixo foram concluídas e validadas nesta sessão
-> (typecheck + build + teste funcional via harness headless com stub de `electronAPI`).
-> Detalhes do "por quê" e das decisões: AGENTS.md §7 e CLAUDE.md.
+> Arquivo com **somente pendências reais**. As seções de tarefas já concluídas
+> (menu "Visão Geral", notificação, lixeira de recentes, problemas de ferramenta,
+> anexos de imagem + nível de raciocínio, estrutura de build) foram removidas —
+> o histórico delas está no git e em AGENTS.md §7 / CLAUDE.md.
 
-## Pendências antigas
+## (vazio)
 
-- [x] **Campos do menu de configuração "Visão Geral"** — ID duplicado corrigido
-      (`#info-product-name` para o card de Nome) e ambos os cards populados via `loadAppInfo`.
-- [x] **Notificação não funciona** — movida de `app.on('activate')` (só macOS) para o
-      `whenReady`, com `try/catch` para ambientes sem daemon de notificação; `console.log("ué")` removido.
-- [x] **Pingo não mostra versão** — `#info-version-dot` ganha `title="Versão: X"` via `loadAppInfo`.
-- [x] **Terminar funcionalidade de excluir recentes** — lixeira `.trash-folder` agora remove do
-      `state.recentPaths`, chama `persist()` e reabre o menu; `stopPropagation` impede trocar de workspace.
+Não há pendência conhecida em aberto.
 
-## Problemas de ferramenta encontrados em uso
+### Resolvido nesta rodada — visão em anexo do usuário
 
-- [x] **`execute_command` no Windows: `cmd.exe` não suporta sintaxe composta** — mantido o `cmd.exe`
-      (PowerShell 5.1 rejeita `&&` e tem ~1s de start-up, medido). A **descrição da tool** agora
-      documenta: Windows usa `&`/`&&` (`;` vira argumento), Linux/macOS usa `;`/`&&`.
-- [x] **Comando que termina ocioso vira background à toa** — o cronômetro de ocioso só arma
-      **depois da primeira linha de saída** e só backgroundiza se o processo **ainda estiver vivo**.
-      Comando mudo/travado (ex.: `git status` num disco lento) termina no `close` e devolve a saída direto.
-- [x] **`read_file`: o `limit` alto não garante o arquivo inteiro** — a descrição do parâmetro `limit`
-      agora explica que a janela é limitada por orçamento de caracteres derivado do contexto do modelo.
-- [x] **`search_files`: truncamento sem total** — o handler agora devolve `totalFound` (contagem total,
-      cap 10000) além de `matches` (limitados a `max_results`); a descrição da tool orienta refinar a busca.
+A lista anterior dizia que imagem colada/arrastada nunca chegava ao modelo. Era
+verdade, e foi corrigido: o anexo de imagem agora segue o mesmo caminho do print
+do `capture_page` (bytes em `userData`, caminho no histórico, data URL no
+`shotCache`) e vira bloco `image_url` quando o modelo é multimodal.
 
-## Estrutura
+Medido com proxy registrando o payload, mesma pergunta sobre a mesma imagem:
 
-- [x] **Arquivos de build separados** — fonte em `src/` (`main.ts` e `preload.cts` movidos com `git mv`),
-      saída em `out/` (`tsconfig` com `rootDir: src` + `outDir: out`). Ajustados: `main` do package.json
-      (`out/main.js`), `<script>` do index.html (`out/renderer.js`), `files` do electron-builder (`out/**`),
-      `.gitignore` (`/out`), imports relativos de `src/main.ts`, e os caminhos de `__dirname` (loadFile
-      `../index.html`, preload `preload.cjs`, `../package.json`). `src/websearch.js` (fonte versionada)
-      vai junto no `out/`. Build limpo (`rmdir out` + `npm run build`) reproduz a saída do zero.
+| | Requisições | Como respondeu |
+|---|---|---|
+| Antes | **32** | sem os pixels, instalou Pillow com `pip`, escreveu scripts Python de recorte e cor, improvisou um OCR |
+| Depois | **1** | olhou a imagem |
 
-## Decisão aberta (recomendação: manter como está)
+Também conferido: a imagem continua visível depois de fechar e reabrir o app
+(`hydrateShots` relê do disco), e quando o modelo NÃO é multimodal — ou quando
+"Enviar prints para o modelo" está desligado — o chip avisa e o texto do anexo
+diz ao modelo que ele não recebe imagens, em vez de deixá-lo procurar um jeito.
 
-- ⬜ **Trocar o shell do Windows para PowerShell** — não recomendado: o PowerShell 5.1 (padrão)
-      rejeita `&&` com parser error e adiciona ~1s de start-up por comando (medido); o `cmd.exe` é
-      instantâneo e aceita `&&`. A descrição da tool já ensina o separador certo por plataforma.
-      Só vale a pena se o usuário insistir em `;` funcionar no Windows.
+Um item da lista antiga estava errado e não gerou trabalho: dizia que o
+`buildAttachmentBlock` "instrui o modelo a usar `read_image`". Não instruía — a
+única menção a `read_image` era um comentário em `src/types.d.ts`, que o modelo
+nunca lê. O comentário foi corrigido junto.
+
+### Uso das ferramentas — verificado, sem pendência
+
+> Bateria rodada contra o servidor local, uma tarefa por comportamento esperado.
+> Fica aqui para não repetir o trabalho: **nenhum destes é problema hoje**.
+
+- Alterar uma linha em arquivo de 1.500 linhas → `search_files` + `read_file` +
+  `edit_file` (não reescreveu com `write_file`).
+- Localizar uma definição → `search_files` numa chamada só (não foi ao terminal).
+- Comando de 25s com timeout de 8s → virou background e o agente usou
+  `wait_for_process` (não ficou em `read_process_output` em looping).
+- Pedido ambíguo com três arquivos de configuração → `ask_user`, sem apagar nada.
+  Com um único candidato, ele resolve sozinho — que é o comportamento certo.
+- Apagar/sobrescrever arquivo não lido → trava dispara, ele lê antes, e o conteúdo
+  que não estava na conversa (uma senha no arquivo) sobreviveu à reescrita.
+- Linha maior que a janela de leitura → o rodapé diz o que faltou e ele usa
+  `search_files`, em vez de despejar o arquivo pelo terminal.

@@ -79,6 +79,8 @@ interface Settings {
   temperature: number;
   topP: number;
   maxTokens: number;
+  /** Teto do histórico por requisição, em tokens. 0 = sem teto (usa só o n_ctx do modelo). */
+  historyCap: number;
   /** Legado: só sobrevive para migrar store antigo — quem manda é `thinkLevel`. */
   noThink: boolean;
   thinkLevel: ThinkLevel;
@@ -102,6 +104,20 @@ interface Attachment {
   name: string;
   content: string;
   size?: number;
+  /** true quando o conteúdo não vira texto na mensagem (imagem, PDF, executável). */
+  binary?: boolean;
+  /** true quando o conteúdo foi truncado no anexo. */
+  truncated?: boolean;
+  /** true para menção (@arquivo) e skills (@skill). */
+  mention?: boolean;
+  /** Caminho relativo do arquivo mencionado (só menção) — ver `imagemPath` para imagem. */
+  path?: string;
+  /** Data URL da miniatura (imagens): exibida no chip e na bolha da mensagem. */
+  thumb?: string;
+  /** Caminho da imagem salva em userData — é por ele que os pixels voltam ao modelo.
+   *  NÃO reaproveite o `path` para isso: ele já é o caminho relativo da menção
+   *  (@arquivo), e confundir os dois manda um .md rotulado como PNG ao servidor. */
+  imagemPath?: string;
 }
 
 interface ToolCall {
@@ -187,6 +203,9 @@ interface Chat {
   messages: ChatMessage[];
   /** Índice até onde o usuário já compactou à mão pelo botão do compositor. */
   podaManualAte?: number;
+  /** Índice até onde a poda automática já encurtou. Memória: o que foi podado continua
+   *  podado, para o prefixo da requisição não mudar a cada turno (ver compactToolResults). */
+  podaAutoAte?: number;
 }
 
 interface UsageStats {
@@ -251,6 +270,7 @@ interface ElectronAPI {
   httpRequest(url: string, opts?: any): Promise<any>;
   capturePage(url: string, opts?: any): Promise<any>;
   readImage(filePath: string): Promise<any>;
+  saveAttachmentImage(dataUrl: string, nome: string): Promise<any>;
   executeCommand(command: string, cwd: string, opts?: any): Promise<any>;
   readProcessOutput(pid: number): Promise<any>;
   waitForProcess(pid: number, timeoutMs?: number): Promise<any>;

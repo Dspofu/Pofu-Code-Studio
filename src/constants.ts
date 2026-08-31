@@ -56,6 +56,12 @@ export const DEFAULT_SETTINGS: Settings = {
   // emitir o tool_call; com folga de menos, a chamada é cortada no meio dos argumentos
   // e chega com JSON quebrado (finish_reason 'length').
   maxTokens: 16384,
+  // Teto opcional do HISTÓRICO por requisição, em tokens (0 = desligado). Sem ele o
+  // orçamento sai só do n_ctx, e contexto grande não é de graça em API paga: num servidor
+  // de 262k a poda nunca dispara e cada requisição reenvia o histórico inteiro — medido em
+  // ~30 milhões de tokens de prompt num único chat longo. Desligado por padrão porque em
+  // servidor local token não custa dinheiro e podar só faz o servidor reprocessar.
+  historyCap: 0,
   noThink: false, // legado: mantido só para migrar quem já tinha a chave salva (ver thinkLevel)
   // Quanto o modelo deve raciocinar antes de responder. 'padrao' NÃO acrescenta campo
   // nenhum ao corpo da requisição, e é por isso que ele é o default: `reasoning_effort`
@@ -131,12 +137,29 @@ export const THINK_LEVELS: Record<ThinkLevel, ThinkLevelDef> = {
 // A poda tira do COMEÇO: o fim é a parte que o usuário está acompanhando.
 export const MAX_REASONING_DOM_CHARS = 200000;
 
+// Acima deste tamanho de prompt, a primeira requisição de um chat reaberto ganha um aviso
+// no lugar dos três pontinhos: sem cache no servidor, ela leva minutos (medido: 177s num
+// chat de 123k tokens) e a espera muda é indistinguível de travamento.
+export const LIMIAR_CONTEXTO_FRIO = 8000;
+
+// Conversa com mais mensagens que isto demora a montar na tela (medido: ~4s em 1733
+// mensagens, com o renderer bloqueado) e ganha um aviso enquanto monta.
+export const LIMIAR_CONVERSA_LONGA = 120;
+
 // Pastas recentes guardadas para a troca rápida de workspace no cabeçalho.
 export const MAX_RECENT_PATHS = 8;
 
 export const APP_NAME = 'Pofu Code Studio';
 
 export const MAX_TOOL_RESULT_CHARS = 6000; // teto p/ fetch_url
+
+// Teto da saída de comando devolvida ao modelo. Era 3000/2500 e cortava a saída de um
+// `dir`, de um teste ou de um build no meio; o agente então despejava o resultado num
+// arquivo e o relia em pedaços — trabalho que custa MAIS tokens do que os que o corte
+// economizou, e que ainda deixa arquivo de rascunho no projeto. A poda do histórico
+// encurta esses resultados depois, quando ficarem velhos, então o custo é passageiro.
+export const MAX_CMD_STDOUT_CHARS = 8000;
+export const MAX_CMD_STDERR_CHARS = 4000;
 // A busca devolve também o TEXTO das primeiras páginas, que é justamente a parte útil —
 // com o teto do fetch_url ela seria cortada no meio e sobrariam só os snippets.
 export const MAX_SEARCH_RESULT_CHARS = 12000;
@@ -170,6 +193,14 @@ export function readCharBudget(modelCtx: number): number {
 export const CONTEXT_MARGIN_TOKENS = 256;     // folga para o template de chat do servidor
 export const HISTORY_MIN_FRACTION = 0.2;      // piso, caso maxTokens seja quase a janela toda
 export const KEEP_RECENT_TOOL_RESULTS = 6;    // resultados recentes que nunca são podados
+
+// Quando a poda dispara, ela desce até esta FRAÇÃO do orçamento em vez de raspar o mínimo
+// para caber. Podar o mínimo obriga a podar de novo no turno seguinte, e cada poda muda o
+// prefixo da requisição — justamente o que o cache do servidor (e o desconto de token em
+// cache das APIs pagas) reaproveita. Medido sobre conversas reais deste app, num chat de
+// 270 requisições: podando o mínimo, 117 requisições quebravam o cache e a conta com
+// desconto de cache chegava a DOBRAR; com a folga, 5 quebras e ~50% de economia.
+export const PODA_FOLGA = 0.6;
 // Nem todo servidor informa n_ctx no /v1/models. Sem um palpite, a poda nunca ligaria
 // nesses endpoints e a sessão morreria do jeito antigo; com um valor folgado, ela só
 // entra quando o histórico já está realmente grande.

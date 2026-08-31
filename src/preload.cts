@@ -24,6 +24,7 @@ const api: ElectronAPI = {
   httpRequest: (url, opts) => ipcRenderer.invoke('http-request', url, opts),
   capturePage: (url, opts) => ipcRenderer.invoke('capture-page', url, opts),
   readImage: (filePath) => ipcRenderer.invoke('read-image', filePath),
+  saveAttachmentImage: (dataUrl, nome) => ipcRenderer.invoke('save-attachment-image', dataUrl, nome),
   executeCommand: (command, cwd, opts) => ipcRenderer.invoke('execute-command', command, cwd, opts),
   readProcessOutput: (pid) => ipcRenderer.invoke('read-process-output', pid),
   waitForProcess: (pid, timeoutMs) => ipcRenderer.invoke('wait-for-process', pid, timeoutMs),
