@@ -94,14 +94,14 @@ no `whenReady` (uma por abertura; `activate` só recria a janela no macOS).
 
 - Helpers de DOM: `el` / `q` — **sempre usar em vez de `getElementById`/`querySelector`** (devolvem `CampoUI`)
 - Confirmação e modo: `stopAgent` · `precisaConfirmar` · `maybeConfirmTool` · `askExecConfirm` · `resolveConfirm` · `showConfirmModal` · `hideConfirmModal` · `updateExecModeUI`
-- Nível de raciocínio: `nivelThinkAtual` · `updateThinkUI` · `buildThinkMenu` · `fechaThinkMenu`
+- Nível de raciocínio: `nivelThinkAtual` · `updateThinkUI` · `buildThinkMenu` · `fechaThinkMenu` · `recusouRaciocinio`/`avisaRaciocinioRecusado`/`valoresAceitosNoErro` (aviso só quando o servidor RECUSA de fato, no loop de tentativas do `agentTurns`)
 - Painel de processos: `refreshProcesses` · `buildProcRow` · `renderProcessList` · `toggleProcOutput` · `stopProc` · `openProcessesModal` · `closeProcessesModal` · `clearFinishedProcesses`
 - Chats e persistência: `scrollChat` · `forceScrollBottom` · `seguirAposCarregarImagens` · `setAppTitle` · `persist` · `migraSettings` · `loadPersisted` · `createChat` · `activeChat` · `renderChatList` · `beginRenameChat` · `renameActiveChat` · `switchChat` · `deleteChat` · `renderActiveChat` · `updateInputState`
-- Render de mensagens/ferramentas: `renderMarkdownInto` · `appendMessage` · `renderUserMessage` · `attachMsgAction` · `editUserMessage` · `regenerateFromAssistant` · `appendInfo` · `logSystem` · `appendToolLog` · `TOOL_META` (ícone + rótulo) · `summarizeToolCall`/`summarizeToolResult` · `appendToolCall` · `fillToolResult` · `attachDiff` · `renderDiffLines` · `attachToolShot` · `openImageViewer` · `renderToolInvocation` · `appendReasoning` · `appendError` · `appendErrorCard` · `showTyping` · `hideTyping`
+- Render de mensagens/ferramentas: `renderMarkdownInto` · `appendMessage` · `renderUserMessage` · `attachMsgAction` · `editUserMessage` · `regenerateFromAssistant` · `appendInfo` · `logSystem` · `appendToolLog` · `TOOL_META` (ícone + rótulo) · `summarizeToolCall`/`summarizeToolResult` · `ERROS_NA_TELA`/`erroParaTela` (erro do modelo → uma linha em pt-BR; `hint` nunca vai à tela) · `appendToolCall` · `fillToolResult` · `attachDiff` · `renderDiffLines` · `attachToolShot` · `openImageViewer` · `renderToolInvocation` · `appendReasoning` · `appendError` · `appendErrorCard` · `showTyping` · `hideTyping`
 - `truncate` · `formatFileWindow` · `clipMiddle` — **o renderer SÓ formata; o recorte da janela é no main**
-- Núcleo do agente: `tools` (schemas) · `activeTools` · `visionEnabled` · `detectVision` · `recentShotIndexes` · `hydrateShots` · `comAlteracao` · `runTool` (executor, um case por tool) · `submitUserMessage` · `runAgent` (loop principal) · `compactarAgora` · `classificaErroDeRequisicao` · `streamChatCompletion` · `buildResponseStats` · `createLiveAgentBody` · `agentTurns` · `sanitizeToolCalls` · `compactToolResults` · `toApiMessages` · `buildAttachmentBlock`
+- Núcleo do agente: `tools` (schemas) · `activeTools` · `visionEnabled` · `detectVision` · `recentShotIndexes` · `hydrateShots` · `comAlteracao` · `runTool` (executor, um case por tool) · `submitUserMessage` · `runAgent` (loop principal) · `compactarAgora` · `classificaErroDeRequisicao` · `streamChatCompletion` · `buildResponseStats` · `createLiveAgentBody` · `agentTurns` · `sanitizeToolCalls` · `compactToolResults` (poda do mais antigo, com folga `PODA_FOLGA` e marca `chat.podaAutoAte`; teto opcional `settings.historyCap`) · `toApiMessages` · `buildAttachmentBlock`
 - Menções/anexos: `ensureMentionFiles` · `mentionScore` · `updateMentionMenu` · `renderMentionMenu` · `handleMentionKeydown` · `acceptMention` · `addMentionAttachment` · `readFileAsText` · `handleFiles` · `renderAttachments`
-- Uso/config/workspace: `maybeRenameChat` · `trackUsage` · `renderUsage` · `fetchModels` (popula dropdown **e** cards da aba Visão geral via `updateModelInfo`) · `refreshModelContext` · `applySettingsToForm` · `updateVisionStatus` · `readSettingsFromForm` · `encurtaCaminho` · `mostraCaminhoAtivo` · `registraPastaRecente` · `defineWorkspace` · `abreMenuPastas` (inclui lixeira dos recentes) · `wireEvents` · `loadAppInfo` (GitHub + versão + cards de produto) · `init`
+- Uso/config/workspace: `maybeRenameChat` · `trackUsage` · `renderUsage` · `fetchModels` (popula dropdown **e** cards da aba Visão geral via `updateModelInfo`; usa endpoint/chave DO FORMULÁRIO) · `pendenciaDaConexao` · `refreshModelContext` · `applySettingsToForm` · `updateVisionStatus` · `CAMPO_DA_SETTING`/`leSettingsDoFormulario`/`readSettingsFromForm` · `atualizaEstadoSalvamento` (selo de alteração pendente, comparando com `settingsSalvas`) · `encurtaCaminho` · `mostraCaminhoAtivo` · `registraPastaRecente` · `defineWorkspace` · `abreMenuPastas` (inclui lixeira dos recentes) · `wireEvents` · `loadAppInfo` (GitHub + versão + cards de produto) · `init`
 
 ### Ferramentas do agente (17)
 
@@ -165,10 +165,19 @@ headless com stub de electronAPI):
   usam CRLF — `edit_file` multi-linha com `\n` não casa. Solução: script Node que
   normaliza `\n`→`\r\n` no trecho (ou edição em linha única).
 - `el()`/`q()` no renderer; DOM imperativo, sem framework de UI.
-- Comentários explicam **por quê**; constantes de `src/constants.ts` sempre com o motivo.
+- **Comentar é exceção, não hábito**: só quando o porquê não se deduz da linha, quando há
+  armadilha que alguém desfaria "consertando", quando o número veio de medição ou quando o
+  comportamento é contraintuitivo. Nada de legenda do óbvio nem rótulo de seção. Constantes de
+  `src/constants.ts` são a exceção que sempre leva motivo. Detalhe em CLAUDE.md → Convenções.
 - Fonte em `src/`, build em `out/`: ao mover/adicionar arquivo compilável, confira os 5
   pontos (tsconfig include, `main` do package.json, `<script>` do index.html, `files` do
   electron-builder, `.gitignore`).
+- Todo corte que vai ao MODELO (janela do `read_file`, saída de comando, poda do histórico)
+  precisa dizer, em inglês, o que sumiu e como buscar o que falta — corte mudo faz o agente
+  abandonar a ferramenta e ler tudo pelo terminal, gastando mais.
+- Imagem que volta ao modelo (print do `capture_page` e anexo do usuário) passa por
+  `save-attachment-image`/`read-image` + `shotCache` + `hydrateShots`, e o `hydrateShots`
+  roda ANTES de montar o payload.
 - `src/websearch.js`: não editar, não converter.
 - README envelhece rápido: mudança visível ao usuário → atualizar README no mesmo commit.
 - Git: branch `main`, mensagens pt-BR com prefixo (`feat:`, `fix:`, `docs:`, `update:`);

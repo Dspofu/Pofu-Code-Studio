@@ -50,6 +50,9 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 ### Diff e desfazer
 Cada escrita, edição ou remoção mostra **o que exatamente mudou** — colorido, numerado nas duas versões e com o contexto em volta — e um botão **Desfazer** que reverte o arquivo no disco. O desfazer também pode ser desfeito.
 
+### Imagem colada, o modelo vê
+Arraste ou cole uma imagem no chat: quando o modelo é multimodal, os pixels vão junto com a mensagem e ele responde olhando. Antes só o nome do arquivo chegava — e o agente, sem enxergar, contornava: num teste medido ele instalou o Pillow, escreveu scripts Python para medir cor de pixel e improvisou um OCR, gastando 32 requisições para responder o que agora sai em 1. Se o modelo não aceitar imagem (ou se *Enviar prints para o modelo* estiver desligado), o chip do anexo avisa em vez de deixar você descobrir pela resposta errada.
+
 ### O agente enxerga o que constrói
 `capture_page` renderiza a página num navegador oculto e devolve o print. Com um modelo **multimodal**, a imagem volta para o modelo: ele descreve o que apareceu e compara com o esperado, em vez de deduzir pelo código. Use `full_page` para a página inteira e `crop_selector` para conferir detalhe em tamanho cheio.
 
@@ -58,6 +61,15 @@ O prompt exige evidência: teste executado, exit code lido, resposta HTTP confer
 
 ### Contexto que não estoura
 O histórico é compactado automaticamente quando se aproxima do limite do modelo: resultados antigos de ferramenta passam a ir encurtados **no envio**, e continuam completos na tela. O botão **Compactar**, ao lado do campo de texto, libera contexto na hora.
+
+A compactação encurta **do mais antigo para o mais novo**, desce de uma vez com folga (em vez de raspar o mínimo que cabe) e **lembra** o que já encurtou. Isso não é detalhe: toda requisição reenvia a conversa, e servidor e API reaproveitam o começo do que já viram — um corte que anda a cada turno faz esse reaproveitamento ser perdido toda vez. Medido sobre conversas reais deste app, num chat de 270 requisições: 5 requisições com prefixo alterado, em vez de 160.
+
+### Teto de histórico, para API paga
+Em servidor local o contexto grande é de graça; em API paga, não. Como cada requisição reenvia o histórico, um chat longo com modelo de 262k de contexto chega a mandar **mais de 100 mil tokens por mensagem**. Em *Ajustes → Geração*, **Teto de histórico por requisição** limita isso independentemente do contexto do modelo: acima do teto, resultados antigos vão encurtados (o agente chama a ferramenta de novo se precisar). Vazio (padrão) = comportamento de sempre.
+
+Medido numa sessão de verdade (8 arquivos de ~10k tokens cada, ler e resumir um a um, mesma tarefa e mesma temperatura): sem teto, 26 requisições e 1,43 milhão de tokens de prompt; com teto de 64k, 29 requisições e 1,16 milhão — **19% mais barato**, mesmo resultado final. A economia cresce com o tamanho da conversa.
+
+**Um teto baixo demais sai mais caro, não mais barato.** Se ele for menor que uma leitura, o arquivo é encurtado logo depois de lido e o agente relê sem parar: na mesma tarefa, um teto de 8k custou 4x mais que não ter teto. Por isso a janela do `read_file` passou a acompanhar o teto — com isso o mesmo caso caiu de 503 mil para 262 mil tokens —, mas o conselho continua: abaixo de ~32k, não vale.
 
 ### Processos sem travar o chat
 Servidores e watchers são detectados (por padrão de log ou ociosidade) e vão para segundo plano com PID. Tarefas demoradas são aguardadas com `wait_for_process`, numa chamada só.
@@ -74,6 +86,8 @@ Agora o card da ferramenta aparece assim que o modelo começa a ditar a chamada 
 
 ### Erros que dizem o que fazer
 Falha de conexão, chave inválida, modelo inexistente e erro do servidor viram mensagens com causa e passos — não uma exceção crua. Só falha transitória é repetida.
+
+O mesmo vale para o que uma ferramenta devolve. O agente recebe o erro em inglês com a instrução do próximo passo ("call read_file and try again"), porque é ele quem vai agir; o card na tela mostra **uma linha em português** dizendo o que aconteceu. E há dois tons: quando o erro é uma trava que o próprio agente resolve na chamada seguinte — arquivo ainda não lido, trecho ambíguo no `edit_file` — o card fica discreto (`↷`), em vez de pintar de vermelho um passo normal do trabalho. Vermelho (`⚠`) fica para falha de verdade.
 
 ![Configurações](docs/img/config.png)
 
@@ -117,6 +131,11 @@ O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning
 
 **A lista sai do servidor, não de um palpite.** Ao escolher o modelo, o app pergunta ao endpoint o que ele aceita — as `capabilities` do `/v1/models`, o `chat_template` do `/props` (llama.cpp) e o `/api/show` (Ollama) — e só mostra os níveis confirmados; o rodapé do menu diz de onde veio a informação. Um modelo sem modo de raciocínio fica só com *Padrão*, e um nível salvo que o servidor novo não aceita volta para *Padrão* sozinho, em vez de derrubar a primeira mensagem com um HTTP 400. Endpoint que não responde nada disso (vLLM, OpenAI, gateways) continua mostrando todos os níveis — silêncio não é prova de que não suporta.
 
+**Se ainda assim o servidor recusar o nível**, o aviso aparece na hora do erro — não antes, por suspeita: o app reenvia a mesma mensagem sem o ajuste, avisa qual nível foi recusado e cita a resposta do servidor, que costuma dizer os valores que ele aceita. A conversa não se perde por causa de uma opção do menu.
+
+### A espera de reabrir um chat longo é explicada
+Reabrir o app e mandar a primeira mensagem num chat grande demora — o servidor não tem mais nada em cache e precisa reprocessar a conversa inteira antes de escrever a primeira palavra (medido: **177 segundos** num chat de 123 mil tokens). Em vez dos três pontinhos de sempre, aparece o que está acontecendo, o tamanho aproximado do contexto e um cronômetro; a barra de tarefas mostra *"lendo o contexto…"*. Da segunda mensagem em diante o indicador volta ao normal, porque aí o servidor já tem o histórico em cache. Montar a conversa na tela também avisa (~4s em 1.700 mensagens) em vez de deixar a área do chat vazia.
+
 ### Sem janela de console piscando
 No Windows, cada comando do agente abria um terminal por cima do app — e uma tarefa longa dispara dezenas deles. Em *Ajustes → Ferramentas*, **Ocultar o console dos comandos** vem **ligado** e a janela não aparece mais. Desligue só para acompanhar ao vivo o que está sendo executado.
 
@@ -147,8 +166,8 @@ npm start
 > **Instaladores prontos:** os releases do GitHub publicam `.deb` (Ubuntu/Debian), `.rpm` (Fedora) e `.exe` (Windows), gerados automaticamente a cada tag `vX.Y.Z`.
 >
 > ```bash
-> sudo apt install ./pofu-code-studio_1.4.0_amd64.deb   # Ubuntu/Debian
-> sudo dnf install ./pofu-code-studio-1.4.0.x86_64.rpm  # Fedora
+> sudo apt install ./pofu-code-studio_1.4.1_amd64.deb   # Ubuntu/Debian
+> sudo dnf install ./pofu-code-studio-1.4.1.x86_64.rpm  # Fedora
 > ```
 
 ### Servidor de exemplo com llama.cpp
@@ -170,6 +189,8 @@ Engrenagem → aba **Ajustes**:
 7. **Instruções (system prompt)** e **skills** — veja a seção acima
 
 O **nível de raciocínio** não fica aqui: ele mora no rodapé do compositor, ao lado do campo de mensagem.
+
+Nada é gravado antes do **Salvar e Fechar** — mas *Recarregar* já usa o endpoint e a chave que estão **digitados**, para testar o que você acabou de escrever em vez do que está salvo. Para os dois não se confundirem, o campo alterado fica realçado e o rodapé diz quantas alterações ainda não foram salvas; fechar no ✕ com algo pendente avisa no chat que o formulário foi descartado.
 
 O que está salvo é lido **na abertura do app**, não só quando você entra nas configurações: o endpoint salvo é consultado assim que a janela sobe, e daí saem a lista de modelos, o tamanho de contexto, o suporte a imagem e os níveis de raciocínio. Um valor estragado no arquivo de configuração (endpoint vazio, temperatura fora de faixa, nível que não existe mais) volta ao padrão em vez de falhar na primeira mensagem.
 

@@ -98,17 +98,32 @@ que a ausência dele.
 - ES modules (`"type": "module"`) no main; renderer também usa `type="module"`.
 - Sem framework de UI: DOM imperativo (`document.createElement`). Siga o padrão dos
   `render*`/`build*` existentes em vez de introduzir templates ou libs.
-- Comentários explicam **por quê**, não o quê — veja [src/constants.ts](src/constants.ts), que
-  documenta o motivo de cada limite (ex.: `maxTokens` alto porque modelos de raciocínio gastam
-  orçamento no bloco de think e cortam o JSON do tool call). Mantenha esse estilo ao mexer em
-  qualquer constante ou heurística.
+- **Comentário só quando é necessário.** O padrão é NÃO comentar: código claro não precisa de
+  legenda, e comentário genérico é ruído que ainda envelhece errado — quando o código muda e a
+  legenda fica, ela passa a mentir. Escreva um comentário quando a resposta for sim a alguma
+  destas: o *porquê* não se deduz lendo a linha? há uma armadilha que faria alguém "consertar"
+  isso de volta? o número saiu de uma medição? o comportamento é contraintuitivo (ordem que
+  importa, efeito colateral, limitação de servidor)? Se for não, não comente.
+  Não escreva: o que a linha já diz (`// cria o elemento` sobre um `createElement`), rótulo de
+  seção (`// ---- helpers ----`), nome repetido em prosa, nem passo a passo do óbvio.
+  Veja [src/constants.ts](src/constants.ts) para o tom: cada limite diz o motivo de existir
+  (ex.: `maxTokens` alto porque modelo de raciocínio gasta orçamento no bloco de think e corta
+  o JSON do tool call). Mantenha esse estilo ao mexer em constante ou heurística — e prefira
+  UM comentário que explique a decisão a vários espalhados narrando a implementação.
 - Mudanças de comportamento do agente quase sempre significam ajustar o `system_prompt` em
   [src/constants.ts](src/constants.ts) — não espalhe instruções pelo renderer.
 
 ## Armadilhas conhecidas
 
 - **Leitura paginada**: `read_file` devolve janelas de linhas com aviso de `offset`. Não volte a
-  truncar em silêncio — foi a causa de o modelo apagar arquivos ao reescrevê-los. A janela é
+  truncar em silêncio — foi a causa de o modelo apagar arquivos ao reescrevê-los.
+  **Linha maior que a janela inteira** (minificado, JSON numa linha) é o único caso em que o
+  conteúdo não cabe de jeito nenhum: a linha volta cortada, e o rodapé precisa dizer o tamanho
+  REAL dela, que o resto não está ali e que continuar em `offset = end+1` pula o pedaço. Sem
+  esse aviso o corte era invisível — o modelo via "arquivo truncado no meio", perdia a
+  confiança na ferramenta e passava a ler tudo por `execute_command` (`node -e` despejando em
+  `_tmp.txt` para reler em pedaços), o que custa mais tokens, mais turnos e ainda enche o
+  projeto de rascunho. Vale para todo corte que vai ao MODELO: diga o que sumiu e como pegar. A janela é
   recortada no **main**; o renderer só formata (`formatFileWindow`). Não volte a mandar o arquivo
   inteiro pelo IPC. O tamanho da janela NÃO é constante: `readCharBudget(n_ctx)` tira uma fatia
   do contexto do modelo em uso, porque um número fixo é pequeno demais num modelo de 65k e
@@ -129,6 +144,21 @@ que a ausência dele.
   para CRLF, e o `new_text` é normalizado para a quebra do arquivo **mesmo quando o `old_text`
   casou de primeira**: trecho de uma linha só não passa pelo fallback, e gravar LF no meio de um
   arquivo CRLF deixa quebras misturadas que quebram a edição SEGUINTE.
+- **Imagem anexada pelo usuário usa o MESMO caminho do print**: bytes em
+  `userData/screenshots` (com a poda de lá), caminho no histórico, data URL no `shotCache`
+  e bloco `image_url` no `toApiMessages`. Não volte a mandar a MINIATURA no lugar dos
+  pixels: ela tem 140 px e serve ao chip da UI; o modelo não leria nada nela. E o
+  `hydrateShots` precisa rodar ANTES de montar o payload — inverter a ordem faz a imagem
+  sumir da conversa depois de reabrir o app (o cache começa vazio e o payload sai sem ela).
+  Sem os pixels o modelo não desiste: medido, ele instalou o Pillow com `pip` e escreveu um
+  OCR em Python para responder sobre a imagem — 32 requisições contra 1.
+- **`imagemPath` NÃO é o `path` do anexo**: o `path` de um `Attachment` já era o caminho
+  relativo da MENÇÃO (@arquivo). Reaproveitá-lo para a imagem fez o app mandar um `.md`
+  rotulado como PNG, e o servidor recusa a REQUISIÇÃO INTEIRA com 400 ("Failed to load
+  image or audio file") — três tentativas e a conversa morre, com a mensagem sem relação
+  nenhuma com o arquivo mencionado. Por isso o campo da imagem tem nome próprio e o
+  `read-image` confere a assinatura do arquivo (PNG/JPEG/GIF/BMP/WEBP) antes de devolver:
+  imagem faltando é ruim, turno morto é pior.
 - **Prints e visão**: `capture_page` abre a URL numa `BrowserWindow` oculta (`offscreen: true`,
   necessário para o `capturePage()` não sair em branco) e devolve `{ text, image }`. O PNG vai
   para `userData/screenshots`; no histórico fica só o **caminho** (o base64 mora em `shotCache`,
@@ -147,6 +177,31 @@ que a ausência dele.
   e na tela. O orçamento desconta o prompt de sistema e `maxTokens` do `n_ctx`; por isso
   `runAgent` faz `await refreshModelContext()` na primeira requisição — sem o `n_ctx` a poda
   não teria como dimensionar nada, justamente na conversa longa recém-reaberta.
+  Três decisões da poda existem por causa do CACHE DE PREFIXO, e desfazer qualquer uma delas
+  custa dinheiro sem aparecer na tela: (1) encurta do MAIS ANTIGO para o mais novo — a versão
+  original andava do fim para o começo e preservava o início da conversa, o oposto do que o
+  comentário dizia; (2) quando dispara, desce até `PODA_FOLGA` do orçamento em vez do mínimo
+  que cabe; (3) grava até onde podou em `chat.podaAutoAte` — o que foi encurtado CONTINUA
+  encurtado. Sem a marca, cada turno recalcula o corte do zero, a fronteira anda alguns
+  tokens por requisição e o prefixo muda sempre. Medido nas conversas reais do próprio app
+  (chat de 270 requisições, teto de 64k): com a marca, 5 requisições mudam o prefixo; sem
+  ela, 160 — e a conta com desconto de cache chegava a ficar MAIOR que a de não podar nada.
+  O `historyCap` (Ajustes) só APERTA o orçamento, nunca afrouxa: com `n_ctx` de 262k a poda
+  nunca dispararia e cada requisição reenviaria o histórico inteiro — ~30 milhões de tokens
+  de prompt num único chat medido. Vem desligado porque em servidor local podar só faz o
+  servidor reprocessar de graça.
+  **A janela do `read_file` acompanha o teto** (`readCharBudget` recebe o `historyCap`
+  quando ele existe, não só o `n_ctx`). Sem esse acoplamento a leitura podia ser MAIOR que o
+  histórico inteiro: o arquivo era encurtado no turno seguinte ao de ter sido lido e o agente
+  relia o mesmo trecho para sempre. Medido em execução real, mesma tarefa e temperatura 0:
+  sem teto, 6 requisições e 130k tokens; com teto de 8k e sem o acoplamento, 44 requisições e
+  503k; com o acoplamento, 24 e 262k. Ou seja: teto apertado ainda é ruim, mas deixou de ser
+  catastrófico. Numa sessão longa com teto sensato (64k) a mesma tarefa custou 19% menos que
+  sem teto. Cuidado com o número simulado: replay de conversa gravada NÃO modela o agente
+  mudando de comportamento, e foi por isso que a primeira estimativa (-50%) ficou otimista.
+  Limite conhecido: mensagens do ASSISTENTE não são podadas (só as `tool`), então o
+  `content` e os argumentos de `tool_call` — o conteúdo de um `write_file`, por exemplo —
+  formam um piso que a poda não alcança; nas conversas medidas esse piso chegou a 59k tokens.
 - **Escrita sem leitura**: `write_file` recusa sobrescrever arquivo existente que não está em
   `arquivosLidos` (a checagem mora no main, junto da escrita, para não haver intervalo entre
   verificar e gravar). Criar arquivo novo passa livre. O conjunto zera ao trocar de chat.
@@ -158,6 +213,12 @@ que a ausência dele.
   windowsHide:true` abre 0. Por isso o `execute-command` só usa `detached` fora do Windows —
   os dois motivos do `detached` são POSIX (sudo e grupo de processos), e quem derruba a
   árvore no Windows é o `taskkill /T` do `killTree`. Não volte a ligar `detached` lá.
+- **Saída de comando cortada**: `execute_command`/`read_process_output`/`wait_for_process`
+  passam a saída pelo `cortaSaida` (corte no meio, `MAX_CMD_STDOUT_CHARS`/`MAX_CMD_STDERR_CHARS`).
+  O marcador é em INGLÊS e diz o que fazer ("re-run narrowing the output with head/tail/findstr"),
+  porque quem lê é o modelo: com o marcador mudo ele repetia o comando despejando em arquivo.
+  Os tetos eram 3000/2500 e cortavam a saída de um `dir` ou de um teste no meio — economia que
+  saía cara, porque o contorno gastava mais tokens do que o corte poupava.
 - **Processos longos**: comandos que passam de `cmdTimeout` viram background e retornam PID,
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava
@@ -211,6 +272,15 @@ que a ausência dele.
   resolução com o do instalador e VENCE (é mais antigo), e aí o app instalado exibe o
   ícone do Electron. Se acontecer de novo: apague o `.lnk` órfão em
   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\` e confira com `Get-StartApps`.
+- **Espera de contexto frio**: a primeira requisição de um chat REABERTO reprocessa o
+  histórico inteiro no servidor, sem cache — medido em 177s num chat de 123k tokens, com
+  três pontinhos na tela o tempo todo. Por isso `showTyping` aceita o tamanho do prompt e
+  troca o indicador por um aviso com cronômetro quando o chat ainda não foi "aquecido"
+  (`chatsAquecidos`, que vive só na memória: reabrir o app zera o cache do servidor junto).
+  A estimativa de tokens é grosseira de propósito — contar caracteres deu 99k onde o
+  servidor cobrou 123k —, então ela aparece arredondada e com "≈". O `renderActiveChat` é
+  `async` pelo mesmo motivo: a montagem trava o renderer por segundos numa conversa longa,
+  e o aviso precisa ser pintado ANTES de ela começar.
 - **Fila de mensagens** (`filaMensagens`/`drenaFila`): mensagem escrita durante a geração
   NÃO entra no histórico na hora — cairia no meio de um par `tool_call`/`tool` e o servidor
   recusaria o payload inteiro pelo `tool_call` órfão. Ela espera a virada de turno, no topo
@@ -237,6 +307,34 @@ que a ausência dele.
   algo → só o confirmado; leu o template e ele não fala de raciocínio → só *Padrão*; não leu
   nada → mostra tudo, porque silêncio não é prova de que não suporta. A sonda roda uma vez por
   par endpoint+modelo: o `refreshModelContext` é chamado a cada requisição.
+- **Erro de ferramenta na tela é pt-BR, e o `hint` NUNCA aparece**: o `error`/`hint` que volta
+  de uma tool call é escrito para o MODELO — o `hint` é a instrução do próximo passo ("call
+  read_file and try again"). Despejar esse bloco no card enchia a conversa de alerta vermelho
+  em inglês, muitas vezes por uma trava que o próprio agente resolve na chamada seguinte. O
+  `erroParaTela` (tabela `ERROS_NA_TELA`) traduz em UMA linha; o resultado que vai ao modelo
+  continua íntegro. Erro sem tradução cai no texto cru — esconder a falha seria pior. O
+  prefixo escolhe o tom: `↷` é orientação (o agente se corrige sozinho) e só o `⚠` é pintado
+  de vermelho pelo `fillToolResult`. Mensagem nova do main que o usuário possa ver pede uma
+  linha nessa tabela.
+- **Aviso de raciocínio só depois do erro REAL**: a tentação é avisar antes de enviar, olhando
+  o que o `/models` deixou de anunciar — e foi o que se fez primeiro. Só que servidor que
+  aceita o campo caladamente é comum, e o aviso passou a aparecer em toda conversa sem nada
+  ter dado errado (medido no llama.cpp da porta 5001: nível *Alto* responde 200 e o aviso
+  preventivo mentia). Agora quem decide é a resposta: `recusouRaciocinio` só aceita 4xx/5xx
+  cujo corpo cite `reasoning_effort`/`enable_thinking`/`chat_template_kwargs` — com espaço ou
+  hífen também, porque o llama.cpp devolve a exceção do Jinja ("Unexpected reasoning effort
+  max"), sem o nome do campo da API. Aí o campo sai do payload (`thinkRecusado`), a MESMA
+  mensagem é reenviada e o aviso cita a resposta do servidor, que costuma listar os valores
+  aceitos. Não volte a avisar por suspeita, e não deixe o turno morrer por causa de uma opção
+  do menu.
+- **O formulário de configurações não é o disco**: nada ali é gravado antes do "Salvar e
+  Fechar", mas o "Recarregar" da lista de modelos usa o que está DIGITADO — digitar a API Key
+  e recarregar é o fluxo natural de quem acabou de configurar, e ler a chave salva devolvia
+  401 justamente no servidor que a chave nova abre. Como isso cria um estado "funciona aqui,
+  mas não está salvo", o `atualizaEstadoSalvamento` realça o campo alterado e conta as
+  pendências no rodapé. A comparação é contra `settingsSalvas` (retrato do disco, atualizado
+  no `persist`), e não contra `state.settings`: trocar o modelo no `<select>` já mexe em
+  `state.settings` na hora, e a troca por gravar apareceria como salva.
 - **`ask_user` não passa pelo main**: a pergunta é UI pura, então ela quebra o fluxo de
   quatro passos da tabela acima — não tem `ipcMain.handle` nem entrada no preload, só o
   schema, o `case` no `runTool` e o modal. O turno do agente fica PARADO na promessa até
