@@ -117,17 +117,30 @@ que a ausência dele.
 
 - **Leitura paginada**: `read_file` devolve janelas de linhas com aviso de `offset`. Não volte a
   truncar em silêncio — foi a causa de o modelo apagar arquivos ao reescrevê-los.
-  **Linha maior que a janela inteira** (minificado, JSON numa linha) é o único caso em que o
-  conteúdo não cabe de jeito nenhum: a linha volta cortada, e o rodapé precisa dizer o tamanho
-  REAL dela, que o resto não está ali e que continuar em `offset = end+1` pula o pedaço. Sem
-  esse aviso o corte era invisível — o modelo via "arquivo truncado no meio", perdia a
-  confiança na ferramenta e passava a ler tudo por `execute_command` (`node -e` despejando em
-  `_tmp.txt` para reler em pedaços), o que custa mais tokens, mais turnos e ainda enche o
-  projeto de rascunho. Vale para todo corte que vai ao MODELO: diga o que sumiu e como pegar. A janela é
+  **Linha maior que a janela inteira** (minificado, JSON numa linha) pagina por `char_offset`,
+  que retoma a MESMA linha de onde parou — e o rodapé entrega o número pronto. Avisar não
+  bastava: a versão anterior dizia o tamanho real da linha e mandava buscar o resto com
+  `cut`/`sed`, ou seja, a ferramenta ensinava o agente a abandoná-la. Medido com modelo real
+  sobre um bundle de uma linha de 90 mil caracteres: duas leituras e ele passou a ler o arquivo
+  por `execute_command` (`node -e`), o que custa mais tokens, mais turnos e enche o projeto de
+  rascunho. Não volte a fechar essa saída: **todo corte que vai ao MODELO precisa de um jeito de
+  buscar o que sumiu, não só do aviso de que sumiu** — e esse jeito não pode ser o terminal.
+  `search_files` é o par disso: devolve a `column` do casamento, que é o `char_offset` para ir
+  direto ao trecho, e recorta a linha CENTRADA no casamento (recortar do começo devolvia um
+  resultado que nem continha o termo procurado). A janela é
   recortada no **main**; o renderer só formata (`formatFileWindow`). Não volte a mandar o arquivo
   inteiro pelo IPC. O tamanho da janela NÃO é constante: `readCharBudget(n_ctx)` tira uma fatia
   do contexto do modelo em uso, porque um número fixo é pequeno demais num modelo de 65k e
   grande demais num de 8k.
+- **Caminho vindo do modelo**: as cinco ferramentas de arquivo passam por `caminhoNoWorkspace`
+  no renderer, e a trava de leitura usa `chaveArquivo`. Não volte a concatenar
+  `` `${workspace}/${args.filename}` `` cru: um caminho ABSOLUTO — que é o que o prompt de
+  sistema mostra ao modelo e o que o usuário cola no chat — virava `C:/ws/C:/ws/arquivo` e a
+  leitura respondia "File not found", erro que o modelo não tem como diagnosticar. Pior, a chave
+  de `arquivosLidos` saía da mesma concatenação: ler `./x.ts` e escrever `x.ts` eram chaves
+  diferentes, então a trava acusava "not been read" logo depois da leitura, e a saída que o
+  modelo achava era o shell. Normalizar num ponto só é o que faz as cinco ferramentas
+  concordarem sobre o que é "o mesmo arquivo".
 - **`edit_file` antes de `write_file`**: alterar arquivo existente é trabalho de `edit_file`
   (troca de trecho exato). Reescrever tudo com `write_file` gasta tokens de saída à toa e a
   geração é cortada no meio, truncando o arquivo. O prompt e as descrições das ferramentas

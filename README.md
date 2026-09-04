@@ -34,10 +34,10 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 | Ferramenta | O que faz |
 |---|---|
 | `list_files` | Lista arquivos e pastas (com tamanho) |
-| `read_file` | Lê em janelas de linhas, com paginação por `offset` |
+| `read_file` | Lê em janelas, com paginação por `offset` (linha) e `char_offset` (caractere) |
 | `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido |
 | `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente |
-| `search_files` | Busca por texto/regex no projeto, com filtro glob |
+| `search_files` | Busca por texto/regex no projeto, com filtro glob; devolve arquivo, linha e **coluna** |
 | `ask_user` | **Faz uma pergunta e espera a resposta**, em card com opções clicáveis |
 | `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
 | `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
@@ -46,6 +46,11 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 | `http_request` | Chama uma API e devolve status, cabeçalhos e corpo separados |
 | `capture_page` | Abre a URL num navegador oculto, tira print e reporta erros de console e de rede |
 | `web_search` / `fetch_url` | Busca na web e leitura de páginas (opcional, em *Ajustes → Ferramentas*) |
+
+### Leitura que não empurra o agente para o terminal
+`read_file` pagina por **linha** (`offset`) e também **dentro de uma linha** (`char_offset`), então nem um bundle minificado de uma linha só fica fora do alcance da ferramenta — a cada janela o resultado devolve o número exato para continuar. `search_files` completa o par: além de arquivo e linha, informa a **coluna** do casamento, que é o `char_offset` para ir direto ao trecho, e o recorte mostrado é centrado no que você procurou.
+
+Isso veio de um teste com modelo real: numa linha de 90 mil caracteres a leitura parava no corte e mandava terminar com `cut`/`sed` no terminal — e era o que o agente fazia, largando a ferramenta na segunda tentativa. A busca piorava o quadro, porque cortava a linha a partir do começo e devolvia um "resultado" que **não continha o termo procurado**. Resultados grandes agora encolhem descartando itens inteiros, e não cortando a string no meio: o JSON continua analisável e diz quantos itens ficaram de fora.
 
 ### Diff e desfazer
 Cada escrita, edição ou remoção mostra **o que exatamente mudou** — colorido, numerado nas duas versões e com o contexto em volta — e um botão **Desfazer** que reverte o arquivo no disco. O desfazer também pode ser desfeito.

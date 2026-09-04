@@ -1496,7 +1496,12 @@ function summarizeToolCall(name, args) {
   switch (name) {
     case 'execute_command': return '$ ' + (args.command || '');
     case 'read_file':
-      return (args.filename || '') + (args.offset > 1 ? ` (a partir da linha ${args.offset})` : '');
+      return (args.filename || '')
+        + (args.offset > 1 ? ` (a partir da linha ${args.offset}` : '')
+        // Continuar no MEIO de uma linha é raro o bastante para o usuário estranhar o card
+        // repetindo o mesmo arquivo e a mesma linha; o caractere é o que distingue as duas.
+        + (args.char_offset > 1 ? `${args.offset > 1 ? ', ' : ' (a partir do '}caractere ${args.char_offset}` : '')
+        + ((args.offset > 1 || args.char_offset > 1) ? ')' : '');
     case 'write_file':
     case 'delete_file': return args.filename || '';
     case 'edit_file': {
@@ -1608,12 +1613,16 @@ function summarizeToolResult(name, resultStr) {
         if (erro && erro.error) return erroParaTela(erro.error);
       } catch (e) { /* não era JSON: segue como conteúdo do arquivo */ }
     }
-    const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)\]/);
+    // O cabeçalho ganha um trecho a mais quando a janela começa no meio de uma linha —
+    // por isso o final é opcional aqui, senão a leitura parcial cairia no ramo de baixo
+    // e o card diria "1 linha lida" para uma janela de 7 mil caracteres.
+    const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)(?:, starting at character (\d+))?[^\]]*\]/);
     if (m) {
       const restam = Number(m[3]) - Number(m[2]);
-      return restam > 0
-        ? `✓ linhas ${m[1]}–${m[2]} de ${m[3]} (restam ${restam})`
-        : `✓ linhas ${m[1]}–${m[2]} de ${m[3]}`;
+      const faixa = m[4]
+        ? `linha ${m[1]} a partir do caractere ${m[4]}`
+        : `linhas ${m[1]}–${m[2]} de ${m[3]}`;
+      return restam > 0 && !m[4] ? `✓ ${faixa} (restam ${restam})` : `✓ ${faixa}`;
     }
     const lines = resultStr.split('\n').length;
     return `✓ ${lines} linha(s) lidas`;
@@ -2253,22 +2262,27 @@ function formatFileWindow(filename, res, budget) {
   if (!res || !res.success) return JSON.stringify({ error: (res && res.error) || 'could not read the file' });
   if (res.empty) return `File "${filename}" is empty.`;
 
-  // Corte no MEIO de uma linha: dizer só "a janela foi cortada" fazia o modelo continuar na
-  // linha seguinte e perder o resto desta sem saber. O que ele precisa é do tamanho real da
-  // linha, do aviso de que continuar pula o pedaço e de por onde ir buscá-lo.
+  // Corte no MEIO de uma linha. Antes o rodapé só AVISAVA que faltava pedaço e mandava buscá-lo
+  // com cut/sed no terminal — ou seja, a própria ferramenta ensinava o agente a abandoná-la, e
+  // era o que ele fazia. Agora a continuação existe dentro da read_file: char_offset retoma a
+  // MESMA linha de onde parou, e é esse número que o rodapé entrega pronto.
   let charNote = '';
   if (res.charClipped) {
-    charNote = `\n\n[… line ${res.start} alone has ${res.lineChars} characters and only the first ` +
-      `${budget} are above. read_file returns whole lines, so the REST OF THIS LINE is NOT here, ` +
-      `and read_file with offset=${res.end + 1} continues at the NEXT line and skips it. ` +
-      `To reach that content use search_files with a term you expect inside the line, or ` +
-      `execute_command with a tool that cuts by column (cut/sed/awk/findstr).]`;
+    charNote = `\n\n[… line ${res.start} has ${res.lineChars} characters and this window stops at ` +
+      `${res.nextCharOffset - 1}. To read the REST OF THIS LINE, call read_file with ` +
+      `offset=${res.start} and char_offset=${res.nextCharOffset}. Do NOT continue with ` +
+      `offset=${res.start + 1}: that jumps to the next line and skips what is missing here.]`;
   }
 
-  // Arquivo cabe inteiro na janela: volta direto, sem cabeçalho (o caso comum).
-  if (res.start === 1 && res.end === res.total && !charNote) return res.content;
+  const parcial = res.charOffset > 1;
 
-  const header = `[File "${filename}" — lines ${res.start}–${res.end} of ${res.total}]`;
+  // Arquivo cabe inteiro na janela: volta direto, sem cabeçalho (o caso comum).
+  if (res.start === 1 && res.end === res.total && !charNote && !parcial) return res.content;
+
+  const header = parcial
+    ? `[File "${filename}" — lines ${res.start}–${res.end} of ${res.total}, starting at character ` +
+      `${res.charOffset} of line ${res.start} (${res.lineChars} characters long)]`
+    : `[File "${filename}" — lines ${res.start}–${res.end} of ${res.total}]`;
   let footer = charNote;
   if (res.end < res.total) {
     footer += `\n\n[… ${res.total - res.end} line(s) left. To continue, call read_file with offset=${res.end + 1}]`;
@@ -2316,15 +2330,18 @@ const tools = [
     function: {
       name: 'read_file',
       description: 'Reads the content of a file in the workspace. Most files come back WHOLE; ' +
-        'only very large ones are split into WINDOWS of lines. If the result says lines are left, ' +
+        'only very large ones are split into WINDOWS. If the result says lines are left, ' +
         'call read_file again with "offset" set to the line it indicates — the file is NEVER ' +
-        'truncated silently. Before rewriting a large file, read every part of it.',
+        'truncated silently. A single line too long to fit is paged with "char_offset", so ' +
+        'minified files are readable with this tool too: do NOT fall back to shell commands. ' +
+        'Before rewriting a large file, read every part of it.',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'File name or relative path' },
+          filename: { type: 'string', description: 'File name, or path relative to the workspace (an absolute path inside the workspace also works)' },
           offset: { type: 'number', description: 'First line to read (1-based). Default: 1.' },
-          limit: { type: 'number', description: `Maximum number of lines to return in this read (cap: ${READ_FILE_MAX_LINES}). The real window size is also bounded by a character budget derived from the model context, so a high "limit" does not guarantee the whole file — if the result says lines are left, continue with "offset".` }
+          limit: { type: 'number', description: `Maximum number of lines to return in this read (cap: ${READ_FILE_MAX_LINES}). The real window size is also bounded by a character budget derived from the model context, so a high "limit" does not guarantee the whole file — if the result says lines are left, continue with "offset".` },
+          char_offset: { type: 'number', description: 'First CHARACTER to read within the line given by "offset" (1-based). Use it to page through a line that is too long to fit in one window — the result tells you the exact value to pass next. search_files reports the "column" of a match, which you can pass here to jump straight to it.' }
         },
         required: ['filename']
       }
@@ -2689,6 +2706,53 @@ async function hydrateShots(messages) {
   }
 }
 
+// Resolve contra o workspace o caminho que o MODELO mandou. Antes era `${workspace}/${nome}`
+// cru, e isso quebrava de duas formas medidas num teste com modelo real:
+//   1. caminho ABSOLUTO — que é justamente o que o prompt de sistema mostra ao modelo, e o
+//      que o usuário cola no chat — virava "C:/ws/C:/ws/arquivo" e a leitura respondia
+//      "File not found". O modelo não tem como adivinhar o que houve e vai ler pelo terminal.
+//   2. a chave de `arquivosLidos` saía da mesma concatenação, então ler "./x.ts" e depois
+//      escrever "x.ts" eram chaves DIFERENTES: a trava acusava "not been read" logo depois
+//      da leitura, e o jeito que o modelo achava de sair disso era o shell.
+// Normalizar aqui, num ponto só, é o que faz as cinco ferramentas de arquivo concordarem
+// sobre o que é "o mesmo arquivo".
+function caminhoNoWorkspace(workspace, nome) {
+  const ws = String(workspace || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  let n = String(nome ?? '').trim().replace(/\\/g, '/');
+
+  // Absoluto apontando para DENTRO do workspace: vira relativo em vez de duplicar o prefixo.
+  // A comparação ignora maiúsculas porque no Windows "C:/Users" e "c:/users" são o mesmo lugar.
+  const wsBaixo = ws.toLowerCase(), nBaixo = n.toLowerCase();
+  if (nBaixo === wsBaixo) n = '';
+  else if (wsBaixo && nBaixo.startsWith(wsBaixo + '/')) n = n.slice(ws.length + 1);
+
+  // Absoluto para fora do workspace segue absoluto: era o alcance de antes (o fs resolvia a
+  // concatenação), e recusar aqui só empurraria o agente para o terminal de novo.
+  const absoluto = /^([a-zA-Z]:\/|\/)/.test(n);
+  const bruto = absoluto ? n : `${ws}/${n.replace(/^\.\//, '')}`;
+
+  // Colapsa "." e ".." para que "src/../src/x.ts" e "src/x.ts" tenham a MESMA chave.
+  const raizAbs = bruto.match(/^([a-zA-Z]:\/|\/)/);
+  const raiz = raizAbs ? raizAbs[0] : '';
+  const partes = [];
+  for (const p of bruto.slice(raiz.length).split('/')) {
+    if (p === '' || p === '.') continue;
+    if (p === '..') { if (partes.length && partes[partes.length - 1] !== '..') partes.pop(); else if (!raiz) partes.push(p); continue; }
+    partes.push(p);
+  }
+  return raiz + partes.join('/');
+}
+
+// Chave de `arquivosLidos`. Separada do caminho porque no Windows o mesmo arquivo chega com
+// caixa diferente ("SRC/x.ts" e "src/x.ts") e a trava não pode ver dois arquivos aí. Quem diz
+// se a caixa importa é o PRÓPRIO caminho (letra de unidade = Windows), e não `navigator`:
+// além de `platform` estar depreciado, um caminho POSIX continua distinguindo maiúsculas
+// mesmo quando o app roda no Windows.
+function chaveArquivo(caminho) {
+  const c = String(caminho);
+  return /^[a-zA-Z]:\//.test(c) ? c.toLowerCase() : c;
+}
+
 // Arquivos que o agente já leu (ou escreveu) nesta sessão. Serve para barrar um
 // write_file que sobrescreveria conteúdo que ele nunca viu. Zera ao trocar de chat,
 // porque quem manda é o que está no histórico da conversa atual.
@@ -2711,12 +2775,66 @@ function comAlteracao(res, arquivo, extras: Partial<Alteracao> = {}): ToolOutput
   return saida;
 }
 
+// Mesma ideia da busca, para a listagem de pastas: descarta entradas inteiras em vez de
+// cortar a string, e diz quantas ficaram de fora para o agente saber que a pasta tem mais.
+function cortaLista(files, teto) {
+  const inteiro = JSON.stringify(files);
+  if (!Array.isArray(files) || inteiro.length <= teto) return inteiro;
+  // Pasta primeiro: a estrutura é o que orienta a navegação, o arquivo solto pode esperar
+  // um list_files da subpasta. Dentro de cada grupo a ordem do sistema de arquivos é mantida.
+  const ordenado = [...files].sort((a, b) => Number(!!b.isDirectory) - Number(!!a.isDirectory));
+  const cabe = [...ordenado];
+  let saida = inteiro;
+  while (cabe.length > 1) {
+    cabe.pop();
+    saida = JSON.stringify({
+      entries: cabe,
+      omitted: files.length - cabe.length,
+      hint: `${files.length - cabe.length} entr(ies) of ${files.length} were omitted to fit the ` +
+        `context (folders were kept first). Use list_files on a subpath, or search_files, ` +
+        `instead of listing this folder whole.`
+    });
+    if (saida.length <= teto) return saida;
+  }
+  return truncate(saida, teto);
+}
+
+// Encurta o resultado da busca DESCARTANDO achados inteiros, e não cortando a string no
+// caractere N. Com `truncate` o JSON chegava partido no meio de um objeto: medido com 60
+// achados de linha longa, 44 se perdiam e o que sobrava nem era JSON válido — o modelo
+// recebia lixo, não um resultado com menos itens. Aqui a estrutura continua analisável e o
+// que foi cortado é dito junto de como estreitar a busca.
+function cortaAchados(res, teto) {
+  const inteiro = JSON.stringify(res);
+  if (!res || !Array.isArray(res.matches) || inteiro.length <= teto) return truncate(inteiro, teto);
+
+  // Tira do FIM: os primeiros achados são os dos arquivos varridos primeiro, e manter uma
+  // fatia contígua é mais útil que uma amostra salteada de arquivos diferentes.
+  const cabe = [...res.matches];
+  let saida = inteiro;
+  while (cabe.length > 1) {
+    cabe.pop();
+    saida = JSON.stringify({
+      ...res, matches: cabe,
+      omitted: res.matches.length - cabe.length,
+      hint: `${res.matches.length - cabe.length} match(es) were dropped to fit the context. ` +
+        `Narrow the search with file_pattern, a more specific query, or a smaller max_results.`
+    });
+    if (saida.length <= teto) return saida;
+  }
+  return truncate(saida, teto); // um único achado ainda estoura: aí o corte bruto é o que resta
+}
+
 async function runTool(name, args, workspace) {
   try {
     if (name === 'list_files') {
-      const dir = args.subpath ? `${workspace}/${args.subpath}` : workspace;
+      const dir = args.subpath ? caminhoNoWorkspace(workspace, args.subpath) : workspace;
       const files = await window.electronAPI.listFiles(dir);
-      return JSON.stringify(files);
+      // A listagem era o ÚNICO resultado de ferramenta sem teto nenhum: medido no
+      // node_modules deste repositório, 294 entradas = ~3,5 mil tokens numa tacada, quase
+      // metade do contexto de um modelo de 8k gasto para dizer nomes de pasta. Corta por
+      // ENTRADA inteira, como a busca, para o JSON continuar analisável.
+      return cortaLista(files, MAX_TOOL_RESULT_CHARS);
     }
     if (name === 'read_file') {
       // O orçamento acompanha o n_ctx do modelo em uso, então trocar de modelo muda
@@ -2726,21 +2844,21 @@ async function runTool(name, args, workspace) {
       // e 4x mais tokens para a mesma tarefa que levou 6 sem teto.
       const capUsuario = Number(state.settings.historyCap) || 0;
       const budget = readCharBudget(capUsuario > 0 ? Math.min(state.modelCtx || capUsuario, capUsuario) : state.modelCtx);
-      const alvo = `${workspace}/${args.filename}`;
+      const alvo = caminhoNoWorkspace(workspace, args.filename);
       const res = await window.electronAPI.readFile(alvo, {
-        offset: args.offset, limit: args.limit,
+        offset: args.offset, limit: args.limit, charOffset: args.char_offset,
         maxLines: READ_FILE_MAX_LINES, maxChars: budget
       });
-      if (res && res.success) arquivosLidos.add(alvo);
+      if (res && res.success) arquivosLidos.add(chaveArquivo(alvo));
       return formatFileWindow(args.filename, res, budget);
     }
     if (name === 'write_file') {
-      const alvo = `${workspace}/${args.filename}`;
+      const alvo = caminhoNoWorkspace(workspace, args.filename);
       const res = await window.electronAPI.writeFile(alvo, args.content ?? '', {
-        requireRead: !arquivosLidos.has(alvo)
+        requireRead: !arquivosLidos.has(chaveArquivo(alvo))
       });
       // Depois de escrever, o agente conhece o conteúdo: as próximas escritas passam direto.
-      if (res.success) arquivosLidos.add(alvo);
+      if (res.success) arquivosLidos.add(chaveArquivo(alvo));
       // Um arquivo que já existia e encolheu muito quase sempre veio de uma reescrita
       // feita a partir de leitura parcial. Avisar aqui é o último ponto em que dá
       // para o modelo perceber e restaurar o conteúdo.
@@ -2752,7 +2870,7 @@ async function runTool(name, args, workspace) {
     }
     if (name === 'edit_file') {
       const res = await window.electronAPI.editFile(
-        `${workspace}/${args.filename}`, args.old_text, args.new_text ?? '', !!args.replace_all
+        caminhoNoWorkspace(workspace, args.filename), args.old_text, args.new_text ?? '', !!args.replace_all
       );
       return comAlteracao(res, args.filename);
     }
@@ -2766,15 +2884,15 @@ async function runTool(name, args, workspace) {
         query: args.query, regex: !!args.regex, caseSensitive: !!args.case_sensitive,
         filePattern: args.file_pattern, maxResults: args.max_results
       });
-      return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
+      return cortaAchados(res, MAX_TOOL_RESULT_CHARS);
     }
     if (name === 'create_directory') {
-      const res = await window.electronAPI.createDirectory(`${workspace}/${args.dirname}`);
+      const res = await window.electronAPI.createDirectory(caminhoNoWorkspace(workspace, args.dirname));
       return JSON.stringify(res);
     }
     if (name === 'delete_file') {
-      const alvo = `${workspace}/${args.filename}`;
-      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(alvo) });
+      const alvo = caminhoNoWorkspace(workspace, args.filename);
+      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(chaveArquivo(alvo)) });
       return comAlteracao(res, args.filename, { apagado: true, removidas: res.deletedLines || 0 });
     }
     if (name === 'execute_command') {

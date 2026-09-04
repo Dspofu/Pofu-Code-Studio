@@ -66,13 +66,13 @@ Cada um tem correspondente 1:1 em `src/preload.cts` e assinatura em `ElectronAPI
 |---|---|
 | `select-folder` | Diálogo de pasta |
 | `list-files` | Lista arquivos **com tamanho** (evita round-trip para o agente decidir se lê) |
-| `read-file` | Leitura em **janelas** — recorte por `readCharBudget(n_ctx)` mora aqui |
+| `read-file` | Leitura em **janelas** — recorte por `readCharBudget(n_ctx)` mora aqui; `charOffset` pagina DENTRO de uma linha longa demais |
 | `get-diff` / `undo-change` | Remonta diff de instantâneo / desfaz (e grava outro instantâneo → refazer) |
 | `write-file` / `delete-file` | **Trava**: recusa sobrescrever/apagar arquivo não lido (`arquivosLidos`) |
 | `edit-file` | Troca de trecho exato, `replaceAll` opcional |
 | `create-directory` | Cria pasta |
 | `get-app-info` | Lê `package.json` (`../package.json`, pois main roda de out/): githubUrl, version, name |
-| `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (contagem total, cap 10000) além de `matches` (limitados a max) |
+| `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (contagem total, cap 10000) além de `matches` (limitados a max), cada um com `column` e recorte CENTRADO no casamento |
 | `list-tree` | Árvore do workspace (para o menu `@`) |
 | `execute-command` | Spawn; Windows: `cmd.exe` + `detached:false` + `windowsHide` (ver CLAUDE.md); background só por READY_PATTERNS, idle **pós-primeira-saída** ou timeout |
 | `read-process-output` / `wait-for-process` / `list-processes` / `stop-process` / `clear-finished-processes` | Gestão dos processos em segundo plano |

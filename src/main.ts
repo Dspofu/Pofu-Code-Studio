@@ -191,30 +191,46 @@ ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
   }
   const want = Math.min(Math.max(1, Math.floor(opts.limit > 0 ? opts.limit : maxLines)), maxLines);
 
+  // Ponto de partida DENTRO da primeira linha (1-based), para paginar uma linha que sozinha
+  // não cabe na janela. Sem isto o que vinha depois do corte era INALCANÇÁVEL pela ferramenta:
+  // o rodapé avisava que faltava pedaço e mandava usar cut/sed no terminal, e era exatamente
+  // isso que ensinava o agente a largar a read_file — medido com modelo real sobre um bundle
+  // minificado de uma linha só: duas leituras e ele passou a ler o arquivo por execute_command.
+  const lineChars = allLines[start - 1].length;
+  const charOffset = Math.max(1, Math.floor(opts.charOffset > 0 ? opts.charOffset : 1));
+  if (charOffset > 1 && charOffset > lineChars) {
+    return {
+      success: false, total, lineChars,
+      error: `Line ${start} has ${lineChars} characters; char_offset ${charOffset} is past its end.`
+    };
+  }
+
   // Respeita o teto de linhas E o de caracteres (uma linha minificada pode ter 1 MB sozinha)
   const chunk = [];
   let chars = 0;
   for (let i = start - 1; i < total && chunk.length < want; i++) {
-    const ln = allLines[i];
+    // Só a PRIMEIRA linha da janela começa recortada: as seguintes vêm inteiras, senão o
+    // mesmo char_offset se repetiria linha a linha e a leitura viraria uma coluna vertical.
+    const ln = (i === start - 1 && charOffset > 1) ? allLines[i].slice(charOffset - 1) : allLines[i];
     if (chunk.length > 0 && chars + ln.length + 1 > maxChars) break;
     chunk.push(ln);
     chars += ln.length + 1;
   }
   let content = chunk.join('\n');
-  let charClipped = false, lineChars = 0;
+  let charClipped = false, nextCharOffset = 0;
   if (content.length > maxChars) {
     // Só chega aqui quando a PRIMEIRA linha, sozinha, passa do orçamento — o laço acima já
-    // barra as demais. O corte cai no meio dela, e é isso que precisa ser dito: sem o
-    // tamanho real da linha, o rodapé mandava continuar na linha seguinte e o resto desta
-    // sumia calado. Era o que fazia o agente abandonar a ferramenta e ler pelo terminal.
-    lineChars = chunk[0].length;
+    // barra as demais. O corte cai no meio dela, e o que resolve não é avisar: é devolver
+    // por onde CONTINUAR dentro da linha, que é o char_offset da chamada seguinte.
     content = content.slice(0, maxChars);
     charClipped = true;
+    nextCharOffset = charOffset + maxChars;
   }
 
   return {
     success: true, content, total, size: st.size,
-    start, end: start - 1 + chunk.length, charClipped, lineChars
+    start, end: start - 1 + chunk.length,
+    charClipped, lineChars, charOffset, nextCharOffset
   };
 });
 
@@ -628,6 +644,23 @@ const MENTION_FILE_CAP = 5000;
 const SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024; // arquivos maiores raramente são fonte
 const SEARCH_MAX_RESULTS = 200;
 
+// Recorte da linha mostrado no resultado da busca. CENTRADO no casamento, e não cortado a
+// partir do começo: numa linha minificada de 90 mil caracteres, cortar os 300 primeiros
+// devolvia um trecho que NÃO CONTINHA o termo procurado — o agente recebia um "resultado"
+// inútil e ia atrás do valor pelo terminal. Medido com modelo real: search_files por uma
+// chave achava a linha e devolvia o começo do arquivo, sem a chave em lugar nenhum.
+const SEARCH_LINE_CHARS = 300;
+function recorteNaColuna(linha, idx, tam) {
+  if (linha.length <= SEARCH_LINE_CHARS) return linha;
+  // Sobra dos dois lados depois de reservar o próprio casamento; se ele já não cabe,
+  // mostra o começo dele — sem contexto, mas com o que foi procurado à vista.
+  const folga = Math.max(0, SEARCH_LINE_CHARS - Math.min(tam, SEARCH_LINE_CHARS));
+  let ini = Math.max(0, idx - Math.floor(folga / 2));
+  const fim = Math.min(linha.length, ini + SEARCH_LINE_CHARS);
+  ini = Math.max(0, fim - SEARCH_LINE_CHARS);
+  return (ini > 0 ? '…' : '') + linha.slice(ini, fim) + (fim < linha.length ? '…' : '');
+}
+
 ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   const query = String(opts.query || '');
   if (!query) return { success: false, error: 'Empty query.' };
@@ -704,7 +737,8 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
       const lines = buf.toString('utf-8').split('\n');
       for (let i = 0; i < lines.length; i++) {
         re.lastIndex = 0;
-        if (!re.test(lines[i])) continue;
+        const achado = re.exec(lines[i]);
+        if (!achado) continue;
         totalFound++;
         // Devolve só as primeiras `max` (o resto é ruído no contexto), mas CONTINUA
         // contando para o totalFound — para de empilhar, não de escanear.
@@ -712,8 +746,11 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
           matches.push({
             file: relPath,
             line: i + 1,
-            // Linhas muito longas (minificados que passaram do filtro) viram ruído no contexto
-            text: lines[i].length > 300 ? lines[i].slice(0, 300) + '…' : lines[i]
+            // A COLUNA é o que liga a busca à leitura: numa linha minificada de 90 mil
+            // caracteres, é com ela que o read_file continua de onde o casamento está
+            // (offset = line, char_offset = column).
+            column: achado.index + 1,
+            text: recorteNaColuna(lines[i], achado.index, achado[0].length)
           });
         }
         if (totalFound >= countCap) { done = true; return; }

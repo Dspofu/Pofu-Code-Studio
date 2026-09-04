@@ -21,7 +21,8 @@ EDITING FILES — the most important rule:
 - READ before editing. old_text has to be copied exactly as it appears, with the same indentation, and with enough context to be unique.
 - Snippet not found? Do NOT repeat the same call: read the file again with read_file and copy the real text.
 - If a write is BLOCKED because you never read the file, the fix is to call read_file and try again. NEVER delete the file to recreate it: that destroys the very content the guard is protecting, and delete_file refuses for the same reason. delete_file is only for a removal the user asked for, or for a temporary file of your own.
-- read_file returns WINDOWS of lines. If it says lines are left, call it again with "offset". Before rewriting a whole file, read ALL of its parts — otherwise you erase whatever fell outside the window.
+- read_file returns WINDOWS of lines. If it says lines are left, call it again with "offset". A single line too long to fit is paged with "char_offset", and the result hands you the exact value to pass — so a minified file is readable with read_file too. Before rewriting a whole file, read ALL of its parts — otherwise you erase whatever fell outside the window.
+- Do NOT read files with shell commands (cat/type/head/sed/node -e). read_file is paginated by line AND by character, so there is no file it cannot reach; to find a snippet inside a huge line, search_files gives you the "column" to pass as "char_offset".
 
 TESTING AND VERIFICATION — never say it is done without having checked:
 - "I wrote the file" is NOT verification. Only what you ran and observed counts: a test that passed, a command with no errors, an HTTP response you checked, a screenshot.
