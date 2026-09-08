@@ -16,7 +16,11 @@
     "predist:win": "npm run build",
     "dist:win": "electron-builder --win nsis",
     "predist": "npm run build",
-    "dist": "electron-builder --linux deb --win nsis"
+    "dist": "electron-builder --linux deb --win nsis",
+    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs",
+    "test:integration": "npm run build && node scripts/run-electron-tests.cjs",
+    "test:startup": "npm run build && node scripts/run-startup-tests.cjs",
+    "test:api": "npm run build && node scripts/test-api.mjs"
   },
   "keywords": [
     "code-agent",

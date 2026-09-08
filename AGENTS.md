@@ -12,7 +12,7 @@
 ## 1. O que é o projeto em uma frase
 
 Desktop Electron que é um **agente de código**: fala com qualquer API REST compatível com
-OpenAI (llama.cpp, Ollama, vLLM) e dá ao modelo 17 ferramentas para mexer num workspace
+OpenAI (llama.cpp, Ollama, vLLM) e dá ao modelo 18 ferramentas para mexer num workspace
 ("pasta segura"), rodar comandos, chamar APIs, tirar print de páginas e buscar na web.
 Idioma: **pt-BR para as pessoas** (UI, comentários, commits, docs), **inglês para o modelo**
 (system prompt, descrições das tools, `error`/`hint`/`note`) — o agente responde na língua de
@@ -25,6 +25,11 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `src/main.ts` | Processo main: janela, menu, **todos os 25 handlers IPC** (fs, processos, HTTP, captura, busca, store) |
 | `src/preload.cts` | Ponte `contextBridge` → `window.electronAPI` (`.cts` porque o preload é CommonJS → `preload.cjs`) |
 | `src/renderer.ts` | Cérebro: estado, loop do agente, `tools`, streaming, cards de ferramenta, diff, menções `@`, anexos, workspace |
+| `src/tool-results.ts` | Recorte de arquivos, schemas de leitura e cache recuperável de resultados |
+| `src/providers.ts` | Migração da conexão antiga, validação e seleção de perfis de provedor |
+| `src/mention-highlight.ts`, `src/workspace-path.ts` | Menções azuis sem alterar o textarea e resolução de caminhos do projeto |
+| `assets/studio.css` | Identidade Pofu, tela inicial e ajustes de layout |
+| `scripts/*.test.mjs`, `scripts/test-electron.cjs` | Regressões de leitura/cache e integração real do Electron |
 | `src/constants.ts` | `system_prompt()`, `DEFAULT_SETTINGS`, `THINK_LEVELS` e todos os limites (cada um comentado com o *porquê*) |
 | `src/types.d.ts` | Tipos **globais** (sem import/export de propósito): `Settings`, `Chat`, `ElectronAPI`, `ProcEntry`… |
 | `src/websearch.js` | **GERADO noutro repositório — não editar, não converter p/ .ts.** Tipos em `src/websearch.d.ts` |
@@ -55,8 +60,10 @@ npm run dist       # build + .deb + .nsis
 npm run dist:fedora # build + .rpm (exige rpmbuild: apt install rpm / dnf install rpm-build)
 ```
 
-**Não há testes nem linter.** Validação = `npm run typecheck` + rodar o app e exercitar o fluxo
-alterado. TS é frouxo de propósito (`strict: false`) — ver tsconfig.json para o porquê.
+**Testes:** `npm run test:startup` cobre avisos de atualização sem rede/notificações reais.
+`npm test` (leitura/cache) e `npm run test:integration` (Electron isolado).
+`npm run test:api` testa um endpoint real usando variáveis de ambiente. Não há linter.
+Validação = testes + `npm run typecheck` + conferir o layout no app. TS é frouxo de propósito (`strict: false`) — ver tsconfig.json para o porquê.
 
 ## 4. Mapa dos IPC handlers (src/main.ts)
 
@@ -66,13 +73,13 @@ Cada um tem correspondente 1:1 em `src/preload.cts` e assinatura em `ElectronAPI
 |---|---|
 | `select-folder` | Diálogo de pasta |
 | `list-files` | Lista arquivos **com tamanho** (evita round-trip para o agente decidir se lê) |
-| `read-file` | Leitura em **janelas** — recorte por `readCharBudget(n_ctx)` mora aqui; `charOffset` pagina DENTRO de uma linha longa demais |
+| `read-file` | Leitura em **janelas** — recorte por orçamento de contexto, sem teto fixo de linhas; cursor `char_offset` |
 | `get-diff` / `undo-change` | Remonta diff de instantâneo / desfaz (e grava outro instantâneo → refazer) |
 | `write-file` / `delete-file` | **Trava**: recusa sobrescrever/apagar arquivo não lido (`arquivosLidos`) |
 | `edit-file` | Troca de trecho exato, `replaceAll` opcional |
 | `create-directory` | Cria pasta |
 | `get-app-info` | Lê `package.json` (`../package.json`, pois main roda de out/): githubUrl, version, name |
-| `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (contagem total, cap 10000) além de `matches` (limitados a max), cada um com `column` e recorte CENTRADO no casamento |
+| `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (contagem total, cap 10000) além de `matches` (limitados a max) |
 | `list-tree` | Árvore do workspace (para o menu `@`) |
 | `execute-command` | Spawn; Windows: `cmd.exe` + `detached:false` + `windowsHide` (ver CLAUDE.md); background só por READY_PATTERNS, idle **pós-primeira-saída** ou timeout |
 | `read-process-output` / `wait-for-process` / `list-processes` / `stop-process` / `clear-finished-processes` | Gestão dos processos em segundo plano |
@@ -85,8 +92,9 @@ Cada um tem correspondente 1:1 em `src/preload.cts` e assinatura em `ElectronAPI
 
 Outros pontos do main.ts: `app.setAppUserModelId` (deve bater com `build.appId`),
 `createWindow` (loadFile de `../index.html`, preload de `preload.cjs` — ambos relativos a
-`__dirname`, que em runtime é `out/`), menu de contexto nativo, e a **notificação de dica**
-no `whenReady` (uma por abertura; `activate` só recria a janela no macOS).
+`__dirname`, que em runtime é `out/`), menu de contexto nativo, e a **verificação de atualização**
+no `whenReady` (notifica somente uma versão estável mais nova; `activate` só recria a janela
+no macOS). A consulta é compartilhada com o card de configurações e reaproveitada por um minuto.
 
 ## 5. Mapa de funções (src/renderer.ts)
 
@@ -103,10 +111,11 @@ no `whenReady` (uma por abertura; `activate` só recria a janela no macOS).
 - Menções/anexos: `ensureMentionFiles` · `mentionScore` · `updateMentionMenu` · `renderMentionMenu` · `handleMentionKeydown` · `acceptMention` · `addMentionAttachment` · `readFileAsText` · `handleFiles` · `renderAttachments`
 - Uso/config/workspace: `maybeRenameChat` · `trackUsage` · `renderUsage` · `fetchModels` (popula dropdown **e** cards da aba Visão geral via `updateModelInfo`; usa endpoint/chave DO FORMULÁRIO) · `pendenciaDaConexao` · `refreshModelContext` · `applySettingsToForm` · `updateVisionStatus` · `CAMPO_DA_SETTING`/`leSettingsDoFormulario`/`readSettingsFromForm` · `atualizaEstadoSalvamento` (selo de alteração pendente, comparando com `settingsSalvas`) · `encurtaCaminho` · `mostraCaminhoAtivo` · `registraPastaRecente` · `defineWorkspace` · `abreMenuPastas` (inclui lixeira dos recentes) · `wireEvents` · `loadAppInfo` (GitHub + versão + cards de produto) · `init`
 
-### Ferramentas do agente (17)
+### Ferramentas do agente (18)
 
 | Tool | IPC no main |
 |---|---|
+| read_tool_result | Cache do renderer ou histórico persistido do chat (`history:`) |
 | list_files / read_file / write_file / edit_file / search_files / create_directory / delete_file | list-files / read-file / write-file / edit-file / search-files / create-directory / delete-file |
 | ask_user | **nenhum** — pergunta é UI pura (card com opções); o turno para até a resposta ou "Pular" |
 | execute_command / read_process_output / wait_for_process / list_processes / stop_process | execute-command / read-process-output / wait-for-process / list-processes / stop-process |
@@ -182,3 +191,40 @@ headless com stub de electronAPI):
 - README envelhece rápido: mudança visível ao usuário → atualizar README no mesmo commit.
 - Git: branch `main`, mensagens pt-BR com prefixo (`feat:`, `fix:`, `docs:`, `update:`);
   release = tag `vX.Y.Z` **batendo com o `version` do package.json** (o CI confere e falha antes do build).
+
+## Atualização de setembro de 2026
+
+- Layout Pofu com ícone original, paleta verde, atalhos de início e compositor reorganizado.
+- Leitura completa quando cabe, continuação exata nos demais casos; sem arquivos temporários.
+- Resultados grandes em JSON válido, consulta por cursor/termo via `read_tool_result`.
+- Busca paginada com coluna e trecho centrado na ocorrência. Logs retêm até 2 Mi caracteres
+  por stream e informam perdas; processos rápidos também ficam consultáveis.
+- Compactação preserva os resultados mais novos e permite consultar o histórico original.
+
+## Comandos do compositor
+
+`src/slash-commands.ts` mantém catálogo, aliases, parser e menu acessível por teclado.
+`executeSlashCommand` no renderer chama as ações locais existentes; `sendMessage`
+intercepta comandos antes de consumir anexos ou enviar à API. Os comandos de pedido
+preparam texto, sem envio automático. Preserve IME, Shift+Enter e as menções `@`.
+Os testes estão em `scripts/slash-commands.test.mjs` e na integração Electron.
+
+## Leitura e menções: setembro de 2026
+
+`read_file.query` localiza trechos sem percorrer janelas; `search_files.context_lines`
+devolve linhas vizinhas e `list_files.recursive` lista caminhos em uma chamada.
+Use `workspacePath` para aceitar caminhos relativos e absolutos dentro do projeto.
+Resultados paginados guardam a saída íntegra em `ChatMessage.retainedResult`, somente
+no histórico local: preserve a exclusão desse campo em `toApiMessages`.
+O destaque azul usa uma camada atrás do textarea nativo; sincronize-a após mudanças
+programáticas de valor ou tamanho. Menções com espaços usam `@"caminho com espaços"`.
+
+## Provedores e thinking
+
+`Settings.providers` guarda endpoint, chave, modelo e thinking por perfil; os campos
+antigos continuam como espelho do perfil ativo. `rememberProvider` sincroniza esse
+espelho antes de persistir. O modal edita cópias e só aplica em Salvar. Preserve a
+proteção contra respostas atrasadas da descoberta e bloqueie trocas durante geração.
+`muito_alto` envia `xhigh`; `maximo` envia `max`. O seletor é horizontal e deriva de
+`THINK_LEVELS`. Ao adaptar um nível recusado, confira o payload enviado na tentativa
+seguinte, não apenas o aviso. Regressões em `providers.test.mjs` e `test-electron.cjs`.
