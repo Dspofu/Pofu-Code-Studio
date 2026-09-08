@@ -10,7 +10,7 @@
 // só aparece quando o Electron tenta resolvê-lo.
 
 /** Nível de raciocínio escolhido no rodapé do compositor. */
-type ThinkLevel = 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto' | 'maximo';
+type ThinkLevel = 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto' | 'muito_alto' | 'maximo';
 
 /** Modo de execução de comandos: 'manual' abre o modal de confirmação. */
 type ExecMode = 'manual' | 'auto';
@@ -73,6 +73,8 @@ interface SuporteRaciocinio {
 }
 
 interface Settings {
+  providers?: import('./providers.js').ProviderConfig[];
+  activeProviderId?: string;
   apiUrl: string;
   model: string;
   apiKey: string;
@@ -182,6 +184,8 @@ interface MessageStats {
 }
 
 interface ChatMessage {
+  /** Saída íntegra de uma ferramenta paginada; não entra no payload da API. */
+  retainedResult?: { id: string; text: string };
   role: 'system' | 'user' | 'assistant' | 'tool';
   /** Opcional: resposta interrompida guarda só os tool_calls, sem conteúdo nenhum. */
   content?: any;
@@ -235,6 +239,8 @@ interface ProcEntry {
   child: import('child_process').ChildProcess;
   stdout: string;
   stderr: string;
+  stdoutDropped?: number;
+  stderrDropped?: number;
   startedAt: number;
   ready: boolean;
   status: 'running' | 'exited' | 'error';

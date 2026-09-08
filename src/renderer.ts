@@ -1,9 +1,14 @@
+import { workspacePath } from './workspace-path.js';
+import { mountMentionHighlight, paintMentions } from './mention-highlight.js';
+import { activateProvider, migrateProviders, rememberProvider, validateProvider, type ProviderConfig } from './providers.js';
+import { mountSlashCommands } from './slash-commands.js';
+import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SEARCH_RESULT_CHARS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_TOOL_RESULT_CHARS, MAX_CMD_STDOUT_CHARS, MAX_CMD_STDERR_CHARS, MAX_VISION_IMAGES, READ_FILE_MAX_LINES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -442,7 +447,21 @@ function updateThinkUI() {
   btn.classList.toggle('custom', chave !== 'padrao');
   document.querySelectorAll<HTMLElement>('#think-menu .think-item').forEach(item => {
     item.classList.toggle('active', item.dataset.level === chave);
+    item.setAttribute('aria-checked', String(item.dataset.level === chave));
   });
+  const slider = el<HTMLInputElement>('think-slider');
+  if (slider) {
+    slider.value = String(niveisDisponiveis().indexOf(chave));
+    const span = Number(slider.max) - Number(slider.min);
+    const percent = span > 0 ? Math.max(0, Math.min(100, (Number(slider.value) - Number(slider.min)) / span * 100)) : 0;
+    slider.style.setProperty('--range-pct', `${percent}%`);
+    slider.setAttribute('aria-valuetext', THINK_LEVELS[chave].rotulo);
+  }
+  const value = el('think-current');
+  if (value) value.innerText = THINK_LEVELS[chave].rotulo;
+  const scale = q<HTMLElement>('#think-menu .think-scale');
+  const selected = scale && q<HTMLElement>('.active', scale);
+  if (selected && !el('think-menu').hidden) scale.scrollLeft = Math.max(0, selected.offsetLeft - scale.offsetLeft - scale.clientWidth / 2 + selected.clientWidth / 2);
 }
 
 // --------------------------------------------------------------------------
@@ -474,7 +493,7 @@ function leSinaisDeRaciocinio(texto: string, origem: string) {
     // "high" no prompt), oferecer um nível fora da lista é pedir 400 na primeira
     // mensagem. Sem enumeração, `valores` fica null e todos os níveis seguem valendo.
     const vistos = new Set<string>();
-    for (const v of ['low', 'medium', 'high', 'max']) {
+    for (const v of ['low', 'medium', 'high', 'xhigh', 'max']) {
       if (texto.includes("'" + v + "'") || texto.includes('"' + v + '"')) vistos.add(v);
     }
     if (vistos.size) suporteThink.valores = vistos;
@@ -510,6 +529,7 @@ const raizDoEndpoint = (apiUrl: string) =>
 // A detecção roda uma vez por (endpoint, modelo): o refreshModelContext é chamado a CADA
 // requisição e sondar sempre custaria duas conexões por mensagem sem mudar nada.
 let sondaThinkFeita = '';
+let sondaThinkRevision = 0;
 
 // Nível de raciocínio que o SERVIDOR recusou (ver recusouRaciocinio). Fica guardado para
 // as requisições seguintes não reenviarem o campo que acabou de dar erro — repeti-lo
@@ -532,19 +552,22 @@ function detectThink(json, apiUrl: string, modelo: string) {
   detectThinkCapabilities(json, modelo);
   buildThinkMenu();   // já reflete o que veio no /models
   updateThinkUI();
-  sondaRaciocinio(apiUrl, modelo);  // /props e /api/show chegam depois e refazem o menu
+  sondaRaciocinio(apiUrl, modelo, state.settings.apiKey);  // /props e /api/show chegam depois
 }
 
-async function sondaRaciocinio(apiUrl: string, modelo: string) {
+async function sondaRaciocinio(apiUrl: string, modelo: string, apiKey: string) {
+  const revision = ++sondaThinkRevision;
+  const chave = `${apiUrl}::${modelo}`;
   const raiz = raizDoEndpoint(apiUrl);
   const auth: Record<string, string> = {};
-  if (state.settings.apiKey) auth['Authorization'] = `Bearer ${state.settings.apiKey}`;
+  if (apiKey) auth['Authorization'] = `Bearer ${apiKey}`;
 
   // llama.cpp / llama-server
   try {
     const res = await fetch(`${raiz}/props`, { headers: auth, signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       const props = await res.json();
+      if (sondaThinkFeita !== chave || revision !== sondaThinkRevision) return;
       const template = String(props.chat_template || '');
       // Só o TEMPLATE conta como resposta conclusiva. Versão do llama.cpp que não o
       // devolve deixa `templateLido` falso, e aí o silêncio volta a valer como "não sei".
@@ -552,6 +575,7 @@ async function sondaRaciocinio(apiUrl: string, modelo: string) {
       leSinaisDeRaciocinio(template || JSON.stringify(props), 'chat_template do /props');
     }
   } catch (e) { /* endpoint sem /props (vLLM, OpenAI, gateways): tenta a próxima fonte */ }
+  if (sondaThinkFeita !== chave || revision !== sondaThinkRevision) return;
 
   // Ollama — as capacidades do modelo só existem no /api/show, que é POST.
   try {
@@ -563,6 +587,7 @@ async function sondaRaciocinio(apiUrl: string, modelo: string) {
     });
     if (res.ok) {
       const info = await res.json();
+      if (sondaThinkFeita !== chave || revision !== sondaThinkRevision) return;
       if ((info.capabilities || []).some(c => /think|reason/i.test(String(c)))) {
         suporteThink.enableThinking = true;
         suporteThink.detectado = true;
@@ -573,6 +598,7 @@ async function sondaRaciocinio(apiUrl: string, modelo: string) {
       leSinaisDeRaciocinio(template, 'template do /api/show');
     }
   } catch (e) { /* não é Ollama */ }
+  if (sondaThinkFeita !== chave || revision !== sondaThinkRevision) return;
 
   buildThinkMenu();
   updateThinkUI();
@@ -614,20 +640,32 @@ function buildThinkMenu() {
     state.settings.noThink = false;
     persist();
   }
+  const heading = document.createElement('div'); heading.className = 'think-heading';
+  heading.innerHTML = '<span>Thinking</span><strong id="think-current"></strong>';
+  menu.appendChild(heading);
+  const slider = document.createElement('input'); slider.type = 'range'; slider.id = 'think-slider';
+  slider.className = 'generator-input';
+  slider.min = '0'; slider.max = String(disponiveis.length - 1); slider.step = '1';
+  slider.setAttribute('aria-label', 'Nível de raciocínio'); slider.disabled = disponiveis.length < 2;
+  const choose = (chave: ThinkLevel) => {
+    state.settings.thinkLevel = chave; state.settings.noThink = chave === 'desligado';
+    thinkRecusado = ''; updateThinkUI();
+  };
+  slider.addEventListener('input', () => choose(disponiveis[Number(slider.value)]));
+  slider.addEventListener('change', () => persist());
+  menu.appendChild(slider);
+  const scale = document.createElement('div'); scale.className = 'think-scale';
+  scale.setAttribute('role', 'radiogroup'); scale.setAttribute('aria-label', 'Thinking');
+  menu.appendChild(scale);
   for (const chave of disponiveis) {
     const nivel = THINK_LEVELS[chave];
-    const item = document.createElement('div');
+    const item = document.createElement('button'); item.type = 'button'; item.setAttribute('role', 'radio');
     item.className = 'think-item';
     item.dataset.level = chave;
     const titulo = document.createElement('span');
-    titulo.innerText = nivel.rotulo;
+    titulo.innerText = chave === 'padrao' ? 'Padrão' : nivel.rotulo;
     item.appendChild(titulo);
-    if (nivel.dica) {
-      const dica = document.createElement('span');
-      dica.className = 'think-item-hint';
-      dica.innerText = nivel.dica;
-      item.appendChild(dica);
-    }
+    item.title = nivel.dica;
     item.addEventListener('click', () => {
       state.settings.thinkLevel = chave;
       // O legado `noThink` continua sendo lido no runAgent; deixá-lo true com nível
@@ -635,10 +673,9 @@ function buildThinkMenu() {
       state.settings.noThink = chave === 'desligado';
       thinkRecusado = ''; // nível novo escolhido: a recusa do anterior não diz nada sobre ele
       updateThinkUI();
-      fechaThinkMenu();
       persist();
     });
-    menu.appendChild(item);
+    scale.appendChild(item);
   }
 
   // Sem esta nota o usuário não entende por que os níveis mudaram sozinhos ao trocar de
@@ -653,11 +690,13 @@ function buildThinkMenu() {
         ? `Níveis aceitos pelo servidor (visto no erro): ${[...suporteThink.valores].join(', ')}.`
         : 'O servidor não informou o que aceita — todos os níveis estão à mostra.';
   menu.appendChild(nota);
+  updateThinkUI();
 }
 
 function fechaThinkMenu() {
   const menu = el('think-menu');
   if (menu) menu.hidden = true;
+  el('btn-think')?.setAttribute('aria-expanded', 'false');
 }
 
 // Campos que SÓ o nível de raciocínio manda: é a citação de um deles no corpo do erro que
@@ -929,6 +968,7 @@ function setAppTitle(status) {
 let settingsSalvas: Partial<Settings> = {};
 
 async function persist() {
+  rememberProvider(state.settings);
   await window.electronAPI.saveStore({
     chats: state.chats,
     activeChatId: state.activeChatId,
@@ -983,6 +1023,7 @@ function migraSettings(salvas) {
       arquivo: String(k.arquivo || ''),
       ativa: k.ativa !== false
     }));
+  migrateProviders(s);
   return s;
 }
 
@@ -1215,7 +1256,35 @@ const STOP_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentC
 // innerHTML a cada letra descartaria e recriaria o SVG à toa.
 let botaoAtual = '';
 
+function updateWelcome() {
+  const chat = activeChat();
+  const empty = !!chat && !chat.messages.some(m => m.role === 'user' || m.role === 'assistant');
+  el('chat-box').classList.toggle('is-empty', empty);
+  if (!empty) { el('studio-welcome')?.remove(); return; }
+  if (!el('studio-welcome')) {
+    el('chat-box').prepend(el<HTMLTemplateElement>('welcome-template').content.cloneNode(true));
+    el('welcome-folder').onclick = async () => defineWorkspace(await window.electronAPI.selectFolder());
+    el('welcome-settings').onclick = () => el('btn-open-settings').click();
+    for (const button of el('studio-welcome').querySelectorAll<HTMLButtonElement>('[data-prompt]')) {
+      button.onclick = async () => {
+        if (!activeChat().path) defineWorkspace(await window.electronAPI.selectFolder());
+        if (!activeChat().path) return;
+        el('user-input').value = button.dataset.prompt;
+        el('user-input').dispatchEvent(new Event('input', { bubbles: true }));
+        el('user-input').focus();
+      };
+    }
+  }
+  el('welcome-path').innerText = chat.path ? 'Projeto pronto para começar.' : 'Comece escolhendo uma pasta.';
+  el('welcome-folder').innerText = chat.path ? 'Trocar projeto ↗' : 'Abrir projeto ↗';
+}
+
+let syncMentionHighlight = () => {};
+
 function updateInputState() {
+  syncMentionHighlight();
+  updateWelcome();
+  el('studio-model').innerText = state.settings.model ? shortModelName(state.settings.model) : 'Configure seu modelo';
   const hasPath = !!(activeChat() && activeChat().path);
   const input = el('user-input');
   const btn = el('btn-send');
@@ -1224,9 +1293,10 @@ function updateInputState() {
   // O campo continua LIBERADO durante a geração: é o que permite escrever no meio da
   // resposta. O que muda é o destino do texto — vai para a fila, não para uma requisição
   // nova (ver enfileiraMensagem/drenaFila).
-  input.disabled = !hasPath;
+  input.disabled = false; // Comandos locais continuam acessíveis sem projeto.
   if (attach) attach.disabled = !hasPath;
   document.body.classList.toggle('agent-running', isRunning);
+  el('active-provider').disabled = isRunning;
 
   const temTexto = !!(input.value.trim() || pendingAttachments.length);
   // Rodando e sem nada escrito, o botão é PARAR; com texto no campo ele volta a enviar
@@ -1237,21 +1307,21 @@ function updateInputState() {
     btn.classList.toggle('is-stop', modo === 'parar');
     btn.innerHTML = modo === 'parar' ? STOP_SVG : SEND_SVG;
   }
-  btn.disabled = !hasPath && modo !== 'parar';
+  btn.disabled = !hasPath && !input.value.startsWith('/') && modo !== 'parar';
   btn.title = modo === 'parar' ? 'Parar geração'
     : modo === 'fila' ? 'Enviar para a fila — o agente lê na próxima etapa'
     : 'Enviar mensagem';
 
   input.placeholder = !hasPath
-    ? 'Selecione uma pasta de trabalho para este chat (ícone acima) →'
+    ? 'Digite / para comandos ou selecione uma pasta de trabalho…'
     : isRunning
       ? 'Escreva agora — entra na fila e o agente lê ao terminar a etapa atual…'
-      : 'Peça algo, anexe arquivos (📎 ou arraste) ou peça para rodar um comando…';
+      : 'Peça uma alteração, use / para comandos ou @ para arquivos…';
 
   if (hint) {
     hint.innerText = isRunning
       ? 'Enter põe na fila · o agente lê na próxima etapa · botão vazio para a geração'
-      : 'Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar';
+      : 'Enter envia · Shift+Enter nova linha · / comandos · @ arquivos';
   }
 }
 
@@ -1339,6 +1409,8 @@ function fallbackCopy(text, onDone) {
 
 function appendMessage(text, sender, index) {
   const chatBox = el('chat-box');
+  el('studio-welcome')?.remove();
+  chatBox.classList.remove('is-empty');
   const msgDiv = document.createElement('div');
   msgDiv.className = `message ${sender}`;
   if (sender === 'agent') {
@@ -1358,6 +1430,8 @@ function appendMessage(text, sender, index) {
 // Bolha do usuário, com chips de anexos (usada ao vivo e no reload do histórico)
 function renderUserMessage(text, attachments, index) {
   const chatBox = el('chat-box');
+  el('studio-welcome')?.remove();
+  chatBox.classList.remove('is-empty');
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message user';
   if (attachments && attachments.length) {
@@ -1365,7 +1439,7 @@ function renderUserMessage(text, attachments, index) {
     wrap.className = 'msg-attachments';
     attachments.forEach(a => {
       const chip = document.createElement('span');
-      chip.className = 'msg-attach-chip';
+      chip.className = 'msg-attach-chip' + (a.mention ? ' mention-chip' : '');
       if (a.thumb) {
         // Miniatura da imagem colada/anexada: aparece na bolha da mensagem.
         chip.classList.add('has-thumb');
@@ -1389,7 +1463,8 @@ function renderUserMessage(text, attachments, index) {
   }
   if (text) {
     const t = document.createElement('div');
-    t.innerText = text;
+    t.className = 'user-message-text';
+    paintMentions(t, text);
     msgDiv.appendChild(t);
   }
   attachMsgAction(msgDiv, 'edit', index);
@@ -1472,6 +1547,7 @@ function appendToolLog(text) {
 // ---- Cards de ferramenta (exibição amigável, sem JSON cru) ----
 const TOOL_META = {
   list_files: { icon: '📁', label: 'Listar arquivos' },
+  read_tool_result: { icon: '📑', label: 'Continuar resultado' },
   read_file: { icon: '📄', label: 'Ler arquivo' },
   write_file: { icon: '✏️', label: 'Escrever arquivo' },
   edit_file: { icon: '🖊️', label: 'Editar arquivo' },
@@ -1496,12 +1572,7 @@ function summarizeToolCall(name, args) {
   switch (name) {
     case 'execute_command': return '$ ' + (args.command || '');
     case 'read_file':
-      return (args.filename || '')
-        + (args.offset > 1 ? ` (a partir da linha ${args.offset}` : '')
-        // Continuar no MEIO de uma linha é raro o bastante para o usuário estranhar o card
-        // repetindo o mesmo arquivo e a mesma linha; o caractere é o que distingue as duas.
-        + (args.char_offset > 1 ? `${args.offset > 1 ? ', ' : ' (a partir do '}caractere ${args.char_offset}` : '')
-        + ((args.offset > 1 || args.char_offset > 1) ? ')' : '');
+      return (args.filename || '') + (args.offset > 1 ? ` (a partir da linha ${args.offset})` : '');
     case 'write_file':
     case 'delete_file': return args.filename || '';
     case 'edit_file': {
@@ -1571,6 +1642,10 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^Binary file \((\d+) bytes\)/i, m => `⚠ Arquivo binário (${fmtSize(Number(m[1]))}) — não tem texto legível.`],
   [/^The file has (\d+) line\(s\); offset (\d+) is past the end/i,
     m => `⚠ O arquivo tem ${m[1]} linha(s): a linha ${m[2]} passa do fim.`],
+  [/^(char_offset|offset|limit) must be/i, () => '↷ Ajustando o intervalo da leitura.'],
+  [/^Result unavailable|^Original output is no longer/i, () => '↷ O resultado não está mais disponível nesta conversa.'],
+  [/^Unknown managed process/i, () => '⚠ Esse processo não pertence à sessão.'],
+  [/^Tool output exceeds/i, () => '↷ A saída excede o limite de memória; refine a solicitação.'],
   [/^Could not write to .+?: (.+)$/i, m => `⚠ Não consegui gravar no arquivo: ${m[1]}`],
   [/^Invalid regex: (.+)$/i, m => `⚠ Expressão de busca inválida: ${m[1]}`],
   [/^No background process with PID (\d+)/i, m => `⚠ Nenhum processo em segundo plano com o PID ${m[1]}.`],
@@ -1613,16 +1688,12 @@ function summarizeToolResult(name, resultStr) {
         if (erro && erro.error) return erroParaTela(erro.error);
       } catch (e) { /* não era JSON: segue como conteúdo do arquivo */ }
     }
-    // O cabeçalho ganha um trecho a mais quando a janela começa no meio de uma linha —
-    // por isso o final é opcional aqui, senão a leitura parcial cairia no ramo de baixo
-    // e o card diria "1 linha lida" para uma janela de 7 mil caracteres.
-    const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)(?:, starting at character (\d+))?[^\]]*\]/);
+    const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)[;\]]/);
     if (m) {
       const restam = Number(m[3]) - Number(m[2]);
-      const faixa = m[4]
-        ? `linha ${m[1]} a partir do caractere ${m[4]}`
-        : `linhas ${m[1]}–${m[2]} de ${m[3]}`;
-      return restam > 0 && !m[4] ? `✓ ${faixa} (restam ${restam})` : `✓ ${faixa}`;
+      return restam > 0
+        ? `✓ linhas ${m[1]}–${m[2]} de ${m[3]} (restam ${restam})`
+        : `✓ linhas ${m[1]}–${m[2]} de ${m[3]}`;
     }
     const lines = resultStr.split('\n').length;
     return `✓ ${lines} linha(s) lidas`;
@@ -1630,6 +1701,7 @@ function summarizeToolResult(name, resultStr) {
   let data;
   try { data = JSON.parse(resultStr); } catch { return resultStr; }
   if (data && data.error) return erroParaTela(data.error);
+  if (data?.result_id && typeof data.content === 'string') return `✓ ${data.content.length.toLocaleString('pt-BR')} de ${data.total_chars.toLocaleString('pt-BR')} caracteres · resultado preservado na sessão`;
 
   switch (name) {
     case 'execute_command': {
@@ -2258,38 +2330,6 @@ function truncate(str, max) {
 // Formata para o modelo a janela de linhas que o processo main já recortou. O recorte
 // acontece lá (só as linhas pedidas cruzam o IPC); aqui fica apenas a apresentação:
 // cabeçalho com a faixa lida e rodapé dizendo como pedir a continuação.
-function formatFileWindow(filename, res, budget) {
-  if (!res || !res.success) return JSON.stringify({ error: (res && res.error) || 'could not read the file' });
-  if (res.empty) return `File "${filename}" is empty.`;
-
-  // Corte no MEIO de uma linha. Antes o rodapé só AVISAVA que faltava pedaço e mandava buscá-lo
-  // com cut/sed no terminal — ou seja, a própria ferramenta ensinava o agente a abandoná-la, e
-  // era o que ele fazia. Agora a continuação existe dentro da read_file: char_offset retoma a
-  // MESMA linha de onde parou, e é esse número que o rodapé entrega pronto.
-  let charNote = '';
-  if (res.charClipped) {
-    charNote = `\n\n[… line ${res.start} has ${res.lineChars} characters and this window stops at ` +
-      `${res.nextCharOffset - 1}. To read the REST OF THIS LINE, call read_file with ` +
-      `offset=${res.start} and char_offset=${res.nextCharOffset}. Do NOT continue with ` +
-      `offset=${res.start + 1}: that jumps to the next line and skips what is missing here.]`;
-  }
-
-  const parcial = res.charOffset > 1;
-
-  // Arquivo cabe inteiro na janela: volta direto, sem cabeçalho (o caso comum).
-  if (res.start === 1 && res.end === res.total && !charNote && !parcial) return res.content;
-
-  const header = parcial
-    ? `[File "${filename}" — lines ${res.start}–${res.end} of ${res.total}, starting at character ` +
-      `${res.charOffset} of line ${res.start} (${res.lineChars} characters long)]`
-    : `[File "${filename}" — lines ${res.start}–${res.end} of ${res.total}]`;
-  let footer = charNote;
-  if (res.end < res.total) {
-    footer += `\n\n[… ${res.total - res.end} line(s) left. To continue, call read_file with offset=${res.end + 1}]`;
-  }
-  return `${header}\n${res.content}${footer}`;
-}
-
 // Recorta pelo MEIO preservando início e fim (o erro costuma estar no fim da saída).
 // O marcador é parâmetro porque este corte tem DOIS públicos: o resultado que vai ao modelo,
 // onde ele precisa saber em inglês que faltou pedaço e como pedir de novo, e um rótulo da
@@ -2304,10 +2344,6 @@ function clipMiddle(str, max, marcador = null) {
 
 // Saída de comando encurtada para o MODELO: sem dizer o que fazer, ele repetia o comando
 // despejando em arquivo para reler em pedaços.
-const cortaSaida = (texto, max) => clipMiddle(texto || '', max,
-  n => `\n…[${n} characters omitted from the middle. Re-run the command narrowing the output ` +
-       `(head/tail/findstr/grep) if you need this part]…\n`);
-
 // --------------------------------------------------------------------------
 //  Definição das Ferramentas expostas ao modelo
 // --------------------------------------------------------------------------
@@ -2316,37 +2352,18 @@ const tools = [
     type: 'function',
     function: {
       name: 'list_files',
-      description: 'Lists files and folders in the working directory (or in a subfolder).',
+      description: 'Lists files and folders. Use recursive=true to discover project files in one call, without terminal dir/find commands. Generated/dependency folders are excluded from recursive results.',
       parameters: {
         type: 'object',
         properties: {
-          subpath: { type: 'string', description: 'Optional relative subfolder (default: workspace root)' }
+          subpath: { type: 'string', description: 'Optional subfolder (default: workspace root)' },
+          recursive: { type: 'boolean', description: 'List project files recursively. Capped at 5000 paths; narrow subpath if capped.' }
         }
       }
     }
   },
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: 'Reads the content of a file in the workspace. Most files come back WHOLE; ' +
-        'only very large ones are split into WINDOWS. If the result says lines are left, ' +
-        'call read_file again with "offset" set to the line it indicates — the file is NEVER ' +
-        'truncated silently. A single line too long to fit is paged with "char_offset", so ' +
-        'minified files are readable with this tool too: do NOT fall back to shell commands. ' +
-        'Before rewriting a large file, read every part of it.',
-      parameters: {
-        type: 'object',
-        properties: {
-          filename: { type: 'string', description: 'File name, or path relative to the workspace (an absolute path inside the workspace also works)' },
-          offset: { type: 'number', description: 'First line to read (1-based). Default: 1.' },
-          limit: { type: 'number', description: `Maximum number of lines to return in this read (cap: ${READ_FILE_MAX_LINES}). The real window size is also bounded by a character budget derived from the model context, so a high "limit" does not guarantee the whole file — if the result says lines are left, continue with "offset".` },
-          char_offset: { type: 'number', description: 'First CHARACTER to read within the line given by "offset" (1-based). Use it to page through a line that is too long to fit in one window — the result tells you the exact value to pass next. search_files reports the "column" of a match, which you can pass here to jump straight to it.' }
-        },
-        required: ['filename']
-      }
-    }
-  },
+  readFileTool,
+  readResultTool,
   {
     type: 'function',
     function: {
@@ -2389,7 +2406,7 @@ const tools = [
     function: {
       name: 'search_files',
       description: 'Searches for text or a pattern inside the workspace files and returns the file, ' +
-        'the line number and the line content. Use it to find where something is defined or used — it ' +
+        'the line number and the line content. Includes surrounding lines. Use it to find where something is defined or used — it ' +
         'is far cheaper than reading whole files looking for it. Skips node_modules, dist, .git and ' +
         'binaries. The "totalFound" field gives the TOTAL number of matches (even when "matches" is ' +
         'capped at max_results): if totalFound is much larger than max_results, refine the search ' +
@@ -2399,8 +2416,10 @@ const tools = [
         properties: {
           query: { type: 'string', description: 'Text to search for (or a regular expression, if regex=true)' },
           regex: { type: 'boolean', description: 'Treat query as a regular expression (default: false)' },
+          context_lines: { type: 'integer', description: 'Surrounding lines before and after each match (default 2, maximum 20). Use this instead of terminal grep/rg for context.' },
           case_sensitive: { type: 'boolean', description: 'Match case (default: false)' },
           file_pattern: { type: 'string', description: 'Glob-style file filter (e.g. *.js, src/**/*.test.js)' },
+          offset: { type: 'integer', description: 'Skip this many matching lines; use next_offset from a previous search.' },
           max_results: { type: 'number', description: 'Maximum number of result lines (default 60, cap 200)' }
         },
         required: ['query']
@@ -2706,53 +2725,6 @@ async function hydrateShots(messages) {
   }
 }
 
-// Resolve contra o workspace o caminho que o MODELO mandou. Antes era `${workspace}/${nome}`
-// cru, e isso quebrava de duas formas medidas num teste com modelo real:
-//   1. caminho ABSOLUTO — que é justamente o que o prompt de sistema mostra ao modelo, e o
-//      que o usuário cola no chat — virava "C:/ws/C:/ws/arquivo" e a leitura respondia
-//      "File not found". O modelo não tem como adivinhar o que houve e vai ler pelo terminal.
-//   2. a chave de `arquivosLidos` saía da mesma concatenação, então ler "./x.ts" e depois
-//      escrever "x.ts" eram chaves DIFERENTES: a trava acusava "not been read" logo depois
-//      da leitura, e o jeito que o modelo achava de sair disso era o shell.
-// Normalizar aqui, num ponto só, é o que faz as cinco ferramentas de arquivo concordarem
-// sobre o que é "o mesmo arquivo".
-function caminhoNoWorkspace(workspace, nome) {
-  const ws = String(workspace || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  let n = String(nome ?? '').trim().replace(/\\/g, '/');
-
-  // Absoluto apontando para DENTRO do workspace: vira relativo em vez de duplicar o prefixo.
-  // A comparação ignora maiúsculas porque no Windows "C:/Users" e "c:/users" são o mesmo lugar.
-  const wsBaixo = ws.toLowerCase(), nBaixo = n.toLowerCase();
-  if (nBaixo === wsBaixo) n = '';
-  else if (wsBaixo && nBaixo.startsWith(wsBaixo + '/')) n = n.slice(ws.length + 1);
-
-  // Absoluto para fora do workspace segue absoluto: era o alcance de antes (o fs resolvia a
-  // concatenação), e recusar aqui só empurraria o agente para o terminal de novo.
-  const absoluto = /^([a-zA-Z]:\/|\/)/.test(n);
-  const bruto = absoluto ? n : `${ws}/${n.replace(/^\.\//, '')}`;
-
-  // Colapsa "." e ".." para que "src/../src/x.ts" e "src/x.ts" tenham a MESMA chave.
-  const raizAbs = bruto.match(/^([a-zA-Z]:\/|\/)/);
-  const raiz = raizAbs ? raizAbs[0] : '';
-  const partes = [];
-  for (const p of bruto.slice(raiz.length).split('/')) {
-    if (p === '' || p === '.') continue;
-    if (p === '..') { if (partes.length && partes[partes.length - 1] !== '..') partes.pop(); else if (!raiz) partes.push(p); continue; }
-    partes.push(p);
-  }
-  return raiz + partes.join('/');
-}
-
-// Chave de `arquivosLidos`. Separada do caminho porque no Windows o mesmo arquivo chega com
-// caixa diferente ("SRC/x.ts" e "src/x.ts") e a trava não pode ver dois arquivos aí. Quem diz
-// se a caixa importa é o PRÓPRIO caminho (letra de unidade = Windows), e não `navigator`:
-// além de `platform` estar depreciado, um caminho POSIX continua distinguindo maiúsculas
-// mesmo quando o app roda no Windows.
-function chaveArquivo(caminho) {
-  const c = String(caminho);
-  return /^[a-zA-Z]:\//.test(c) ? c.toLowerCase() : c;
-}
-
 // Arquivos que o agente já leu (ou escreveu) nesta sessão. Serve para barrar um
 // write_file que sobrescreveria conteúdo que ele nunca viu. Zera ao trocar de chat,
 // porque quem manda é o que está no histórico da conversa atual.
@@ -2775,90 +2747,74 @@ function comAlteracao(res, arquivo, extras: Partial<Alteracao> = {}): ToolOutput
   return saida;
 }
 
-// Mesma ideia da busca, para a listagem de pastas: descarta entradas inteiras em vez de
-// cortar a string, e diz quantas ficaram de fora para o agente saber que a pasta tem mais.
-function cortaLista(files, teto) {
-  const inteiro = JSON.stringify(files);
-  if (!Array.isArray(files) || inteiro.length <= teto) return inteiro;
-  // Pasta primeiro: a estrutura é o que orienta a navegação, o arquivo solto pode esperar
-  // um list_files da subpasta. Dentro de cada grupo a ordem do sistema de arquivos é mantida.
-  const ordenado = [...files].sort((a, b) => Number(!!b.isDirectory) - Number(!!a.isDirectory));
-  const cabe = [...ordenado];
-  let saida = inteiro;
-  while (cabe.length > 1) {
-    cabe.pop();
-    saida = JSON.stringify({
-      entries: cabe,
-      omitted: files.length - cabe.length,
-      hint: `${files.length - cabe.length} entr(ies) of ${files.length} were omitted to fit the ` +
-        `context (folders were kept first). Use list_files on a subpath, or search_files, ` +
-        `instead of listing this folder whole.`
-    });
-    if (saida.length <= teto) return saida;
-  }
-  return truncate(saida, teto);
+// Cache de trabalho; o histórico preserva a saída para recuperar após reiniciar.
+const resultStore = new ToolResultStore();
+function toolBudget() {
+  const ctx = state.modelCtx || ASSUMED_CTX_WHEN_UNKNOWN;
+  const reserve = (state.settings.maxTokens || 4096) + Math.ceil(ultimoSystemChars / CHARS_PER_TOKEN) + CONTEXT_MARGIN_TOKENS;
+  const available = Math.max(ctx - reserve, ctx * HISTORY_MIN_FRACTION);
+  const cap = Number(state.settings.historyCap) || available;
+  return readCharBudget(Math.min(available, cap));
+}
+function encodeToolResult(value) {
+  return resultStore.encode(value, toolBudget(), state.activeChatId);
 }
 
-// Encurta o resultado da busca DESCARTANDO achados inteiros, e não cortando a string no
-// caractere N. Com `truncate` o JSON chegava partido no meio de um objeto: medido com 60
-// achados de linha longa, 44 se perdiam e o que sobrava nem era JSON válido — o modelo
-// recebia lixo, não um resultado com menos itens. Aqui a estrutura continua analisável e o
-// que foi cortado é dito junto de como estreitar a busca.
-function cortaAchados(res, teto) {
-  const inteiro = JSON.stringify(res);
-  if (!res || !Array.isArray(res.matches) || inteiro.length <= teto) return truncate(inteiro, teto);
-
-  // Tira do FIM: os primeiros achados são os dos arquivos varridos primeiro, e manter uma
-  // fatia contígua é mais útil que uma amostra salteada de arquivos diferentes.
-  const cabe = [...res.matches];
-  let saida = inteiro;
-  while (cabe.length > 1) {
-    cabe.pop();
-    saida = JSON.stringify({
-      ...res, matches: cabe,
-      omitted: res.matches.length - cabe.length,
-      hint: `${res.matches.length - cabe.length} match(es) were dropped to fit the context. ` +
-        `Narrow the search with file_pattern, a more specific query, or a smaller max_results.`
-    });
-    if (saida.length <= teto) return saida;
-  }
-  return truncate(saida, teto); // um único achado ainda estoura: aí o corte bruto é o que resta
+function retainToolOutput(message: ChatMessage) {
+  if (message.name === 'read_tool_result') return;
+  try {
+    const page = JSON.parse(message.content);
+    const text = resultStore.snapshot(page.result_id, state.activeChatId);
+    if (text !== undefined) message.retainedResult = { id: page.result_id, text };
+  } catch { /* leitura de arquivo pode ser texto puro */ }
 }
 
 async function runTool(name, args, workspace) {
   try {
+    if (name === 'read_tool_result') {
+      if (String(args.result_id).startsWith('history:')) {
+        const id = args.result_id.slice('history:'.length);
+        const message = activeChat().messages.find(m => m.role === 'tool' && m.tool_call_id === id);
+        if (!message) return JSON.stringify({ error: 'Original output is no longer in this chat history.' });
+        if (message.retainedResult?.text) {
+          const saved = message.retainedResult;
+          resultStore.restore(saved.id, saved.text, state.activeChatId);
+          return resultStore.read(saved.id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
+        }
+        const retained = JSON.parse(resultStore.encode({ original_tool_output: message.content }, 1, state.activeChatId));
+        if (retained.error) return JSON.stringify(retained);
+        return resultStore.read(retained.result_id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
+      }
+      const saved = activeChat()?.messages.find(m => m.retainedResult?.id === args.result_id)?.retainedResult;
+      if (saved && typeof saved.text === 'string') resultStore.restore(saved.id, saved.text, state.activeChatId);
+      return resultStore.read(args.result_id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
+    }
     if (name === 'list_files') {
-      const dir = args.subpath ? caminhoNoWorkspace(workspace, args.subpath) : workspace;
+      const dir = workspacePath(workspace, args.subpath || '');
+      if (args.recursive) {
+        const tree = await window.electronAPI.listTree(dir);
+        return encodeToolResult({ ...tree, note: tree.capped ? 'Path listing capped at 5000; narrow subpath to inspect the remaining folders.' : undefined });
+      }
       const files = await window.electronAPI.listFiles(dir);
-      // A listagem era o ÚNICO resultado de ferramenta sem teto nenhum: medido no
-      // node_modules deste repositório, 294 entradas = ~3,5 mil tokens numa tacada, quase
-      // metade do contexto de um modelo de 8k gasto para dizer nomes de pasta. Corta por
-      // ENTRADA inteira, como a busca, para o JSON continuar analisável.
-      return cortaLista(files, MAX_TOOL_RESULT_CHARS);
+      return encodeToolResult(files);
     }
     if (name === 'read_file') {
-      // O orçamento acompanha o n_ctx do modelo em uso, então trocar de modelo muda
-      // automaticamente quanto cabe numa leitura. Com teto de histórico ligado, quem manda
-      // é o TETO: medido num teste real, uma leitura maior que o histórico inteiro era
-      // podada no turno seguinte e o agente relia o mesmo trecho sem parar — 44 requisições
-      // e 4x mais tokens para a mesma tarefa que levou 6 sem teto.
-      const capUsuario = Number(state.settings.historyCap) || 0;
-      const budget = readCharBudget(capUsuario > 0 ? Math.min(state.modelCtx || capUsuario, capUsuario) : state.modelCtx);
-      const alvo = caminhoNoWorkspace(workspace, args.filename);
+      const budget = toolBudget();
+      const alvo = workspacePath(workspace, args.filename);
       const res = await window.electronAPI.readFile(alvo, {
-        offset: args.offset, limit: args.limit, charOffset: args.char_offset,
-        maxLines: READ_FILE_MAX_LINES, maxChars: budget
+        offset: args.offset, limit: args.limit, char_offset: args.char_offset, query: args.query,
+        maxChars: budget
       });
-      if (res && res.success) arquivosLidos.add(chaveArquivo(alvo));
-      return formatFileWindow(args.filename, res, budget);
+      if (res && res.success) arquivosLidos.add(alvo);
+      return formatFileWindow(args.filename, res);
     }
     if (name === 'write_file') {
-      const alvo = caminhoNoWorkspace(workspace, args.filename);
+      const alvo = workspacePath(workspace, args.filename);
       const res = await window.electronAPI.writeFile(alvo, args.content ?? '', {
-        requireRead: !arquivosLidos.has(chaveArquivo(alvo))
+        requireRead: !arquivosLidos.has(alvo)
       });
       // Depois de escrever, o agente conhece o conteúdo: as próximas escritas passam direto.
-      if (res.success) arquivosLidos.add(chaveArquivo(alvo));
+      if (res.success) arquivosLidos.add(alvo);
       // Um arquivo que já existia e encolheu muito quase sempre veio de uma reescrita
       // feita a partir de leitura parcial. Avisar aqui é o último ponto em que dá
       // para o modelo perceber e restaurar o conteúdo.
@@ -2870,7 +2826,7 @@ async function runTool(name, args, workspace) {
     }
     if (name === 'edit_file') {
       const res = await window.electronAPI.editFile(
-        caminhoNoWorkspace(workspace, args.filename), args.old_text, args.new_text ?? '', !!args.replace_all
+        workspacePath(workspace, args.filename), args.old_text, args.new_text ?? '', !!args.replace_all
       );
       return comAlteracao(res, args.filename);
     }
@@ -2882,17 +2838,17 @@ async function runTool(name, args, workspace) {
     if (name === 'search_files') {
       const res = await window.electronAPI.searchFiles(workspace, {
         query: args.query, regex: !!args.regex, caseSensitive: !!args.case_sensitive,
-        filePattern: args.file_pattern, maxResults: args.max_results
+        filePattern: args.file_pattern, maxResults: args.max_results, offset: args.offset, contextLines: args.context_lines
       });
-      return cortaAchados(res, MAX_TOOL_RESULT_CHARS);
+      return encodeToolResult(res);
     }
     if (name === 'create_directory') {
-      const res = await window.electronAPI.createDirectory(caminhoNoWorkspace(workspace, args.dirname));
+      const res = await window.electronAPI.createDirectory(workspacePath(workspace, args.dirname));
       return JSON.stringify(res);
     }
     if (name === 'delete_file') {
-      const alvo = caminhoNoWorkspace(workspace, args.filename);
-      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(chaveArquivo(alvo)) });
+      const alvo = workspacePath(workspace, args.filename);
+      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(alvo) });
       return comAlteracao(res, args.filename, { apagado: true, removidas: res.deletedLines || 0 });
     }
     if (name === 'execute_command') {
@@ -2901,37 +2857,13 @@ async function runTool(name, args, workspace) {
         timeoutMs,
         hideConsole: state.settings.hideCommandConsole !== false
       });
-      // Monta um resultado LIMITADO priorizando erro/exit/stderr (senão um stdout
-      // gigante empurraria o motivo da falha para fora do limite e o modelo não o veria).
-      const bounded = {
-        command: res.command,
-        finished: res.finished,
-        backgrounded: res.backgrounded || undefined,
-        pid: res.pid,
-        reason: res.reason,
-        exitCode: res.exitCode,
-        error: res.error || undefined,
-        note: res.note,
-        stderr: cortaSaida(res.stderr, MAX_CMD_STDERR_CHARS) || undefined,
-        stdout: cortaSaida(res.stdout, MAX_CMD_STDOUT_CHARS) || undefined
-      };
-      return JSON.stringify(bounded);
+      return encodeToolResult(res);
     }
     if (name === 'read_process_output') {
-      const res = await window.electronAPI.readProcessOutput(args.pid);
-      if (res && res.success) {
-        res.stderr = cortaSaida(res.stderr, MAX_CMD_STDERR_CHARS) || undefined;
-        res.stdout = cortaSaida(res.stdout, MAX_CMD_STDOUT_CHARS) || undefined;
-      }
-      return JSON.stringify(res);
+      return encodeToolResult(await window.electronAPI.readProcessOutput(args.pid));
     }
     if (name === 'wait_for_process') {
-      const res = await window.electronAPI.waitForProcess(args.pid, args.timeout_ms);
-      if (res && res.success) {
-        res.stderr = cortaSaida(res.stderr, MAX_CMD_STDERR_CHARS) || undefined;
-        res.stdout = cortaSaida(res.stdout, MAX_CMD_STDOUT_CHARS) || undefined;
-      }
-      return JSON.stringify(res);
+      return encodeToolResult(await window.electronAPI.waitForProcess(args.pid, args.timeout_ms));
     }
     if (name === 'list_processes') {
       const res = await window.electronAPI.listProcesses();
@@ -2953,7 +2885,7 @@ async function runTool(name, args, workspace) {
         for (const k of keep) if (res.headers && res.headers[k]) h[k] = res.headers[k];
         res.headers = h;
       }
-      return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
+      return encodeToolResult(res);
     }
     if (name === 'capture_page') {
       const res = await window.electronAPI.capturePage(args.url, {
@@ -2985,17 +2917,17 @@ async function runTool(name, args, workspace) {
         : 'Screenshot saved and shown to the user (the current model does not receive images; rely on the text and the errors above).';
 
       return {
-        text: truncate(JSON.stringify(resumo), MAX_TOOL_RESULT_CHARS),
+        text: encodeToolResult(resumo),
         image: { path: res.path, dataUrl: res.dataUrl, width: res.width, height: res.height }
       };
     }
     if (name === 'web_search') {
       const res = await window.electronAPI.webSearch(args.query, args.max_results || 5);
-      return truncate(JSON.stringify(res), MAX_SEARCH_RESULT_CHARS);
+      return encodeToolResult(res);
     }
     if (name === 'fetch_url') {
-      const res = await window.electronAPI.fetchUrl(args.url, 8000);
-      return truncate(JSON.stringify(res), MAX_TOOL_RESULT_CHARS);
+      const res = await window.electronAPI.fetchUrl(args.url, 2 * 1024 * 1024);
+      return encodeToolResult(res);
     }
     return `Unknown tool: ${name}`;
   } catch (err) {
@@ -3326,6 +3258,8 @@ function renderMsgStats(msgDiv, stats) {
 // Bolha de agente vazia para receber texto em streaming; retorna o .md-body
 function createLiveAgentBody() {
   const chatBox = el('chat-box');
+  el('studio-welcome')?.remove();
+  chatBox.classList.remove('is-empty');
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message agent streaming';
   const body = document.createElement('div');
@@ -3424,6 +3358,7 @@ const chatsAquecidos = new Set<string>();
 async function agentTurns(chat) {
   const { apiUrl, model, apiKey, temperature, topP, maxTokens, noThink } = state.settings;
   let nivelThink = THINK_LEVELS[state.settings.thinkLevel] || THINK_LEVELS.padrao;
+  if (thinkRecusado) nivelThink = { ...nivelThink, payload: null };
   // noThink continua sendo respeitado: migraSettings converte a chave antiga, mas um store
   // escrito por uma versão mais nova em outra máquina pode trazer as duas.
   const semRaciocinio = nivelThink.semRaciocinio || noThink;
@@ -3535,7 +3470,7 @@ async function agentTurns(chat) {
             // Vazio no nível 'padrao' — ver THINK_LEVELS: campo desconhecido derruba servidor antigo.
             // E vazio também depois de uma recusa: reenviar o campo que acabou de dar erro
             // repetiria a mesma falha até a última tentativa.
-            ...(thinkRecusado ? {} : (nivelThink.payload || {}))
+            ...(nivelThink.payload || {})
           },
           signal: abortController.signal,
           onContent, onReasoning, onToolCall
@@ -3552,13 +3487,13 @@ async function agentTurns(chat) {
       // mensagem é reenviada e o turno segue. Sem isto o turno inteiro se perdia por causa
       // de uma opção do menu — e o aviso na tela sai aqui, quando o erro de fato aconteceu,
       // e não por suspeita antes de enviar (ver recusouRaciocinio).
-      if (!thinkRecusado && nivelThink.payload && recusouRaciocinio(lastErr)) {
-        thinkRecusado = state.settings.thinkLevel;
+      if (nivelThink.payload && recusouRaciocinio(lastErr)) {
         descartaParcial();
         // Se o erro lista o que o servidor aceita ("Supported types are xhigh, medium,
         // and low"), em vez de jogar o ajuste fora o reenvio sai com o nível mais
         // próximo aceito — e a memória do menu se adapta para a próxima vez.
-        const adaptado = adaptaNivelRaciocinio(nivelThink.payload, String((lastErr && lastErr.message) || ''));
+        const adaptado = !thinkRecusado ? adaptaNivelRaciocinio(nivelThink.payload, String((lastErr && lastErr.message) || '')) : null;
+        thinkRecusado = state.settings.thinkLevel;
         if (adaptado) {
           const novo = adaptado.reasoning_effort ?? adaptado.enable_thinking;
           const novoRotulo = novo === true ? 'Ligado' : String(novo);
@@ -3568,6 +3503,7 @@ async function agentTurns(chat) {
           nivelThink = { ...nivelThink, rotulo: novoRotulo, payload: adaptado };
         } else {
           avisaRaciocinioRecusado(nivelThink.rotulo, lastErr);
+          nivelThink = { ...nivelThink, payload: null };
         }
         showTyping();
         attempt--; // o reenvio corrige a requisição: não gasta uma das tentativas de erro
@@ -3750,6 +3686,7 @@ async function agentTurns(chat) {
       // Mesma lógica para o diff: no histórico fica só a referência do instantâneo
       // (que já tem o antes e o depois em disco) e os contadores do cabeçalho.
       if (alteracao) toolMsg.alteracao = alteracao;
+      retainToolOutput(toolMsg);
       chat.messages.push(toolMsg);
     }
     // Sobra quando o modelo anuncia mais chamadas do que entrega de fato.
@@ -3780,7 +3717,10 @@ function sanitizeToolCalls(toolCalls) {
 // --------------------------------------------------------------------------
 //  Compactação de contexto
 // --------------------------------------------------------------------------
-const PODA_AVISO = '[old result dropped to free up context — call the tool again if you need this content]';
+const PODA_AVISO = '[Old result compacted. Retrieve its retained content with read_tool_result; never repeat an action with side effects just to recover output.]';
+function historyResultNotice(message) {
+  return JSON.stringify({ compacted: true, result_id: `history:${message.tool_call_id}`, note: 'Use read_tool_result to retrieve this original tool output from the chat history. Do not repeat the original action.' });
+}
 
 // Decide o que substituir nos resultados de ferramenta para o payload caber no contexto.
 // Devolve índice -> novo conteúdo. A mensagem NUNCA é removida: um tool_call sem o 'tool'
@@ -3825,10 +3765,11 @@ function compactToolResults(messages) {
 
   const encurta = (i) => {
     if (messages[i].role !== 'tool' || subs.has(i)) return false;
-    const ganho = tamanho(messages[i]) - PODA_AVISO.length;
+    const notice = historyResultNotice(messages[i]);
+    const ganho = tamanho(messages[i]) - notice.length;
     if (ganho <= 0) return false;                      // resultado curto: podar não compensa
     total -= ganho;
-    subs.set(i, PODA_AVISO);
+    subs.set(i, notice);
     return true;
   };
 
@@ -3868,19 +3809,15 @@ function compactToolResults(messages) {
 
   if (total <= orcamento) return subs;
 
-  // 2ª etapa: nem os recentes cabem (contexto pequeno + saídas enormes). Apagá-los faria
-  // o agente perder o que acabou de fazer e repetir as chamadas em looping, então eles são
-  // cortados pelo MEIO — o começo tem o cabeçalho e o fim tem o erro, que é o que importa.
-  const somaRecentes = recentes.reduce((s, i) => s + tamanho(messages[i]), 0);
-  const sobra = orcamento - (total - somaRecentes);
-  const cota = Math.max(Math.floor(sobra / Math.max(recentes.length, 1)), CLIP_MIN_CHARS);
-  for (const i of recentes) {
+  // Reduz primeiro os resultados mais antigos, preservando a leitura recém-recebida.
+  // O conteúdo original continua no histórico e pode ser consultado sem reexecutar.
+  for (const i of [...recentes].reverse()) {
+    if (total <= orcamento) break;
     const c = messages[i].content;
-    if (typeof c === 'string' && c.length > cota) {
-      subs.set(i, clipMiddle(c, cota,
-        n => `\n…[${n} characters omitted to fit the context. Call the tool again for a smaller ` +
-             `part of this content if you still need it]…\n`));
-    }
+    if (typeof c !== 'string' || c.length <= CLIP_MIN_CHARS) continue;
+    const notice = historyResultNotice(messages[i]);
+    subs.set(i, notice);
+    total -= c.length - notice.length;
   }
   return subs;
 }
@@ -3972,7 +3909,7 @@ async function ensureMentionFiles() {
   }
 }
 
-// Descobre se o cursor está dentro de um trecho "@algo" (sem espaços após o @).
+// Aspas permitem mencionar nomes com espaços sem capturar o restante da mensagem.
 function mentionCtx() {
   const campo = el('user-input');
   if (!campo || campo.disabled) return null;
@@ -3982,8 +3919,11 @@ function mentionCtx() {
   const at = before.lastIndexOf('@');
   if (at === -1) return null;
   if (at > 0 && !/\s/.test(before[at - 1])) return null; // @ precisa iniciar palavra
-  const query = before.slice(at + 1);
-  if (/\s/.test(query)) return null; // já digitou espaço depois do @ → não é mais menção
+  let query = before.slice(at + 1);
+  if (query.startsWith('"')) {
+    query = query.slice(1);
+    if (query.includes('"') || /[\r\n]/.test(query)) return null;
+  } else if (/\s/.test(query)) return null; // já digitou espaço depois do @ → não é mais menção
   return { start: at, end: pos, query };
 }
 
@@ -4079,7 +4019,7 @@ function handleMentionKeydown(e) {
 async function acceptMention(relPath) {
   const campo = el('user-input');
   if (!campo || !mentionState) return closeMention();
-  const insert = '@' + relPath + ' ';
+  const insert = '@' + (/\s/.test(relPath) ? JSON.stringify(relPath) : relPath) + ' ';
   campo.value = campo.value.slice(0, mentionState.start) + insert + campo.value.slice(mentionState.end);
   const caret = mentionState.start + insert.length;
   campo.setSelectionRange(caret, caret);
@@ -4109,7 +4049,7 @@ async function addMentionAttachment(relPath) {
     return;
   }
   const content = res.content || '';
-  const truncated = !!res.charClipped || (res.total > 0 && res.end < res.total);
+  const truncated = !!res.hasMore;
   pendingAttachments.push({ name: relPath, path: relPath, mention: true, content, size: res.size || content.length, truncated });
   renderAttachments();
 }
@@ -4215,7 +4155,7 @@ function renderAttachments() {
   caixa.style.display = pendingAttachments.length ? 'flex' : 'none';
   pendingAttachments.forEach((a, i) => {
     const chip = document.createElement('div');
-    chip.className = 'attach-chip' + (a.binary ? ' binary' : '');
+    chip.className = 'attach-chip' + (a.binary ? ' binary' : '') + (a.mention ? ' mention-chip' : '');
     const icon = document.createElement('span');
     icon.className = 'attach-icon';
     if (a.thumb) {
@@ -4315,7 +4255,56 @@ function renderUsage() {
 // --------------------------------------------------------------------------
 //  Busca de modelos e informações reais do endpoint
 // --------------------------------------------------------------------------
+let providerDrafts: ProviderConfig[] = [];
+let draftProviderId = '';
+let modelRequest = 0;
+
+function renderProviderOptions(select: HTMLSelectElement, providers: ProviderConfig[], selected: string) {
+  select.replaceChildren();
+  for (const p of providers) { const option = document.createElement('option'); option.value = p.id; option.textContent = p.name; select.appendChild(option); }
+  select.value = selected;
+}
+
+function renderActiveProvider() {
+  renderProviderOptions(el<HTMLSelectElement>('active-provider'), state.settings.providers || [], state.settings.activeProviderId);
+}
+
+function captureProviderDraft() {
+  const p = providerDrafts.find(p => p.id === draftProviderId);
+  if (p) Object.assign(p, { name: el('provider-name').value.trim(), apiUrl: el('api-url').value.trim().replace(/\/+$/, ''),
+    apiKey: el('api-key').value.trim(), model: el('model-name').value });
+}
+
+function showProviderDraft() {
+  modelRequest++;
+  const p = providerDrafts.find(p => p.id === draftProviderId);
+  renderProviderOptions(el<HTMLSelectElement>('provider-select'), providerDrafts, draftProviderId);
+  el('manual-model').hidden = true;
+  el('provider-name').value = p.name; el('api-url').value = p.apiUrl; el('api-key').value = p.apiKey;
+  const option = document.createElement('option'); option.value = p.model; option.textContent = p.model || 'Escolha ou informe um modelo';
+  el('model-name').replaceChildren(option);
+  el('btn-remove-provider').disabled = providerDrafts.length < 2;
+  el('info-model-status').innerText = 'Recarregue os modelos para testar este provedor.';
+}
+
+function resetProviderCapabilities() {
+  sondaThinkRevision++;
+  modelRequest++; sondaThinkFeita = ''; thinkRecusado = ''; state.modelCtx = 0; modelSupportsVision = false;
+  Object.assign(suporteThink, { detectado: false, templateLido: false, enableThinking: false, reasoningEffort: false, valores: null, origem: '' });
+  buildThinkMenu(); updateVisionStatus();
+  el('studio-model').innerText = shortModelName(state.settings.model) || 'Escolha um modelo';
+}
+
+async function switchProvider(id: string) {
+  if (isRunning) { renderActiveProvider(); logSystem('Pare a geração antes de trocar de provedor.'); return; }
+  rememberProvider(state.settings); activateProvider(state.settings, id);
+  resetProviderCapabilities(); renderActiveProvider(); applySettingsToForm();
+  await persist(); await refreshModelContext();
+}
+
 async function fetchModels() {
+  const request = ++modelRequest;
+  const providerId = draftProviderId;
   const status = el('info-model-status');
   const select = el('model-name');
   // Endpoint e chave saem do FORMULÁRIO, não do que está salvo: quem acabou de digitar a
@@ -4332,6 +4321,7 @@ async function fetchModels() {
     const res = await fetch(`${apiUrl}/models`, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
+    if (request !== modelRequest || providerId !== draftProviderId || apiUrl !== el('api-url').value.trim() || apiKey !== el('api-key').value.trim()) return;
     const models = json.data || [];
 
     if (models.length === 0) throw new Error('Nenhum modelo retornado.');
@@ -4345,27 +4335,28 @@ async function fetchModels() {
     });
 
     // Mantém a seleção salva se ainda existir; senão pega o primeiro
-    if (state.settings.model && models.some(m => m.id === state.settings.model)) {
-      select.value = state.settings.model;
+    const selectedModel = providerDrafts.find(p => p.id === providerId)?.model || state.settings.model;
+    if (selectedModel && models.some(m => m.id === selectedModel)) {
+      select.value = selectedModel;
     } else {
       select.value = models[0].id;
-      state.settings.model = models[0].id;
     }
-
-    updateModelInfo(models.find(m => m.id === select.value) || models[0]);
-    detectVision(json, select.value);
-    detectThink(json, apiUrl, select.value);
-    updateVisionStatus();
+    if (providerId === state.settings.activeProviderId && apiUrl === state.settings.apiUrl && apiKey === state.settings.apiKey && !el('settings-modal').classList.contains('active')) {
+      state.settings.model = select.value;
+      updateModelInfo(models.find(m => m.id === select.value) || models[0]);
+      detectVision(json, select.value); detectThink(json, apiUrl, select.value); updateVisionStatus();
+    }
     status.innerText = `${models.length} modelo(s) disponível(is)` +
       (modelSupportsVision ? ' — multimodal: o agente vê os prints do capture_page.' : '.') +
       pendenciaDaConexao();
   } catch (err) {
+    if (request !== modelRequest || providerId !== draftProviderId) return;
     // 401/403 é quase sempre a chave: dizer só "HTTP 401" deixa o usuário procurando no
     // lugar errado (endpoint, modelo) enquanto o campo que falta está logo abaixo.
     status.innerText = /HTTP 40[13]/.test(err.message)
       ? `O servidor em ${apiUrl} recusou a autenticação (${err.message}) — confira a API Key.` + pendenciaDaConexao()
       : `Não foi possível carregar modelos de ${apiUrl}/models — ${err.message}`;
-    select.innerHTML = '<option value="">(indisponível)</option>';
+    // Preserve o ID salvo quando a descoberta estiver indisponível.
   }
   atualizaEstadoSalvamento(); // recarregar a lista pode ter trocado o modelo selecionado
 }
@@ -4383,7 +4374,9 @@ function shortModelName(id) {
 }
 
 function updateModelInfo(model) {
-  const meta = (model && model.meta) || {};
+  const meta = { ...((model && model.meta) || {}) };
+  const ctx = Number(meta.n_ctx || model.context_length || model.max_model_len || model.top_provider?.context_length);
+  meta.n_ctx = Number.isFinite(ctx) && ctx > 0 ? ctx : 0;
   el('info-model-name').innerText = shortModelName(model.id);
   el('info-model-quant').innerText = meta.ftype || '—';
   el('info-model-ctx').innerText = meta.n_ctx
@@ -4394,6 +4387,7 @@ function updateModelInfo(model) {
     ? `${(meta.n_params / 1e9).toFixed(2)} B` : '—';
   el('info-model-owner').innerText = model.owned_by || '—';
   state.modelCtx = meta.n_ctx || 0;
+  el('studio-model').innerText = shortModelName(model.id);
   renderUsage();
 }
 
@@ -4408,6 +4402,7 @@ async function refreshModelContext() {
     const res = await fetch(`${apiUrl}/models`, { headers });
     if (!res.ok) return;
     const json = await res.json();
+    if (apiUrl !== state.settings.apiUrl || apiKey !== state.settings.apiKey || model !== state.settings.model) return;
     const models = json.data || [];
     const m = models.find(x => x.id === model) || models[0];
     if (m) updateModelInfo(m);
@@ -4421,6 +4416,8 @@ async function refreshModelContext() {
 // --------------------------------------------------------------------------
 function applySettingsToForm() {
   const s = state.settings;
+  providerDrafts = (s.providers || []).map(p => ({ ...p })); draftProviderId = s.activeProviderId;
+  showProviderDraft(); renderActiveProvider();
   el('api-url').value = s.apiUrl;
   el('api-key').value = s.apiKey;
   el('range-temp').value = String(s.temperature);
@@ -4488,7 +4485,13 @@ function leSettingsDoFormulario(): Partial<Settings> {
 }
 
 function readSettingsFromForm() {
+  if (isRunning) throw new Error('Pare a geração antes de alterar a conexão.');
+  captureProviderDraft();
+  providerDrafts.forEach(validateProvider);
   Object.assign(state.settings, leSettingsDoFormulario());
+  state.settings.providers = providerDrafts.map(p => ({ ...p }));
+  activateProvider(state.settings, draftProviderId);
+  resetProviderCapabilities(); renderActiveProvider();
 }
 
 // O formulário só vai para o disco no "Salvar e Fechar", enquanto o "Recarregar" da
@@ -4503,6 +4506,8 @@ function atualizaEstadoSalvamento() {
   if (modal && !modal.classList.contains('active')) return;
   const form = leSettingsDoFormulario();
   let pendentes = 0;
+  captureProviderDraft();
+  if (JSON.stringify(providerDrafts) !== JSON.stringify(state.settings.providers) || draftProviderId !== state.settings.activeProviderId) pendentes++;
   for (const chave of Object.keys(CAMPO_DA_SETTING)) {
     // Endpoint fora do ar: o <select> de modelos fica vazio, e compará-lo marcaria uma
     // alteração que o usuário não fez.
@@ -4531,7 +4536,7 @@ function encurtaCaminho(caminho, max = 44) {
 
 function mostraCaminhoAtivo(caminho) {
   const alvo = el('selected-path');
-  alvo.innerText = encurtaCaminho(caminho);
+  alvo.innerText = caminho ? caminho.split(/[\\/]/).filter(Boolean).pop() || caminho : 'Abrir projeto';
   alvo.title = caminho
     ? `Pasta segura deste chat: ${caminho}`
     : 'Nenhuma pasta segura definida — escolha uma para liberar o agente';
@@ -4625,6 +4630,39 @@ function abreMenuPastas() {
 // --------------------------------------------------------------------------
 //  Ligação de eventos da interface
 // --------------------------------------------------------------------------
+async function executeSlashCommand(command, args) {
+  if (command.action === 'prompt') return command.prompt + args;
+  if (isRunning && ['novo', 'projeto', 'compactar'].includes(command.name)) {
+    logSystem('Aguarde o fim da geração ou use /parar antes desse comando.');
+    return false;
+  }
+  switch (command.name) {
+    case 'novo': {
+      const path = activeChat()?.path || '';
+      const id = createChat('Novo Chat');
+      state.chats[id].path = path;
+      pendingAttachments = [];
+      renderAttachments();
+      switchChat(id);
+      break;
+    }
+    case 'projeto': el('btn-select-folder').click(); break;
+    case 'config': el('btn-open-settings').click(); break;
+    case 'modelo':
+      el('btn-open-settings').click();
+      q<HTMLButtonElement>('.nav-tab-btn[data-tab="tab-personalizacao"]').click();
+      el('model-name').focus();
+      break;
+    case 'compactar': compactarAgora(); break;
+    case 'processos': openProcessesModal(); break;
+    case 'parar':
+      if (isRunning) stopAgent();
+      else logSystem('Nenhuma geração em andamento.');
+      break;
+  }
+  return true;
+}
+
 function wireEvents() {
   // Detecta se o usuário está perto do fim: se rolar para cima, paramos de acompanhar
   const chatBox = el('chat-box');
@@ -4653,13 +4691,23 @@ function wireEvents() {
   });
 
   // Enviar mensagem (com anexos, se houver)
-  const inputEl = el('user-input');
+  const inputEl = el<HTMLTextAreaElement>('user-input');
+  syncMentionHighlight = mountMentionHighlight(inputEl, el('mention-highlight'));
+  const slash = mountSlashCommands(inputEl, el('slash-menu'), {
+    execute: executeSlashCommand, notify: logSystem, opened: closeMention
+  });
   const autoGrow = () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
+    syncMentionHighlight();
   };
   const sendMessage = () => {
+    if (slash.submit()) return;
     const prompt = inputEl.value.trim();
+    if ((prompt || pendingAttachments.length) && !activeChat()?.path) {
+      logSystem('Selecione um projeto com /projeto antes de enviar uma mensagem.');
+      return;
+    }
     if (!prompt && pendingAttachments.length === 0) {
       // Campo vazio mas com fila pendurada: sobrou de uma geração interrompida antes da
       // virada de turno. Sem isto os chips ficariam encalhados, esperando o usuário
@@ -4667,6 +4715,8 @@ function wireEvents() {
       if (!isRunning && filaMensagens.length) runAgent();
       return;
     }
+    slash.close();
+    closeMention();
     const attachments = pendingAttachments.slice();
     inputEl.value = '';
     autoGrow();
@@ -4686,8 +4736,15 @@ function wireEvents() {
   });
   inputEl.addEventListener('input', () => { autoGrow(); updateInputState(); });
   inputEl.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
+    if (slash.keydown(e)) return;
     if (handleMentionKeydown(e)) return; // o menu de menção captura setas/Enter/Tab/Esc
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  q<HTMLButtonElement>('#btn-slash').addEventListener('click', () => {
+    if (inputEl.value.trim()) { logSystem('Digite / em um campo vazio para abrir os comandos. Seu rascunho foi mantido.'); return; }
+    inputEl.value = '/'; inputEl.focus(); inputEl.dispatchEvent(new Event('input'));
   });
 
   // Autocomplete de menção de arquivo (@): abre/atualiza conforme o texto e o cursor
@@ -4782,9 +4839,10 @@ function wireEvents() {
   // Esperar o persist antes de fechar mantém o selo honesto: fechar antes da gravação
   // faria o closeModal avisar "sem salvar" logo depois de o usuário ter salvado.
   el('btn-save-settings').addEventListener('click', async () => {
-    readSettingsFromForm();
+    try { readSettingsFromForm(); } catch (e) { el('settings-dirty').hidden = false; el('settings-dirty').innerText = e.message; return; }
     await persist();
     closeModal();
+    await refreshModelContext();
     logSystem('Configurações salvas.');
   });
 
@@ -4793,7 +4851,34 @@ function wireEvents() {
 
   // Atualiza a info do modelo ao trocar a seleção
   el('model-name').addEventListener('change', (e) => {
-    state.settings.model = (e.target as HTMLSelectElement).value;
+    captureProviderDraft(); atualizaEstadoSalvamento();
+  });
+  el('active-provider').addEventListener('change', () => switchProvider(el('active-provider').value));
+  el('provider-select').addEventListener('change', () => {
+    captureProviderDraft(); draftProviderId = el('provider-select').value; showProviderDraft(); atualizaEstadoSalvamento();
+  });
+  el('provider-name').addEventListener('input', atualizaEstadoSalvamento);
+  el('btn-add-provider').addEventListener('click', () => {
+    captureProviderDraft(); const id = crypto.randomUUID();
+    providerDrafts.push({ id, name: `Provedor ${providerDrafts.length + 1}`, apiUrl: '', apiKey: '', model: '', thinkLevel: 'padrao' });
+    draftProviderId = id; showProviderDraft(); atualizaEstadoSalvamento(); el('provider-name').focus();
+  });
+  el('btn-remove-provider').addEventListener('click', () => {
+    if (providerDrafts.length < 2) return;
+    providerDrafts = providerDrafts.filter(p => p.id !== draftProviderId); draftProviderId = providerDrafts[0].id;
+    showProviderDraft(); atualizaEstadoSalvamento();
+  });
+  el('btn-manual-model').addEventListener('click', () => {
+    el('manual-model').hidden = !el('manual-model').hidden; el('manual-model').value = el('model-name').value; el('manual-model').focus();
+  });
+  el('manual-model').addEventListener('change', () => {
+    const model = el('manual-model').value;
+    if (!model.trim()) return;
+    const option = document.createElement('option'); option.value = model.trim(); option.textContent = model.trim();
+    el('model-name').appendChild(option); el('model-name').value = model.trim(); captureProviderDraft(); atualizaEstadoSalvamento();
+  });
+  el('manual-model').addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter') { e.preventDefault(); el('manual-model').dispatchEvent(new Event('change')); el('manual-model').hidden = true; }
   });
 
   // Toggle Auto/Manual de execução de comandos
@@ -4810,9 +4895,14 @@ function wireEvents() {
     e.stopPropagation(); // senão o clique fecha o menu que ele acabou de abrir
     const menu = el('think-menu');
     menu.hidden = !menu.hidden;
+    el('btn-think').setAttribute('aria-expanded', String(!menu.hidden));
+    updateThinkUI();
   });
   document.addEventListener('click', (e) => {
     if (!(e.target as HTMLElement).closest('.think-picker')) fechaThinkMenu();
+  });
+  el('think-menu').addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { e.stopPropagation(); fechaThinkMenu(); el('btn-think').focus(); }
   });
 
   // Modal de confirmação de execução
@@ -4853,7 +4943,7 @@ function wireEvents() {
     if (appInfo.githubUrl) window.open(appInfo.githubUrl, '_blank');
   });
 
-  // Verificação de atualização (manual — ver o comentário de checkForUpdate)
+  // Verificação de atualização sob demanda
   el('btn-check-update').addEventListener('click', checkForUpdate);
 
   // Atualiza o contador de processos periodicamente (badge no cabeçalho)
@@ -4891,16 +4981,11 @@ async function loadAppInfo() {
       link.onclick = null;
     }
   }
-  // O card de atualização começa em "pendente": o estado só muda quando o usuário
-  // clica em "Verificar" (checagem manual — ver checkForUpdate).
+  // A consulta inicial preenche este card assim que as informações do app chegam.
   const upd = el('info-update-status');
   if (upd) upd.innerText = 'Não verificado';
 }
 
-// Consulta o GitHub pela última versão publicada. É MANUAL (botão "Verificar") de
-// propósito: a API anônima do GitHub limita a 60 req/h por IP e abrir o app não
-// justificaria gastar esse orçamento. O resultado vai para o card "Atualização"
-// da aba Visão geral.
 async function checkForUpdate() {
   const status = el('info-update-status');
   const atual = el('info-update-current');
@@ -4949,9 +5034,11 @@ async function init() {
   buildThinkMenu();     // monta o menu a partir de THINK_LEVELS
   updateThinkUI();      // reflete o nível de raciocínio salvo
   refreshProcesses();   // popula o badge de processos
-  loadAppInfo();        // carrega URL do GitHub etc. do package.json
+  void loadAppInfo().then(checkForUpdate);
   // Já na abertura: modelos, n_ctx, visão e níveis de raciocínio do endpoint salvo
   fetchModels();
 }
 
 init();
+
+export { runTool, tools, compactToolResults, retainToolOutput, toApiMessages };

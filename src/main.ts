@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 // "./x.js" — o rootDir "src" do tsconfig espelha a estrutura em out/.
 import { WebSearch } from './websearch.js';
 import packageJson from '../package.json' with { type: "json" };
-import { vibeCodingTips } from './constants.js';
+import { fileWindow } from './tool-results.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -48,8 +48,11 @@ const iconeDaJanela = (isWindows && app.isPackaged) ? undefined : iconePath;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 600,
+    width: 1380,
+    minWidth: 760,
+    height: 860,
+    minHeight: 560,
+    backgroundColor: '#121710',
     icon: iconeDaJanela,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -106,18 +109,17 @@ function createWindow() {
 app.whenReady().then(() => {
   createWindow();
 
-  // Dica aleatória de vibe coding ao abrir. Ficava presa em `app.on('activate')`,
-  // evento que SÓ dispara no macOS (clique no dock) — em Windows/Linux a notificação
-  // nunca aparecia. Mover para whenReady faz ela mostrar uma vez por abertura.
-  try {
-    new Notification({
-      title: packageJson.productName,
-      body: vibeCodingTips[Math.floor(Math.random() * vibeCodingTips.length)]
-      // Sem `icon` de propósito: no Windows ele vira uma imagem GRANDE dentro do toast
-      // (appLogoOverride), e o que se quer ali é só o ícone pequeno do app — que o
-      // Windows já pega sozinho pelo atalho do AUMID.
-    }).show();
-  } catch (e) { /* sem daemon de notificação (alguns Linux) — não bloqueia a abertura */ }
+  void checkForUpdates().then(result => {
+    if (!result.success || !result.maior || !Notification.isSupported()) return;
+    try {
+      const notification = new Notification({
+        title: packageJson.productName,
+        body: 'Nova atualização disponível: v' + result.remota + '. Clique para abrir o release.'
+      });
+      notification.on('click', () => { void shell.openExternal(result.releaseUrl).catch(() => {}); });
+      notification.show();
+    } catch { /* Sem serviço de notificações: a versão continua disponível nas configurações. */ }
+  });
 
   // macOS: recria a janela ao clicar no dock com todas fechadas.
   app.on('activate', () => {
@@ -150,8 +152,7 @@ ipcMain.handle('list-files', async (event, dirPath) => {
   });
 });
 
-// Arquivos maiores que isto não são lidos: carregar 25 MB numa string só para devolver
-// uma janela de poucas centenas de linhas trava o processo main. O agente deve usar search_files.
+// A leitura carrega o arquivo antes de recortar: limita a alocação no processo main.
 const READ_MAX_BYTES = 25 * 1024 * 1024;
 
 // Um arquivo binário lido como utf-8 vira lixo de caracteres de substituição que só
@@ -170,7 +171,7 @@ ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
   try { st = statSync(filePath); } catch (e) { return { success: false, error: `File not found: ${filePath}` }; }
   if (st.isDirectory()) return { success: false, error: `"${filePath}" is a directory — use list_files.` };
   if (st.size > READ_MAX_BYTES) {
-    return { success: false, error: `File too large (${(st.size / 1e6).toFixed(1)} MB, cap ${READ_MAX_BYTES / 1e6} MB). Use search_files to locate the snippet, or execute_command with head/sed.` };
+    return { success: false, error: `File too large (${(st.size / 1e6).toFixed(1)} MB, cap ${READ_MAX_BYTES / 1e6} MB). No content was read. This file exceeds the memory guard for read_file and search_files; use a streaming reader with a bounded output for this large dataset.` };
   }
 
   const buf = readFileSync(filePath);
@@ -178,60 +179,7 @@ ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
     return { success: false, binary: true, size: st.size, error: `Binary file (${st.size} bytes) — the content is not readable text.` };
   }
   const text = buf.toString('utf-8');
-  if (text === '') return { success: true, empty: true, total: 0, content: '', size: 0 };
-
-  const maxLines = Math.max(1, opts.maxLines || 500);
-  const maxChars = Math.max(500, opts.maxChars || 20000);
-
-  const allLines = text.split('\n');
-  const total = allLines.length;
-  const start = Math.max(1, Math.floor(opts.offset > 0 ? opts.offset : 1));
-  if (start > total) {
-    return { success: false, total, error: `The file has ${total} line(s); offset ${start} is past the end.` };
-  }
-  const want = Math.min(Math.max(1, Math.floor(opts.limit > 0 ? opts.limit : maxLines)), maxLines);
-
-  // Ponto de partida DENTRO da primeira linha (1-based), para paginar uma linha que sozinha
-  // não cabe na janela. Sem isto o que vinha depois do corte era INALCANÇÁVEL pela ferramenta:
-  // o rodapé avisava que faltava pedaço e mandava usar cut/sed no terminal, e era exatamente
-  // isso que ensinava o agente a largar a read_file — medido com modelo real sobre um bundle
-  // minificado de uma linha só: duas leituras e ele passou a ler o arquivo por execute_command.
-  const lineChars = allLines[start - 1].length;
-  const charOffset = Math.max(1, Math.floor(opts.charOffset > 0 ? opts.charOffset : 1));
-  if (charOffset > 1 && charOffset > lineChars) {
-    return {
-      success: false, total, lineChars,
-      error: `Line ${start} has ${lineChars} characters; char_offset ${charOffset} is past its end.`
-    };
-  }
-
-  // Respeita o teto de linhas E o de caracteres (uma linha minificada pode ter 1 MB sozinha)
-  const chunk = [];
-  let chars = 0;
-  for (let i = start - 1; i < total && chunk.length < want; i++) {
-    // Só a PRIMEIRA linha da janela começa recortada: as seguintes vêm inteiras, senão o
-    // mesmo char_offset se repetiria linha a linha e a leitura viraria uma coluna vertical.
-    const ln = (i === start - 1 && charOffset > 1) ? allLines[i].slice(charOffset - 1) : allLines[i];
-    if (chunk.length > 0 && chars + ln.length + 1 > maxChars) break;
-    chunk.push(ln);
-    chars += ln.length + 1;
-  }
-  let content = chunk.join('\n');
-  let charClipped = false, nextCharOffset = 0;
-  if (content.length > maxChars) {
-    // Só chega aqui quando a PRIMEIRA linha, sozinha, passa do orçamento — o laço acima já
-    // barra as demais. O corte cai no meio dela, e o que resolve não é avisar: é devolver
-    // por onde CONTINUAR dentro da linha, que é o char_offset da chamada seguinte.
-    content = content.slice(0, maxChars);
-    charClipped = true;
-    nextCharOffset = charOffset + maxChars;
-  }
-
-  return {
-    success: true, content, total, size: st.size,
-    start, end: start - 1 + chunk.length,
-    charClipped, lineChars, charOffset, nextCharOffset
-  };
+  return { ...fileWindow(text, opts), size: st.size };
 });
 
 // ==========================================================================
@@ -566,10 +514,19 @@ ipcMain.handle('get-app-info', async () => {
   }
 });
 
-// Verifica a última versão publicada no GitHub (releases/latest). Chamada MANUAL pelo
-// botão "Verificar" da aba Visão geral — não automática, porque a API anônima do GitHub
-// tem rate limit de 60 req/h por IP e abrir o app não justifica gastar esse orçamento.
-ipcMain.handle('check-update', async () => {
+// A abertura e o botão manual compartilham a consulta para evitar pedidos duplicados.
+let updateRequest: ReturnType<typeof fetchLatestUpdate> | undefined;
+let updateCheckedAt = 0;
+function checkForUpdates() {
+  if (!updateRequest || Date.now() - updateCheckedAt >= 60_000) {
+    updateCheckedAt = Date.now();
+    updateRequest = fetchLatestUpdate();
+  }
+  return updateRequest;
+}
+ipcMain.handle('check-update', () => checkForUpdates());
+
+async function fetchLatestUpdate() {
   try {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
     const url = pkg.githubUrl || pkg.homepage || (pkg.repository && (pkg.repository.url || pkg.repository)) || '';
@@ -585,16 +542,18 @@ ipcMain.handle('check-update', async () => {
     const rel = await resp.json();
     const remota = String(rel.tag_name || '').replace(/^v/i, '');
     const atual = String(pkg.version || '');
-    const maior = remota && atual ? compareVersions(atual, remota) < 0 : false;
+    const stableVersion = /^\d+\.\d+\.\d+$/;
+    const maior = !rel.draft && !rel.prerelease && stableVersion.test(remota)
+      && stableVersion.test(atual) && compareVersions(atual, remota) < 0;
     return {
       success: true, atual, remota, maior,
-      releaseUrl: rel.html_url || `https://github.com/${owner}/${repo}/releases`,
+      releaseUrl: `https://github.com/${owner}/${repo}/releases/tag/${encodeURIComponent(rel.tag_name)}`,
       nomeRelease: rel.name || rel.tag_name || ''
     };
   } catch (e) {
     return { success: false, error: String(e.message || e) };
   }
-});
+}
 
 // Compara versões semânticas ponto a ponto (1.2.0 < 1.10.0 — comparação por texto
 // daria o resultado errado). Sem patch, o campo vira 0.
@@ -641,25 +600,8 @@ const MENTION_FILE_CAP = 5000;
 
 // Sem isto o agente só procuraria via `grep` no execute_command — que passa pelo modal
 // de confirmação, muda de sintaxe entre Linux e Windows e não devolve nada estruturado.
-const SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024; // arquivos maiores raramente são fonte
+const SEARCH_MAX_FILE_BYTES = READ_MAX_BYTES; // busca e leitura aceitam os mesmos arquivos
 const SEARCH_MAX_RESULTS = 200;
-
-// Recorte da linha mostrado no resultado da busca. CENTRADO no casamento, e não cortado a
-// partir do começo: numa linha minificada de 90 mil caracteres, cortar os 300 primeiros
-// devolvia um trecho que NÃO CONTINHA o termo procurado — o agente recebia um "resultado"
-// inútil e ia atrás do valor pelo terminal. Medido com modelo real: search_files por uma
-// chave achava a linha e devolvia o começo do arquivo, sem a chave em lugar nenhum.
-const SEARCH_LINE_CHARS = 300;
-function recorteNaColuna(linha, idx, tam) {
-  if (linha.length <= SEARCH_LINE_CHARS) return linha;
-  // Sobra dos dois lados depois de reservar o próprio casamento; se ele já não cabe,
-  // mostra o começo dele — sem contexto, mas com o que foi procurado à vista.
-  const folga = Math.max(0, SEARCH_LINE_CHARS - Math.min(tam, SEARCH_LINE_CHARS));
-  let ini = Math.max(0, idx - Math.floor(folga / 2));
-  const fim = Math.min(linha.length, ini + SEARCH_LINE_CHARS);
-  ini = Math.max(0, fim - SEARCH_LINE_CHARS);
-  return (ini > 0 ? '…' : '') + linha.slice(ini, fim) + (fim < linha.length ? '…' : '');
-}
 
 ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   const query = String(opts.query || '');
@@ -700,8 +642,10 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   }
 
   const max = Math.min(Math.max(opts.maxResults || 60, 1), SEARCH_MAX_RESULTS);
+  const offset = Math.max(0, Math.floor(Number(opts.offset) || 0));
   const matches = [];
-  let scanned = 0, truncated = false;
+  let scanned = 0, skippedLarge = 0, truncated = false;
+  const contextLines = Math.min(20, Math.max(0, Math.floor(Number(opts.contextLines ?? 2) || 0)));
   // totalFound conta TODAS as ocorrências (não só as devolvidas): sem ele o agente
   // não saberia que uma busca "curta" casou com milhares de linhas e deveria refinar.
   // countCap limita o CONTADOR (não o retorno) — varrer o projeto inteiro só para
@@ -728,7 +672,7 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
       const full = join(dir, ent.name);
       let buf;
       try {
-        if (statSync(full).size > SEARCH_MAX_FILE_BYTES) continue;
+        if (statSync(full).size > SEARCH_MAX_FILE_BYTES) { skippedLarge++; continue; }
         buf = readFileSync(full);
       } catch (e) { continue; }
       if (looksBinary(buf)) continue;
@@ -737,20 +681,26 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
       const lines = buf.toString('utf-8').split('\n');
       for (let i = 0; i < lines.length; i++) {
         re.lastIndex = 0;
-        const achado = re.exec(lines[i]);
-        if (!achado) continue;
+        const match = re.exec(lines[i]);
+        if (!match) continue;
         totalFound++;
         // Devolve só as primeiras `max` (o resto é ruído no contexto), mas CONTINUA
         // contando para o totalFound — para de empilhar, não de escanear.
-        if (matches.length < max) {
+        if (totalFound > offset && matches.length < max) {
+          const snippetStart = Math.max(0, match.index - 120);
+          const snippetEnd = Math.min(lines[i].length, match.index + Math.min(Math.max(match[0].length, 1), 500) + 180);
           matches.push({
             file: relPath,
             line: i + 1,
-            // A COLUNA é o que liga a busca à leitura: numa linha minificada de 90 mil
-            // caracteres, é com ela que o read_file continua de onde o casamento está
-            // (offset = line, char_offset = column).
-            column: achado.index + 1,
-            text: recorteNaColuna(lines[i], achado.index, achado[0].length)
+            // Linhas muito longas (minificados que passaram do filtro) viram ruído no contexto
+            column: match.index + 1,
+            text: lines[i].slice(snippetStart, snippetEnd),
+            textColumn: snippetStart + 1,
+            matchChars: match[0].length,
+            shortened: snippetStart > 0 || snippetEnd < lines[i].length,
+            lineChars: lines[i].length,
+            before: lines.slice(Math.max(0, i - contextLines), i).map((text, n) => ({ line: Math.max(0, i - contextLines) + n + 1, text: text.slice(0, 500), shortened: text.length > 500 })),
+            after: lines.slice(i + 1, i + 1 + contextLines).map((text, n) => ({ line: i + n + 2, text: text.slice(0, 500), shortened: text.length > 500 }))
           });
         }
         if (totalFound >= countCap) { done = true; return; }
@@ -759,8 +709,13 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   };
 
   try { walk(rootPath, ''); } catch (e) { /* ignora */ }
-  truncated = totalFound > max;
-  return { success: true, query, count: matches.length, totalFound, scanned, truncated, matches };
+  truncated = totalFound > offset + matches.length;
+  return { success: true, query, count: matches.length, totalFound, scanned, skippedLarge, truncated, matches,
+    next_offset: truncated ? offset + matches.length : null,
+    countCapped: done,
+    note: [done ? 'Count capped at 10000 matching lines; narrow the query or file_pattern.' : '',
+      skippedLarge ? `${skippedLarge} file(s) exceed the 25 MiB memory guard and were not scanned.` : '',
+      matches.some(m => m.shortened) ? 'Matches are excerpts. Use read_file with filename and offset (line), or query to jump directly to a literal term in a long line.' : ''].filter(Boolean).join(' ') || undefined };
 });
 
 ipcMain.handle('list-tree', async (event, rootPath) => {
@@ -792,7 +747,7 @@ ipcMain.handle('list-tree', async (event, rootPath) => {
 // um buffer rolante de logs para que o agente possa inspecioná-los depois.
 const procs = new Map(); // pid -> { command, child, stdout, stderr, startedAt, ready, status }
 
-const LOG_CAP = 200 * 1024; // buffer rolante por stream
+const LOG_CAP = 2 * 1024 * 1024; // buffer rolante por stream
 // Padrões que indicam que um servidor "subiu" (retorno antecipado, sem esperar o timeout)
 const READY_PATTERNS = [
   /listening on/i, /now listening/i, /server (is )?(running|started|up|listening)/i,
@@ -804,7 +759,10 @@ const READY_PATTERNS = [
 
 function appendCapped(entry, key, chunk) {
   entry[key] += chunk;
-  if (entry[key].length > LOG_CAP) entry[key] = entry[key].slice(-LOG_CAP);
+  if (entry[key].length > LOG_CAP) {
+    entry[key + 'Dropped'] = (entry[key + 'Dropped'] || 0) + entry[key].length - LOG_CAP;
+    entry[key] = entry[key].slice(-LOG_CAP);
+  }
 }
 
 // Shell por plataforma. No Windows usamos o cmd.exe (ComSpec); no restante, /bin/bash.
@@ -860,6 +818,12 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
     }
 
     const entry: ProcEntry = { command, child, stdout: '', stderr: '', startedAt: Date.now(), ready: false, status: 'running' };
+    if (child.pid) {
+      procs.set(child.pid, entry);
+      // Retém no máximo 32 processos encerrados; nunca remove um processo ainda ativo.
+      const finished = [...procs].filter(([, p]) => p.status !== 'running');
+      for (const [pid] of finished.slice(0, Math.max(0, finished.length - 32))) procs.delete(pid);
+    }
     let settled = false;
     let idleTimer = null;
 
@@ -874,6 +838,7 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       resolve({
         command, pid: child.pid, finished: false, backgrounded: true, reason,
         stdout: entry.stdout, stderr: entry.stderr,
+        stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0,
         note: `Process moved to the background (PID ${child.pid}) — ${reason}. ` +
               `The chat is NOT stuck. Use read_process_output(${child.pid}) to see the logs, ` +
               `list_processes to list them, and stop_process(${child.pid}) to terminate it.`
@@ -906,6 +871,9 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       }
       bumpIdle();
     };
+    // O decoder mantém caracteres UTF-8 que chegam divididos entre dois blocos.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', onData('stdout'));
     child.stderr.on('data', onData('stderr'));
     // Sem bumpIdle() aqui de propósito: o cronômetro de ocioso só começa a rodar DEPOIS
@@ -918,10 +886,12 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
     const hardTimer = setTimeout(() => backgroundify(`ainda em execução após ${Math.round(hardTimeoutMs / 1000)}s`), hardTimeoutMs);
 
     child.on('error', (err) => {
+      entry.status = 'error';
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer); clearTimeout(idleTimer);
-      resolve({ command, stdout: entry.stdout, stderr: entry.stderr, error: err.message, finished: true });
+      resolve({ command, pid: child.pid, stdout: entry.stdout, stderr: entry.stderr,
+        stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0, error: err.message, finished: true });
     });
 
     child.on('close', (code) => {
@@ -931,7 +901,8 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       settled = true;
       clearTimeout(hardTimer); clearTimeout(idleTimer);
       resolve({
-        command, stdout: entry.stdout, stderr: entry.stderr,
+        command, pid: child.pid, stdout: entry.stdout, stderr: entry.stderr,
+        stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0,
         error: code === 0 ? null : `Process exited with code ${code}`,
         exitCode: code, finished: true
       });
@@ -946,7 +917,8 @@ ipcMain.handle('read-process-output', async (event, pid) => {
   return {
     success: true, pid, command: entry.command, status: entry.status,
     uptimeSec: Math.round((Date.now() - entry.startedAt) / 1000),
-    stdout: entry.stdout, stderr: entry.stderr
+    stdout: entry.stdout, stderr: entry.stderr,
+        stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0
   };
 });
 
@@ -964,7 +936,7 @@ ipcMain.handle('wait-for-process', async (event, pid, timeoutMs = 120000) => {
   if (entry.status === 'running') {
     await new Promise<void>((resolve) => {
       let pronto = false;
-      const terminar = () => { if (!pronto) { pronto = true; clearTimeout(prazo); resolve(); } };
+      const terminar = () => { if (!pronto) { pronto = true; clearTimeout(prazo); entry.child.removeListener('close', terminar); resolve(); } };
       const prazo = setTimeout(terminar, limite);
       // 'close' já pode ter passado enquanto ninguém ouvia; o once não perde nada
       // porque o status acima é relido a cada chamada.
@@ -979,6 +951,7 @@ ipcMain.handle('wait-for-process', async (event, pid, timeoutMs = 120000) => {
     finished: terminou, exitCode: entry.exitCode,
     waitedSec: esperou,
     stdout: entry.stdout, stderr: entry.stderr,
+        stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0,
     note: terminou
       ? `The process finished after ~${esperou}s.`
       : `Still running after ${esperou}s (deadline reached). If it is a server, that is expected — carry on and use read_process_output when you need the logs.`
@@ -996,9 +969,11 @@ ipcMain.handle('list-processes', async () => {
 // Encerra um processo em segundo plano (e todo o seu grupo, por ser detached)
 ipcMain.handle('stop-process', async (event, pid) => {
   const entry = procs.get(pid);
+  if (!entry) return { success: false, error: `Unknown managed process: ${pid}` };
+  if (entry.status !== 'running') return { success: true, pid, note: 'Process already finished.' };
   try {
     killTree(pid);                                       // pedido educado (SIGTERM / taskkill sem /F)
-    setTimeout(() => killTree(pid, { force: true }), 3000); // força se ainda estiver vivo
+    setTimeout(() => { if (entry.status !== 'exited') killTree(pid, { force: true }); }, 3000); // força se ainda estiver vivo
     if (entry) entry.status = 'stopped';
     return { success: true, pid };
   } catch (err) {
@@ -1253,6 +1228,7 @@ function getBuscador() {
 
 ipcMain.handle('web-search', async (event, query, maxResults = 5) => {
   const max = clamp(maxResults || 5, 1, 10);
+  if (!String(query || '').trim()) return { success: false, error: 'Search query must not be empty.' };
   try {
     const out = await getBuscador().search(String(query || ''));
     if (!out || !out.results.length) {
@@ -1267,7 +1243,8 @@ ipcMain.handle('web-search', async (event, query, maxResults = 5) => {
       query: out.query,
       reformulada: out.simplified ? out.originalQuery : undefined,
       source: out.provider,
-      count: out.results.length,
+      count: Math.min(out.results.length, max),
+      totalFound: out.results.length,
       results: out.results.slice(0, max),
       // O conteúdo já extraído das primeiras páginas evita um fetch_url a seguir só
       // para descobrir o que o snippet resumiu pela metade.
@@ -1312,8 +1289,8 @@ ipcMain.handle('http-request', async (event, url, opts = {}) => {
     return {
       success: true, url, status: resp.status, statusText: resp.statusText,
       ok: resp.ok, ms: Date.now() - started, headers,
-      body: body.length > 20000 ? body.slice(0, 20000) + '\n…[body truncated]' : body,
-      bodyBytes: body.length
+      body,
+      bodyBytes: Buffer.byteLength(body, 'utf8')
     };
   } catch (err) {
     const msg = String(err.message || err);
@@ -1361,10 +1338,9 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
 
   try {
     win = new BrowserWindow({
-      width, height, show: false, skipTaskbar: true,
+      width, height, show: false, frame: false, skipTaskbar: true,
       webPreferences: {
-        // offscreen garante que a página seja realmente renderizada mesmo com a janela
-        // oculta — sem isso capturePage() pode devolver uma imagem em branco.
+        // O modo offscreen renderiza a página sem abrir uma janela visível.
         offscreen: true,
         nodeIntegration: false, contextIsolation: true, sandbox: true,
         backgroundThrottling: false,
@@ -1420,7 +1396,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     if (opts.script) {
       try {
         const r = await wc.executeJavaScript(`(async () => { ${opts.script} })()`, true);
-        scriptResult = typeof r === 'string' ? r.slice(0, 4000) : JSON.stringify(r ?? null)?.slice(0, 4000);
+        scriptResult = typeof r === 'string' ? r : JSON.stringify(r ?? null);
         if (waitMs) await sleep(Math.min(waitMs, 800)); // deixa a UI reagir ao script
       } catch (e) {
         scriptError = String(e && e.message || e).slice(0, 500);
@@ -1429,7 +1405,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
 
     const title = await wc.executeJavaScript('document.title').catch(() => '');
     const text = await wc.executeJavaScript(
-      '(document.body ? document.body.innerText : "").replace(/\\n{3,}/g, "\\n\\n").slice(0, 3000)'
+      '(document.body ? document.body.innerText : "").replace(/\\n{3,}/g, "\\n\\n")'
     ).catch(() => '');
 
     // Página inteira: sem isto o agente vê só a primeira dobra e conclui que "está tudo
@@ -1479,8 +1455,14 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
       }
     }
 
-    const image = rect ? await wc.capturePage(rect) : await wc.capturePage();
+    // Recorta dentro do bitmap para não solicitar pixels fora da superfície capturada.
+    let image = await wc.capturePage();
     if (image.isEmpty()) return { success: false, error: 'The capture came out empty (the page never rendered).' };
+    if (rect) {
+      const size = image.getSize();
+      const x = Math.min(rect.x, size.width - 1), y = Math.min(rect.y, size.height - 1);
+      image = image.crop({ x, y, width: Math.min(rect.width, size.width - x), height: Math.min(rect.height, size.height - y) });
+    }
 
     const file = join(shotsDir(), `shot-${Date.now()}.png`);
     writeFileSync(file, image.toPNG());
@@ -1578,7 +1560,7 @@ function htmlToText(html) {
 // devolveu página de bloqueio. Nos dois casos o navegador oculto resolve.
 const FETCH_MIN_TEXTO_UTIL = 400;
 
-ipcMain.handle('fetch-url', async (event, url, maxChars = 8000) => {
+ipcMain.handle('fetch-url', async (event, url, maxChars = 2 * 1024 * 1024) => {
   let statusHttp = null, viaBrowser = false, texto = '', erroHttp = null;
   try {
     // Sem timeout, um servidor que aceita a conexão e nunca responde deixa o tool call
@@ -1612,6 +1594,8 @@ ipcMain.handle('fetch-url', async (event, url, maxChars = 8000) => {
   return {
     success: true, url, status: statusHttp, viaBrowser,
     content: texto.slice(0, maxChars),
-    truncated: texto.length > maxChars || undefined
+    totalChars: texto.length,
+    truncated: texto.length > maxChars || undefined,
+    note: texto.length > maxChars ? 'Page exceeds the extraction limit; request a more specific URL.' : undefined
   };
 });

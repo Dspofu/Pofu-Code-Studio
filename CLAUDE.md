@@ -45,7 +45,7 @@ npm run dist:fedora  # só o .rpm — exige o rpmbuild (Ubuntu: apt install rpm;
 npm run dist:win     # só o .exe (NSIS)
 ```
 
-Não há testes nem linter. Verificação = `npm run typecheck` + rodar o app e exercitar o fluxo alterado.
+Testes: `npm test` e `npm run test:integration`. Não há linter. Confira também o layout no app real.
 
 ## TypeScript / layout do build
 
@@ -115,32 +115,23 @@ que a ausência dele.
 
 ## Armadilhas conhecidas
 
-- **Leitura paginada**: `read_file` devolve janelas de linhas com aviso de `offset`. Não volte a
-  truncar em silêncio — foi a causa de o modelo apagar arquivos ao reescrevê-los.
-  **Linha maior que a janela inteira** (minificado, JSON numa linha) pagina por `char_offset`,
-  que retoma a MESMA linha de onde parou — e o rodapé entrega o número pronto. Avisar não
-  bastava: a versão anterior dizia o tamanho real da linha e mandava buscar o resto com
-  `cut`/`sed`, ou seja, a ferramenta ensinava o agente a abandoná-la. Medido com modelo real
-  sobre um bundle de uma linha de 90 mil caracteres: duas leituras e ele passou a ler o arquivo
-  por `execute_command` (`node -e`), o que custa mais tokens, mais turnos e enche o projeto de
-  rascunho. Não volte a fechar essa saída: **todo corte que vai ao MODELO precisa de um jeito de
-  buscar o que sumiu, não só do aviso de que sumiu** — e esse jeito não pode ser o terminal.
-  `search_files` é o par disso: devolve a `column` do casamento, que é o `char_offset` para ir
-  direto ao trecho, e recorta a linha CENTRADA no casamento (recortar do começo devolvia um
-  resultado que nem continha o termo procurado). A janela é
-  recortada no **main**; o renderer só formata (`formatFileWindow`). Não volte a mandar o arquivo
-  inteiro pelo IPC. O tamanho da janela NÃO é constante: `readCharBudget(n_ctx)` tira uma fatia
-  do contexto do modelo em uso, porque um número fixo é pequeno demais num modelo de 65k e
-  grande demais num de 8k.
-- **Caminho vindo do modelo**: as cinco ferramentas de arquivo passam por `caminhoNoWorkspace`
-  no renderer, e a trava de leitura usa `chaveArquivo`. Não volte a concatenar
-  `` `${workspace}/${args.filename}` `` cru: um caminho ABSOLUTO — que é o que o prompt de
-  sistema mostra ao modelo e o que o usuário cola no chat — virava `C:/ws/C:/ws/arquivo` e a
-  leitura respondia "File not found", erro que o modelo não tem como diagnosticar. Pior, a chave
-  de `arquivosLidos` saía da mesma concatenação: ler `./x.ts` e escrever `x.ts` eram chaves
-  diferentes, então a trava acusava "not been read" logo depois da leitura, e a saída que o
-  modelo achava era o shell. Normalizar num ponto só é o que faz as cinco ferramentas
-  concordarem sobre o que é "o mesmo arquivo".
+- **Leitura completa e continuação exata**: `read_file` não tem teto fixo de linhas.
+  O main aplica `fileWindow` de `src/tool-results.ts`: arquivos que cabem no orçamento
+  voltam inteiros; os demais incluem `char_offset` (UTF-16, base 0), inclusive no meio
+  de uma linha minificada. Preserve CRLF e pares Unicode nas fronteiras. O renderer só
+  formata. O orçamento considera contexto, reserva da resposta e teto de histórico.
+- **Saídas recuperáveis**: não corte uma string JSON depois de serializá-la. Use
+  `encodeToolResult` / `ToolResultStore` e a ferramenta `read_tool_result`, com cursor ou
+  consulta literal. Cache por conversa: até 32 resultados e 8 Mi caracteres, em memória.
+  `retainToolOutput` salva a saída integral em `ChatMessage.retainedResult` antes de
+  persistir o turno. Restaure pelo ID no chat ativo após reiniciar ou expulsar uma entrada.
+  `toApiMessages` exclui esse campo; nunca envie o conteúdo completo por acidente. Não
+  repita automaticamente comandos ou POSTs. O cache não cria arquivos no workspace.
+- **Histórico compactado**: preserve os pares chamada/resultado e as mensagens originais.
+  Os avisos usam `history:<tool_call_id>`, resolvido no histórico do chat ativo. Se a
+  mensagem original possui `retainedResult`, recupere sua saída integral. Conversas antigas
+  sem esse campo só preservam a janela original. Reduza do mais antigo para o mais novo, inclusive
+  entre os recentes, para evitar podar imediatamente uma leitura recém-recebida.
 - **`edit_file` antes de `write_file`**: alterar arquivo existente é trabalho de `edit_file`
   (troca de trecho exato). Reescrever tudo com `write_file` gasta tokens de saída à toa e a
   geração é cortada no meio, truncando o arquivo. O prompt e as descrições das ferramentas
@@ -373,3 +364,10 @@ que a ausência dele.
 
 Branch principal: `main`. O usuário costuma pedir "commit" significando commit + push na `main`.
 Mensagens em português, com prefixo (`feat:`, `fix:`, `docs:`, `update:`).
+
+## Validação automatizada
+
+`npm test` cobre cursores, JSON, Unicode e limites do cache. `npm run test:integration`
+abre o Electron com perfil e workspace temporários, exercitando o preload e os IPCs reais.
+`npm run test:api` é opcional e faz chamadas reais: requer `POFU_TEST_API_URL` e
+`POFU_TEST_API_KEY` no ambiente; nunca grave credenciais no repositório.

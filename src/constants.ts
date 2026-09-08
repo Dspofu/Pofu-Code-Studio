@@ -21,8 +21,10 @@ EDITING FILES — the most important rule:
 - READ before editing. old_text has to be copied exactly as it appears, with the same indentation, and with enough context to be unique.
 - Snippet not found? Do NOT repeat the same call: read the file again with read_file and copy the real text.
 - If a write is BLOCKED because you never read the file, the fix is to call read_file and try again. NEVER delete the file to recreate it: that destroys the very content the guard is protecting, and delete_file refuses for the same reason. delete_file is only for a removal the user asked for, or for a temporary file of your own.
-- read_file returns WINDOWS of lines. If it says lines are left, call it again with "offset". A single line too long to fit is paged with "char_offset", and the result hands you the exact value to pass — so a minified file is readable with read_file too. Before rewriting a whole file, read ALL of its parts — otherwise you erase whatever fell outside the window.
-- Do NOT read files with shell commands (cat/type/head/sed/node -e). read_file is paginated by line AND by character, so there is no file it cannot reach; to find a snippet inside a huge line, search_files gives you the "column" to pass as "char_offset".
+- read_file returns the complete file when it fits the context. For a partial result follow its exact char_offset cursor; this also retrieves the rest of a very long line. Before rewriting a whole file, read ALL of its parts. Never create temporary files to work around tool output limits.
+- Large tool outputs include a result_id: use read_tool_result to continue or locate a term with query. Do NOT repeat commands or HTTP mutations to recover their output. Supported outputs are saved with the original tool message and remain recoverable after restarting the app.
+- Use read_file with query to jump to a literal term in a large file, search_files with context_lines to inspect nearby code, and list_files with recursive=true to explore paths in one call. Relative paths and absolute paths inside the workspace are accepted. Use execute_command for builds, tests and processes; prefer the file tools for inspecting and editing source.
+- When the user gives a filename, call read_file directly; it reports missing files and size errors itself. Its query scans the entire file up to 25 MiB, including minified lines, independently of the returned context window. A large file does not require a preliminary ls/stat command or a temporary extraction script.
 
 TESTING AND VERIFICATION — never say it is done without having checked:
 - "I wrote the file" is NOT verification. Only what you ran and observed counts: a test that passed, a command with no errors, an HTTP response you checked, a screenshot.
@@ -41,7 +43,7 @@ TOOLS:
 - execute_command: commands that finish return stdout/stderr/exit code. Servers and watchers become BACKGROUND processes with a PID — the chat does not freeze. Do NOT append "&" to the command: backgrounding is automatic, and with "&" the PID you get back is the shell's, not your process's. Avoid sudo and interactive commands.
 - WAIT instead of asking repeatedly: if a slow process (npm install, a build, a test suite) went to the background and you need its result, call wait_for_process(pid) ONCE — it returns the exit code and the output when it finishes. Calling read_process_output over and over to see whether it is done speeds up nothing, burns context and stalls the task. If the process is a server (it never ends), do not wait: keep working.
 - Use what is already installed. Before downloading a package from the network (npx, pip install, apt), see whether what the machine already has can do it — for example "python3 -m http.server" or "node --run" to serve static files. Downloading is slow and fails without internet.
-- If an old tool result shows up as dropped to free up context, just call the tool again to get it back.
+- Compacted results include a history: ID. Use read_tool_result to retrieve the original output from this chat, even after restarting the app. Do not repeat side-effecting tools to recover their output.
 - Be explicit about assumptions and limitations. If something could not be validated, say so plainly instead of claiming it works.`
 + (web_search
   ? "\n- External or current information: use web_search, which already returns the TEXT of the first pages alongside the results — read that text before answering. Only call fetch_url if you need a specific page that did not come back in the result. Search with simple, specific terms (quotes and operators such as site: usually return nothing). Cite the URL you took the information from, and do not invent data you have not seen."
@@ -128,6 +130,7 @@ export const THINK_LEVELS: Record<ThinkLevel, ThinkLevelDef> = {
   // 'max' é o nível mais alto que a API do OpenAI aceita (none|low|medium|high|max).
   // Servidores que só conhecem low/medium/high podem rejeitar — por isso é escolha
   // explícita, não default.
+  muito_alto: { rotulo: 'Muito alto',      dica: 'Envia reasoning_effort: "xhigh"', payload: { reasoning_effort: 'xhigh' }, semRaciocinio: false, requer: 'reasoning_effort' },
   maximo:    { rotulo: 'Máximo',           dica: 'Envia reasoning_effort: "max" — só em servidores que aceitam', payload: { reasoning_effort: 'max' }, semRaciocinio: false, requer: 'reasoning_effort' }
 };
 
@@ -152,25 +155,9 @@ export const MAX_RECENT_PATHS = 8;
 
 export const APP_NAME = 'Pofu Code Studio';
 
-export const MAX_TOOL_RESULT_CHARS = 6000; // teto p/ fetch_url
-
-// Teto da saída de comando devolvida ao modelo. Era 3000/2500 e cortava a saída de um
-// `dir`, de um teste ou de um build no meio; o agente então despejava o resultado num
-// arquivo e o relia em pedaços — trabalho que custa MAIS tokens do que os que o corte
-// economizou, e que ainda deixa arquivo de rascunho no projeto. A poda do histórico
-// encurta esses resultados depois, quando ficarem velhos, então o custo é passageiro.
-export const MAX_CMD_STDOUT_CHARS = 8000;
-export const MAX_CMD_STDERR_CHARS = 4000;
-// A busca devolve também o TEXTO das primeiras páginas, que é justamente a parte útil —
-// com o teto do fetch_url ela seria cortada no meio e sobrariam só os snippets.
-export const MAX_SEARCH_RESULT_CHARS = 12000;
-
-// read_file devolve JANELAS de linhas em vez de cortar em silêncio: truncar sem avisar
-// fazia o modelo apagar o resto do arquivo ao reescrevê-lo.
-// O teto de caracteres sai de uma fatia do n_ctx do modelo, e não de um número fixo —
-// fixo é pequeno demais num modelo de 65k e grande demais num de 8k.
-export const READ_FILE_MAX_LINES = 5000;        // teto de linhas por leitura
-export const READ_BUDGET_FRACTION = 0.25;       // fatia do contexto gasta numa leitura
+// A leitura usa o histórico disponível depois de reservar prompt e resposta.
+// Sem teto de linhas: arquivos completos quando couberem; cursor exato nos demais.
+export const READ_BUDGET_FRACTION = 0.65;       // fatia do histórico disponível; reserva espaço para a conversa
 export const CHARS_PER_TOKEN = 3.5;             // média de código-fonte (texto puro rende mais)
 export const READ_FILE_FALLBACK_CHARS = 40000;  // enquanto o n_ctx do modelo não foi lido
 export const READ_FILE_MIN_CHARS = 4000;        // janela mínima, para a leitura sempre render algo
@@ -208,7 +195,7 @@ export const PODA_FOLGA = 0.6;
 export const ASSUMED_CTX_WHEN_UNKNOWN = 32768;
 // Piso do corte pelo meio dos resultados recentes: abaixo disso a saída fica irreconhecível
 // e o agente chama a ferramenta de novo, gastando mais contexto do que economizou.
-export const CLIP_MIN_CHARS = 600;
+export const CLIP_MIN_CHARS = 1024;
 
 // Prints reenviados ao modelo por requisição. Cada imagem custa vários milhares de tokens
 // de visão; mandar o histórico inteiro de prints estoura o contexto em poucas capturas,
@@ -224,15 +211,3 @@ export const MAX_LOOP_ITERATIONS = 100;
 // inteira do agente morre por causa de uma única resposta ruim.
 export const MAX_REQUEST_RETRIES = 3;
 export const REQUEST_RETRY_DELAY_MS = 800;
-
-// Dicas presentes nas notificações
-export const vibeCodingTips = [
-  "Defina o contexto e as regras do projeto antes de pedir para a IA gerar código.",
-  "Trabalhe em ciclos curtos: gere pequenas partes, teste imediatamente e itere.",
-  "Peça para a IA explicar a lógica antes de colar o código diretamente no projeto.",
-  "Mantenha seu repositório limpo e faça commits frequentes a cada feature funcional.",
-  "Use prompts específicos com exemplos de entrada e saída esperados.",
-  "Se o código gerado quebrar, envie o erro exato do terminal direto para a IA.",
-  "Não tente fazer tudo em um único prompt, separe o problema em etapas lógicas.",
-  "Mantenha o foco na arquitetura e deixe a IA cuidar do trabalho repetitivo."
-];

@@ -176,7 +176,7 @@
       flex: 1;
       min-width: 0;
       background: #18181b;
-      border: 1px solid var(--accent, #0284c7);
+      border: 1px solid var(--accent, #6a9f3d);
       color: #f4f4f5;
       border-radius: 5px;
       padding: 4px 6px;
@@ -334,8 +334,8 @@
     }
 
     .user {
-      background: linear-gradient(135deg, #0369a1, #0284c7);
-      box-shadow: 0 2px 6px rgba(2,132,199,0.25);
+      background: linear-gradient(135deg, #456d2d, #6a9f3d);
+      box-shadow: 0 2px 6px rgba(106,159,61,0.25);
       color: #ffffff;
       align-self: flex-end;
       border-bottom-right-radius: 2px;
@@ -683,7 +683,7 @@
       gap: 7px;
       background: var(--surface-3);
       border: 1px solid var(--border-2);
-      border-left: 3px solid var(--accent, #0284c7);
+      border-left: 3px solid var(--accent, #6a9f3d);
       border-radius: 9px;
       padding: 5px 9px;
       font-size: 0.78rem;
@@ -952,7 +952,7 @@
     }
     .update-current { font-family: monospace; }
     .update-link {
-      color: var(--accent, #38bdf8);
+      color: var(--accent, #a5d676);
       text-decoration: none;
     }
     .update-link:hover { text-decoration: underline; }
@@ -1047,7 +1047,7 @@
       max-width: 82%;
       background: #1a1a1d;
       border: 1px solid #2e2e33;
-      border-left: 3px solid var(--accent, #0284c7);
+      border-left: 3px solid var(--accent, #6a9f3d);
       border-radius: 8px;
       box-sizing: border-box;
       min-width: 0;
@@ -1491,7 +1491,7 @@
     }
 
     .md-body a {
-      color: #38bdf8;
+      color: #a5d676;
       text-decoration: none;
     }
 
@@ -1646,7 +1646,7 @@
       display: block;
       height: 100%;
       width: 0%;
-      background: linear-gradient(90deg, #0ea5e9, #22d3ee);
+      background: linear-gradient(90deg, #a5d676, #22d3ee);
       transition: width 0.3s ease, background 0.3s ease;
     }
 
@@ -1659,8 +1659,8 @@
     }
 
     .input-area input:focus {
-      border-color: #0284c7;
-      box-shadow: 0 0 0 3px rgba(2,132,199,0.15);
+      border-color: #6a9f3d;
+      box-shadow: 0 0 0 3px rgba(106,159,61,0.15);
     }
 
     #btn-send {
@@ -1668,7 +1668,7 @@
     }
 
     #btn-send:not(:disabled):hover {
-      background: #0ea5e9;
+      background: #a5d676;
     }
 
     #btn-send:not(:disabled):active {
@@ -1759,8 +1759,8 @@
       --text: #f4f4f5;
       --muted: #a1a1aa;
       --muted-2: #71717a;
-      --accent: #0284c7;
-      --accent-2: #0ea5e9;
+      --accent: #6a9f3d;
+      --accent-2: #a5d676;
       --warn: #f59e0b;
       --radius: 14px;
     }
@@ -2068,7 +2068,7 @@
 
     /* Nível diferente do padrão do modelo fica em destaque: é uma escolha que muda o
        corpo da requisição e pode ser recusada por servidor antigo — invisível é pior. */
-    .think-btn.custom { color: var(--accent-2, #38bdf8); border-color: var(--accent); }
+    .think-btn.custom { color: var(--accent-2, #a5d676); border-color: var(--accent); }
 
     .think-menu {
       position: absolute;
@@ -2097,7 +2097,7 @@
     }
 
     .think-item:hover { background: var(--surface-3); }
-    .think-item.active { color: var(--accent-2, #38bdf8); }
+    .think-item.active { color: var(--accent-2, #a5d676); }
     .think-item .think-item-hint { font-size: 0.68rem; color: var(--muted-2); }
 
     /* ---- Card de pergunta do agente (ask_user) ---- */
@@ -2119,7 +2119,7 @@
       font-size: 0.64rem;
       letter-spacing: 0.06em;
       text-transform: uppercase;
-      color: var(--accent-2, #38bdf8);
+      color: var(--accent-2, #a5d676);
       border: 1px solid var(--border-2);
       border-radius: 999px;
       padding: 3px 9px;
@@ -2142,21 +2142,21 @@
       color: var(--text);
     }
 
-    .question-opt:hover { border-color: var(--accent-2, #38bdf8); }
+    .question-opt:hover { border-color: var(--accent-2, #a5d676); }
     /* O anel de foco do Chromium é laranja no escuro e parece uma TERCEIRA cor de
        estado — ao lado do azul de selecionado, dá a impressão de que a opção com foco
        também está marcada. Aqui o foco é o mesmo azul, mas afastado da borda: anel é
        anel, borda é seleção. */
     .question-opt:focus { outline: none; }
-    .question-opt:focus-visible { outline: 2px solid var(--accent-2, #38bdf8); outline-offset: 2px; }
-    .question-opt.selected { border-color: var(--accent-2, #38bdf8); background: var(--surface-1, var(--surface-3)); }
+    .question-opt:focus-visible { outline: 2px solid var(--accent-2, #a5d676); outline-offset: 2px; }
+    .question-opt.selected { border-color: var(--accent-2, #a5d676); background: var(--surface-1, var(--surface-3)); }
     .question-opt .opt-mark {
       flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px;
       border: 1px solid var(--border-2); border-radius: 4px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 0.7rem; color: var(--accent-2, #38bdf8);
+      font-size: 0.7rem; color: var(--accent-2, #a5d676);
     }
-    .question-opt.selected .opt-mark { border-color: var(--accent-2, #38bdf8); }
+    .question-opt.selected .opt-mark { border-color: var(--accent-2, #a5d676); }
     .question-opt .opt-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
     .question-opt .opt-label { font-size: 0.83rem; font-weight: 600; }
     .question-opt .opt-desc { font-size: 0.72rem; color: var(--muted-2); line-height: 1.4; }
@@ -2167,7 +2167,7 @@
       border: 1px solid var(--border-2); background: var(--surface-3);
       color: var(--text); font-size: 0.82rem; font-family: inherit; outline: none;
     }
-    .question-free:focus { border-color: var(--accent-2, #38bdf8); }
+    .question-free:focus { border-color: var(--accent-2, #a5d676); }
 
     .question-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
@@ -2194,7 +2194,7 @@
       color: var(--text); font-size: 0.82rem; font-family: inherit;
       line-height: 1.5; outline: none;
     }
-    .prompt-textarea:focus { border-color: var(--accent-2, #38bdf8); }
+    .prompt-textarea:focus { border-color: var(--accent-2, #a5d676); }
 
     /* Rodapé do menu: diz se a lista de níveis foi confirmada pelo servidor. */
     .think-menu-nota {
@@ -2345,6 +2345,7 @@
       overflow-wrap: anywhere;
     }
   </style>
+  <link rel="stylesheet" href="assets/studio.css">
 </head>
 <body>
 
@@ -2352,12 +2353,14 @@
     
     <div class="app-sidebar">
       <div class="sidebar-header">
+        <div class="studio-brand"><img src="assets/icon.png" alt="Ícone Pofu"><div><strong>Pofu Code</strong><span>Studio</span></div></div>
         <button class="btn-new-chat">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Novo Chat
         </button>
       </div>
 
+      <div class="sidebar-section-label">Conversas do projeto</div>
       <div class="chat-list" id="chat-list-container"></div>
 
       <div class="sidebar-footer">
@@ -2365,7 +2368,7 @@
           <button id="btn-github" class="btn-icon btn-github" title="Repositório no GitHub">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.73.5 12a11.5 11.5 0 0 0 7.86 10.92c.575.106.785-.25.785-.556 0-.274-.01-1-.015-1.965-3.196.695-3.87-1.54-3.87-1.54-.523-1.33-1.277-1.684-1.277-1.684-1.044-.714.08-.7.08-.7 1.155.082 1.763 1.187 1.763 1.187 1.026 1.758 2.693 1.25 3.35.955.104-.744.402-1.25.73-1.538-2.552-.29-5.236-1.276-5.236-5.68 0-1.255.448-2.28 1.183-3.084-.119-.29-.513-1.46.112-3.043 0 0 .966-.31 3.165 1.178a10.98 10.98 0 0 1 2.882-.388c.977.004 1.962.132 2.882.388 2.198-1.488 3.163-1.178 3.163-1.178.626 1.583.232 2.753.114 3.043.737.804 1.182 1.829 1.182 3.084 0 4.415-2.688 5.386-5.25 5.67.413.356.78 1.057.78 2.13 0 1.538-.014 2.778-.014 3.157 0 .308.207.667.79.554A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"/></svg>
           </button>
-          <span class="user-profile">Developer</span>
+          <span class="user-profile">Pofu Studio</span>
           <button class="info-version" id="info-version-dot" title="Versão: —">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-info"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           </button>
@@ -2378,7 +2381,7 @@
 
     <div class="main-content">
       <header>
-        <h2 id="active-chat-title">Chat Inicial</h2>
+        <div class="studio-heading"><small>Espaço de trabalho</small><h2 id="active-chat-title">Chat Inicial</h2></div>
         <div class="header-actions">
           <button id="btn-processes" class="btn-icon proc-header-btn" title="Processos em execução">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
@@ -2403,6 +2406,7 @@
 
       <div class="input-area">
         <div class="composer">
+          <div id="slash-menu" class="slash-menu" aria-label="Comandos do Pofu" hidden></div>
           <div class="mention-menu" id="mention-menu" hidden></div>
           <div class="attachments" id="attachments" style="display:none;"></div>
           <div class="fila-msgs" id="fila-msgs" style="display:none;"></div>
@@ -2414,13 +2418,16 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
               <span id="compact-label"></span>
             </button>
-            <textarea id="user-input" rows="1" placeholder="Selecione uma pasta de trabalho para este chat (ícone acima) →" disabled></textarea>
+            <div class="mention-editor"><div id="mention-highlight" aria-hidden="true"></div>
+            <textarea aria-label="Mensagem para o Pofu" id="user-input" rows="1" placeholder="Selecione uma pasta de trabalho para este chat (ícone acima) →" disabled></textarea>
+            </div>
             <button id="btn-send" class="composer-send" disabled title="Enviar Mensagem">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             </button>
           </div>
           <div class="composer-footer">
             <div class="composer-ctls">
+              <button id="btn-slash" class="composer-chip" title="Comandos do Pofu (/)" aria-label="Abrir comandos">/</button>
               <div class="exec-mode" id="exec-mode" title="Modo de execução de comandos — Manual pede confirmação; Auto executa direto">
                 <span class="exec-mode-lbl">Comandos:</span>
                 <button class="exec-opt" data-mode="auto">Auto</button>
@@ -2439,6 +2446,7 @@
             <div class="composer-hint">Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar</div>
           </div>
         </div>
+        <div class="studio-status"><select id="active-provider" aria-label="Provedor ativo" title="Trocar provedor"></select><span id="studio-model">Configure seu modelo</span><span>Seu projeto, sua IA.</span></div>
       </div>
 
       <input type="file" id="file-input" multiple hidden>
@@ -2530,6 +2538,12 @@
             <div class="cfg-section">
               <div class="cfg-section-title">Conexão</div>
               <div class="config-group">
+                <label for="provider-select">Meus provedores</label>
+                <div class="provider-actions"><select id="provider-select"></select><button id="btn-add-provider" type="button">+ Adicionar</button><button id="btn-remove-provider" type="button">Remover</button></div>
+                <span class="cfg-hint">Cada provedor mantém seu endpoint, chave, modelo e thinking. As mudanças são aplicadas em Salvar e Fechar.</span>
+              </div>
+              <div class="config-group"><label for="provider-name">Nome do provedor</label><input id="provider-name" type="text" placeholder="Ex.: Servidor local, OpenRouter"></div>
+              <div class="config-group">
                 <label for="api-url">Endpoint da API (compatível com OpenAI)</label>
                 <input type="text" id="api-url" value="http://localhost:8080/v1">
               </div>
@@ -2540,7 +2554,9 @@
                     <option value="">(carregando...)</option>
                   </select>
                   <button id="btn-refresh-models" class="btn-icon" style="font-size:0.75rem;padding:8px 12px;white-space:nowrap;">Recarregar</button>
+                  <button id="btn-manual-model" class="btn-icon" title="Informar ID manualmente">ID manual</button>
                 </div>
+                <input id="manual-model" type="text" placeholder="ID do modelo; Enter para aplicar" aria-label="ID manual do modelo" hidden>
               </div>
               <div class="config-group">
                 <label for="api-key">API Key (opcional)</label>
@@ -2705,5 +2721,18 @@
   <!-- Saída do build em out/ (ver tsconfig.json): o tsc emite out/renderer.js etc. -->
   <script type="module" src="out/renderer.js"></script>
   <script type="module" src="out/constants.js"></script>
+  <template id="welcome-template">
+    <section class="studio-welcome" id="studio-welcome" aria-label="Comece um projeto">
+      <div class="welcome-kicker"><img src="assets/icon.png" alt="">Pofu Code Studio</div>
+      <h1>Uma ideia sua.<br><span>O próximo passo, juntos.</span></h1>
+      <p class="welcome-description">Explore seu projeto, resolva um problema ou construa algo novo. O Pofu acompanha você do primeiro arquivo à verificação final.</p>
+      <div class="welcome-actions">
+        <button class="welcome-action" data-prompt="Explore este projeto e explique sua estrutura, como rodar e os principais pontos de atenção."><i aria-hidden="true">⌘</i><b>Entender o projeto</b><span>Conheça a estrutura e por onde começar.</span></button>
+        <button class="welcome-action" data-prompt="Investigue este problema, encontre a causa e proponha uma correção: "><i aria-hidden="true">&lt;/&gt;</i><b>Resolver um problema</b><span>Encontre a causa e valide a correção.</span></button>
+        <button class="welcome-action" data-prompt="Quero implementar uma nova funcionalidade neste projeto: "><i aria-hidden="true">+</i><b>Criar uma melhoria</b><span>Transforme sua ideia em código.</span></button>
+      </div>
+      <div class="welcome-setup"><span id="welcome-path">Comece escolhendo uma pasta.</span><button id="welcome-folder">Abrir projeto ↗</button><button id="welcome-settings">Configurar IA ↗</button></div>
+    </section>
+  </template>
 </body>
 </html>

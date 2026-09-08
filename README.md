@@ -5,9 +5,9 @@
 
 **Agente de código em desktop** (Electron) que se conecta a **qualquer API REST compatível com OpenAI** — [llama.cpp](https://github.com/ggml-org/llama.cpp), [Ollama](https://ollama.com/), [vLLM](https://github.com/vllm-project/vllm) — e trabalha direto nos arquivos do seu projeto: lê, edita, busca, roda comandos, chama APIs e **tira print das páginas que constrói**.
 
-Um "Cursor/Claude Code" local, rodando com o **seu** modelo, na **sua** máquina.
+Seu espaço de desenvolvimento, com a identidade Pofu e o modelo que você escolher.
 
-![Visão geral do chat](docs/img/chat.png)
+![Tela inicial do Pofu Code Studio](docs/img/studio-desktop.png)
 
 ---
 
@@ -33,11 +33,12 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 
 | Ferramenta | O que faz |
 |---|---|
-| `list_files` | Lista arquivos e pastas (com tamanho) |
-| `read_file` | Lê em janelas, com paginação por `offset` (linha) e `char_offset` (caractere) |
+| `list_files` | Lista arquivos e pastas; `recursive: true` lista os caminhos dos arquivos nas subpastas |
+| `read_file` | Lê inteiro quando cabe; `query` localiza um trecho diretamente, `char_offset` continua a leitura |
+| `read_tool_result` | Consulta saídas grandes por cursor ou termo, sem repetir comandos ou requisições |
 | `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido |
 | `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente |
-| `search_files` | Busca por texto/regex no projeto, com filtro glob; devolve arquivo, linha e **coluna** |
+| `search_files` | Busca por texto/regex com glob, paginação e linhas vizinhas (`context_lines`) |
 | `ask_user` | **Faz uma pergunta e espera a resposta**, em card com opções clicáveis |
 | `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
 | `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
@@ -47,10 +48,34 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 | `capture_page` | Abre a URL num navegador oculto, tira print e reporta erros de console e de rede |
 | `web_search` / `fetch_url` | Busca na web e leitura de páginas (opcional, em *Ajustes → Ferramentas*) |
 
-### Leitura que não empurra o agente para o terminal
-`read_file` pagina por **linha** (`offset`) e também **dentro de uma linha** (`char_offset`), então nem um bundle minificado de uma linha só fica fora do alcance da ferramenta — a cada janela o resultado devolve o número exato para continuar. `search_files` completa o par: além de arquivo e linha, informa a **coluna** do casamento, que é o `char_offset` para ir direto ao trecho, e o recorte mostrado é centrado no que você procurou.
+### Leitura sem cortes perdidos
 
-Isso veio de um teste com modelo real: numa linha de 90 mil caracteres a leitura parava no corte e mandava terminar com `cut`/`sed` no terminal — e era o que o agente fazia, largando a ferramenta na segunda tentativa. A busca piorava o quadro, porque cortava a linha a partir do começo e devolvia um "resultado" que **não continha o termo procurado**. Resultados grandes agora encolhem descartando itens inteiros, e não cortando a string no meio: o JSON continua analisável e diz quantos itens ficaram de fora.
+O teto fixo de linhas foi removido. O arquivo volta inteiro quando cabe no contexto;
+para arquivos maiores, o cursor `char_offset` recupera o ponto exato, inclusive dentro
+ de uma linha minificada. O orçamento reserva espaço para a resposta e respeita o teto
+ de histórico configurado. A proteção de tamanho de arquivo continua em 25 MiB.
+
+Saídas grandes de terminal, busca e HTTP são preservadas no histórico local e consultadas por
+`read_tool_result`, sem criar rascunhos no projeto nem repetir uma ação com efeitos
+colaterais. O cache em memória guarda até 32 resultados e 8 Mi caracteres; ao expirar,
+recupera a saída salva na conversa, inclusive após reiniciar. Cada saída deve caber nos
+8 Mi caracteres. O conteúdo completo fica fora do payload da API até ser consultado. Logs de processos
+retêm os últimos 2 Mi caracteres por stream e informam quantos caracteres antigos saíram.
+
+O histórico compactado também recebe uma referência recuperável. As leituras mais novas
+são preservadas primeiro. Conversas anteriores a essa mudança podem conter apenas a janela
+original: não é possível recuperar retroativamente uma saída que não foi salva.
+
+Para evitar percorrer páginas sem relação com a tarefa, use, por exemplo,
+`read_file({filename: "src/main.ts", query: "ipcMain.handle"})` ou
+`search_files({query: "runTool", context_lines: 4})`. Caminhos absolutos dentro do projeto
+também são aceitos pelas ferramentas de arquivo.
+
+### Menções de arquivo
+
+Digite `@` para procurar arquivos e selecione com Enter. As menções aparecem em azul
+no compositor, nos anexos e na mensagem enviada. Caminhos com espaços usam aspas,
+como `@"docs/meu arquivo.md"`; o preenchimento automático adiciona essas aspas.
 
 ### Diff e desfazer
 Cada escrita, edição ou remoção mostra **o que exatamente mudou** — colorido, numerado nas duas versões e com o contexto em volta — e um botão **Desfazer** que reverte o arquivo no disco. O desfazer também pode ser desfeito.
@@ -70,7 +95,7 @@ O histórico é compactado automaticamente quando se aproxima do limite do model
 A compactação encurta **do mais antigo para o mais novo**, desce de uma vez com folga (em vez de raspar o mínimo que cabe) e **lembra** o que já encurtou. Isso não é detalhe: toda requisição reenvia a conversa, e servidor e API reaproveitam o começo do que já viram — um corte que anda a cada turno faz esse reaproveitamento ser perdido toda vez. Medido sobre conversas reais deste app, num chat de 270 requisições: 5 requisições com prefixo alterado, em vez de 160.
 
 ### Teto de histórico, para API paga
-Em servidor local o contexto grande é de graça; em API paga, não. Como cada requisição reenvia o histórico, um chat longo com modelo de 262k de contexto chega a mandar **mais de 100 mil tokens por mensagem**. Em *Ajustes → Geração*, **Teto de histórico por requisição** limita isso independentemente do contexto do modelo: acima do teto, resultados antigos vão encurtados (o agente chama a ferramenta de novo se precisar). Vazio (padrão) = comportamento de sempre.
+Em servidor local o contexto grande é de graça; em API paga, não. Como cada requisição reenvia o histórico, um chat longo com modelo de 262k de contexto chega a mandar **mais de 100 mil tokens por mensagem**. Em *Ajustes → Geração*, **Teto de histórico por requisição** limita isso independentemente do contexto do modelo: acima do teto, resultados antigos vão encurtados (o agente consulta a referência preservada se precisar). Vazio (padrão) = comportamento de sempre.
 
 Medido numa sessão de verdade (8 arquivos de ~10k tokens cada, ler e resumir um a um, mesma tarefa e mesma temperatura): sem teto, 26 requisições e 1,43 milhão de tokens de prompt; com teto de 64k, 29 requisições e 1,16 milhão — **19% mais barato**, mesmo resultado final. A economia cresce com o tamanho da conversa.
 
@@ -122,21 +147,45 @@ Logo abaixo ficam as **skills**: arquivos de instrução (o `SKILL.md` do Claude
 O `name` e o `description` saem do frontmatter YAML quando existe; sem frontmatter, o app usa o título `#` do arquivo e a primeira linha de texto. Reimportar o mesmo arquivo **atualiza** a skill em vez de duplicar, que é o fluxo de quem está escrevendo uma. Cada linha mostra o custo em tokens **por mensagem**, porque é isso que uma skill ativa é: conteúdo somado ao prompt em toda requisição — não um anexo que se lê uma vez. Skill desligada não entra no prompt.
 
 ### Nível de raciocínio no próprio compositor
-O seletor **Raciocínio** fica ao lado do campo de mensagem, junto do Auto/Manual — quanto o modelo deve pensar é decisão que se toma na hora de escrever o pedido, não algo para lembrar dentro de um modal com a resposta já em andamento. Um clique abre os níveis, cada um com o que ele exige do servidor:
+O seletor **Raciocínio** fica no compositor. Um clique abre uma barra horizontal:
+arraste o controle, use as setas do teclado ou escolha um nível na faixa com rolagem
+lateral. A escolha é guardada por provedor. **Muito alto** envia exatamente `xhigh`;
+é uma opção diferente de **Máximo**, que envia `max`.
 
-![Seletor de raciocínio no compositor](docs/img/raciocinio.png)
+O controle usa trilho verde preenchido e puxador quadrado com sombra; o preenchimento
+acompanha a seleção por arraste, teclado, botão de nível e troca de provedor. Um brilho
+animado percorre o preenchimento e respeita a preferência por movimento reduzido.
+
+Ao iniciar, o app verifica atualizações e só envia uma notificação se houver uma versão
+mais recente publicada. Sem conexão ou sem novidades, não há aviso. O botão **Verificar**
+continua disponível nas configurações; consultas feitas em até um minuto são reaproveitadas.
+
+![Seletor horizontal de raciocínio](docs/img/studio-thinking.png)
 
 | Nível | O que é enviado | Aparece quando |
 |---|---|---|
 | Padrão do modelo | nada — funciona em qualquer servidor | sempre |
 | Desligado | `enable_thinking: false` + `/no_think` no prompt | o servidor anuncia raciocínio ligável |
-| Baixo / Médio / Alto / Máximo | `reasoning_effort: low \| medium \| high \| max` | o servidor anuncia `reasoning_effort` |
+| Baixo / Médio / Alto / Muito alto / Máximo | `reasoning_effort: low \| medium \| high \| xhigh \| max` | o servidor anuncia `reasoning_effort`, ou não informa suas capacidades |
 
 O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning_effort` é extensão recente e servidor antigo recusa o que não conhece.
 
 **A lista sai do servidor, não de um palpite.** Ao escolher o modelo, o app pergunta ao endpoint o que ele aceita — as `capabilities` do `/v1/models`, o `chat_template` do `/props` (llama.cpp) e o `/api/show` (Ollama) — e só mostra os níveis confirmados; o rodapé do menu diz de onde veio a informação. Um modelo sem modo de raciocínio fica só com *Padrão*, e um nível salvo que o servidor novo não aceita volta para *Padrão* sozinho, em vez de derrubar a primeira mensagem com um HTTP 400. Endpoint que não responde nada disso (vLLM, OpenAI, gateways) continua mostrando todos os níveis — silêncio não é prova de que não suporta.
 
-**Se ainda assim o servidor recusar o nível**, o aviso aparece na hora do erro — não antes, por suspeita: o app reenvia a mesma mensagem sem o ajuste, avisa qual nível foi recusado e cita a resposta do servidor, que costuma dizer os valores que ele aceita. A conversa não se perde por causa de uma opção do menu.
+**Se o servidor recusar o nível**, o app avisa e tenta o nível aceito mais próximo quando
+o erro lista as opções. Sem alternativa, ou se ela também falhar, reenvia sem o ajuste.
+O teste de integração confere o payload real dessa adaptação.
+
+### Vários provedores
+
+Em **Configurações → Ajustes → Meus provedores**, adicione conexões com nome, endpoint,
+chave e modelo próprios. **Recarregar** consulta `/models`; **ID manual** permite informar
+modelos mesmo quando essa rota não existe. Salve para aplicar. A configuração antiga é
+migrada automaticamente para o primeiro perfil.
+
+Troque pelo seletor abaixo do compositor. Cada provedor recupera seu modelo e thinking,
+sem misturar chaves. A troca de conexão fica bloqueada durante a geração. Adições,
+edições e remoções no formulário só são aplicadas em **Salvar e Fechar**.
 
 ### A espera de reabrir um chat longo é explicada
 Reabrir o app e mandar a primeira mensagem num chat grande demora — o servidor não tem mais nada em cache e precisa reprocessar a conversa inteira antes de escrever a primeira palavra (medido: **177 segundos** num chat de 123 mil tokens). Em vez dos três pontinhos de sempre, aparece o que está acontecendo, o tamanho aproximado do contexto e um cronômetro; a barra de tarefas mostra *"lendo o contexto…"*. Da segunda mensagem em diante o indicador volta ao normal, porque aí o servidor já tem o histórico em cache. Montar a conversa na tela também avisa (~4s em 1.700 mensagens) em vez de deixar a área do chat vazia.
@@ -199,6 +248,29 @@ Nada é gravado antes do **Salvar e Fechar** — mas *Recarregar* já usa o endp
 
 O que está salvo é lido **na abertura do app**, não só quando você entra nas configurações: o endpoint salvo é consultado assim que a janela sobe, e daí saem a lista de modelos, o tamanho de contexto, o suporte a imagem e os níveis de raciocínio. Um valor estragado no arquivo de configuração (endpoint vazio, temperatura fora de faixa, nível que não existe mais) volta ao padrão em vez de falhar na primeira mensagem.
 
+## Comandos com `/`
+
+Digite `/` no início do campo ou clique no botão `/` do compositor. Use ↑/↓ para
+escolher, **Enter** para executar, **Tab** para completar e **Esc** para fechar.
+**Shift+Enter** continua inserindo uma nova linha.
+
+| Comando | Ação |
+|---|---|
+| `/ajuda` | Mostra todos os comandos |
+| `/novo` | Cria uma conversa no mesmo projeto, preservando a conversa anterior |
+| `/projeto` | Abre o seletor de pastas e projetos recentes |
+| `/config` / `/modelo` | Abre configurações / seleção de modelo |
+| `/compactar` | Libera contexto sem apagar o histórico |
+| `/processos` / `/parar` | Mostra processos / interrompe a geração |
+| `/planejar`, `/revisar`, `/testar`, `/explicar` | Prepara um pedido para revisar antes de enviar |
+
+Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo no campo de mensagem.
+Esses pedidos só vão à IA quando você enviar o texto preparado. Os comandos locais
+não consomem uma geração. Aliases em inglês, como `/help`, `/new`, `/model`, `/review`
+e `/test`, também funcionam. Comandos locais ficam disponíveis sem uma pasta escolhida;
+para enviar pedidos à IA, selecione um projeto. Durante uma geração, use `/parar` antes
+de trocar o projeto, criar uma conversa ou compactar.
+
 ## Como usar
 
 1. Crie um chat e **escolha a pasta segura** (ícone de pasta no cabeçalho — o menu também lista as pastas recentes)
@@ -215,12 +287,15 @@ O que está salvo é lido **na abertura do app**, não só quando você entra na
 O código-fonte é **TypeScript**, todo em `src/`. O `tsc` emite a saída em **`out/`** (separada da fonte, ignorada pelo git): `src/main.ts → out/main.js`, `src/preload.cts → out/preload.cjs` etc. O Electron carrega `out/main.js` (ver `main` do package.json) e o `index.html` carrega `out/renderer.js` — sem empacotador no caminho:
 
 ```
-├── index.html        # Interface e estilos (carrega out/renderer.js)
+├── index.html        # Interface (carrega out/renderer.js)
+├── assets/studio.css # Identidade visual Pofu
+├── scripts/          # Build, testes de regressão e smoke opcional da API
 ├── tsconfig.json     # Único config do build (rootDir: src, outDir: out)
 ├── src/
 │   ├── main.ts       # Processo main: IPC de arquivos, processos, HTTP, captura e busca
 │   ├── preload.cts   # Ponte contextBridge (.cts porque o preload é CommonJS → preload.cjs)
 │   ├── renderer.ts   # Loop do agente, ferramentas, streaming, diff, render das mensagens
+│   ├── tool-results.ts # Cursores de leitura e resultados recuperáveis
 │   ├── constants.ts  # system_prompt, padrões e limites
 │   ├── types.d.ts    # Tipos compartilhados (Settings, Chat, ElectronAPI…)
 │   ├── websearch.js  # Busca web (arquivo gerado noutro repositório — veja o cabeçalho)
@@ -249,3 +324,21 @@ Você pode usar, modificar, redistribuir e criar derivados, inclusive comercialm
 - Histórico e configurações ficam no diretório de dados do Electron (`app-store.json`)
 - Prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`, no mesmo diretório
 - Desenvolvido e testado principalmente no **Linux (Ubuntu 26.04) / Windows (11 PRO 25H2)**, contra um **llama.cpp** local
+## Testes
+
+- `npm test`: build e regressões de leitura completa, linhas longas, Unicode, cache, comandos e menções.
+- `npm run typecheck`: valida os tipos sem emitir arquivos.
+- `npm run test:integration`: abre o Electron com perfil isolado e testa ferramentas,
+  proteções de edição, busca, processos, HTTP, captura, perguntas e layout. Recompõe
+  arquivos de 5 MiB (Unicode/CRLF) e 20 MiB (linha única), conferindo conteúdo e SHA-256.
+- `npm run test:api`: smoke opcional com chamadas reais. Defina `POFU_TEST_API_URL` e
+  `POFU_TEST_API_KEY` no ambiente; `POFU_TEST_MODEL` pode escolher o modelo. Só são
+  enviados dados sintéticos, incluindo consultas a trechos distantes em 5 e 20 MiB.
+  O terminal é oferecido para medir a escolha da ferramenta; se o modelo o escolher,
+  o teste falha sem executar o comando. Não coloque chaves em scripts ou arquivos versionados.
+
+O teste de integração usa um servidor HTTP local; a busca web valida entrada inválida,
+sem depender de disponibilidade de buscadores. Para salvar screenshots reais do app,
+defina `POFU_QA_OUTPUT` com a pasta de destino antes do teste de integração.
+
+O seletor combina três efeitos discretos: faixa de luz, textura em movimento e brilho interno pulsante. Todos são desativados com movimento reduzido.
