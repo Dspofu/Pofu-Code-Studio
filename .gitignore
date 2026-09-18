@@ -11,3 +11,15 @@
 # Logs
 *.log
 npm-debug.log*
+
+# Emitido fora de out/ é sempre resto de build: o layout antigo (main.ts na raiz, sem
+# outDir) ou um `tsc` rodado sem `-p`. Entrou num commit por engano uma vez e passou a
+# aparecer duplicado ao lado da fonte. src/websearch.js é a exceção: fonte gerada noutro
+# repositório (ver CLAUDE.md).
+/*.js
+/*.cjs
+*.js.map
+*.cjs.map
+/src/**/*.js
+/src/**/*.cjs
+!/src/websearch.js
