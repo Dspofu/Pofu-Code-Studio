@@ -53,7 +53,8 @@ export function fileWindow(text: string, opts: any = {}) {
 }
 
 export function formatFileWindow(filename: string, res: any) {
-  if (!res?.success) return JSON.stringify({ error: res?.error || 'Could not read the file.' });
+  if (!res?.success) return JSON.stringify({ error: res?.error || 'Could not read the file.',
+    ...(res?.did_you_mean ? { did_you_mean: res.did_you_mean } : {}) });
   if (res.empty) return `File "${filename}" is empty.`;
   if (res.complete) return res.content;
   const next = res.hasMore ? `\n\n[More content available. Continue with read_file ${JSON.stringify({
@@ -65,13 +66,13 @@ export function formatFileWindow(filename: string, res: any) {
 export const readFileTool = {
   type: 'function', function: {
     name: 'read_file',
-    description: 'Reads UTF-8 workspace files up to 25 MiB, including files with millions of characters in a single minified line. query searches the ENTIRE file and returns the matching context directly; the context budget does not limit how far query can search. Omit limit to return the whole file when it fits. Follow char_offset only when you need more. Partial content is a context window, not missing file data. For a known filename, call this directly without a terminal existence/size check. Prefer edit_file for changes.',
+    description: 'Reads a UTF-8 text file (up to 25 MiB, minified lines included). Omit limit to get the whole file when it fits; otherwise the result ends with the exact char_offset to continue. query jumps to a literal anywhere in the file. Re-reading an unchanged range returns a short "unchanged" note instead of the content. Call it directly for a known filename, without ls/stat first.',
     parameters: { type: 'object', properties: {
-      filename: { type: 'string', description: 'Relative path or absolute path inside the workspace.' },
-      offset: { type: 'integer', description: 'First line, 1-based. Default: 1.' },
-      limit: { type: 'integer', description: 'Optional line count. Omit to read as much as the context permits.' },
-      query: { type: 'string', description: 'Optional literal text to locate at or after offset/char_offset. Returns surrounding content and the exact matchOffset.' },
-      char_offset: { type: 'integer', description: 'Exact 0-based UTF-16 cursor returned by a previous read. Takes precedence over offset.' }
+      filename: { type: 'string', description: 'Path relative to the workspace (an absolute path inside it also works).' },
+      offset: { type: 'integer', description: 'First line, 1-based.' },
+      limit: { type: 'integer', description: 'Max lines. Omit to read as much as fits.' },
+      query: { type: 'string', description: 'Literal text to jump to; searches the whole file.' },
+      char_offset: { type: 'integer', description: 'Cursor from a previous partial read; overrides offset.' }
     }, required: ['filename'] }
   }
 };
@@ -79,11 +80,11 @@ export const readFileTool = {
 export const readResultTool = {
   type: 'function', function: {
     name: 'read_tool_result',
-    description: 'Reads more of a retained tool output without executing the command or HTTP request again and without temporary files. Use result_id and next_offset from a partial result. Optional query locates a literal term in that result.',
+    description: 'Pages through a large or compacted tool output kept by the app, without re-running the command or request. Pass the result_id (or "history:<id>") and next_offset; query jumps to a literal.',
     parameters: { type: 'object', properties: {
-      result_id: { type: 'string', description: 'ID returned with a partial tool result.' },
-      offset: { type: 'integer', description: '0-based character cursor; default 0.' },
-      query: { type: 'string', description: 'Optional literal term to locate at or after offset.' }
+      result_id: { type: 'string', description: 'ID from the partial or compacted result.' },
+      offset: { type: 'integer', description: 'Character cursor (next_offset); default 0.' },
+      query: { type: 'string', description: 'Literal term to locate at or after offset.' }
     }, required: ['result_id'] }
   }
 };
@@ -101,11 +102,16 @@ export class ToolResultStore {
     return entry?.scope === scope ? entry.text : undefined;
   }
   restore(id: string, text: string, scope: string) {
-    if (this.entries.get(id)?.scope === scope) return;
-    try { this.encode(JSON.parse(text), 1, scope, id); } catch { /* histórico inválido não substitui a entrada */ }
+    if (this.entries.get(id)?.scope === scope || typeof text !== 'string') return;
+    // Busca e listagem guardam TEXTO, não JSON: o que não parseia é restaurado como veio.
+    let value: any = text;
+    try { value = JSON.parse(text); } catch { /* saída em texto */ }
+    this.encode(typeof value === 'string' ? text : value, 1, scope, id);
   }
+  // Texto entra como está. Serializar uma string com JSON.stringify escaparia cada aspa e
+  // cada quebra de linha, e é esse o formato que o modelo recebe quando o resultado cabe.
   encode(value: any, budget: number, scope: string, restoredId?: string) {
-    const text = JSON.stringify(value);
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
     if (text.length <= budget) return text;
     if (text.length > CACHE_CHARS) return JSON.stringify({ error: 'Tool output exceeds the 8 Mi-character memory limit. Narrow the request.', total_chars: text.length });
     if (restoredId && this.entries.has(restoredId)) {

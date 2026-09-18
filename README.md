@@ -33,12 +33,12 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 
 | Ferramenta | O que faz |
 |---|---|
-| `list_files` | Lista arquivos e pastas; `recursive: true` lista os caminhos dos arquivos nas subpastas |
-| `read_file` | Lê inteiro quando cabe; `query` localiza um trecho diretamente, `char_offset` continua a leitura |
+| `list_files` | Lista arquivos e pastas; `recursive: true` lista o projeto agrupado por pasta, `pattern` filtra por glob |
+| `read_file` | Lê inteiro quando cabe; `query` localiza um trecho diretamente, `char_offset` continua a leitura. Arquivo inexistente vem com sugestões de caminho |
 | `read_tool_result` | Consulta saídas grandes por cursor ou termo, sem repetir comandos ou requisições |
-| `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido |
-| `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente |
-| `search_files` | Busca por texto/regex com glob, paginação e linhas vizinhas (`context_lines`) |
+| `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido — e que não mudou em disco desde a leitura |
+| `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente. `edits` faz várias trocas numa chamada, tudo ou nada |
+| `search_files` | Busca por texto/regex com glob, paginação e linhas vizinhas, agrupada por arquivo; `output_mode` `files`/`count` só conta |
 | `ask_user` | **Faz uma pergunta e espera a resposta**, em card com opções clicáveis |
 | `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
 | `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
@@ -70,6 +70,36 @@ Para evitar percorrer páginas sem relação com a tarefa, use, por exemplo,
 `read_file({filename: "src/main.ts", query: "ipcMain.handle"})` ou
 `search_files({query: "runTool", context_lines: 4})`. Caminhos absolutos dentro do projeto
 também são aceitos pelas ferramentas de arquivo.
+
+### Menos tokens por ferramenta
+
+Parte do custo de uma sessão não aparece na tela: as definições das ferramentas e o prompt de
+sistema vão ao servidor em **toda** requisição, e o que cada ferramenta devolve fica no
+histórico e é reenviado a cada turno. As ferramentas foram revistas com o
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) como referência, e cada mudança
+abaixo foi medida neste próprio repositório:
+
+| O quê | Antes | Depois |
+|---|---|---|
+| Definições das ferramentas + prompt de sistema, por requisição | 21,3 mil caracteres | 17,2 mil (−19%) |
+| `search_files` com 10 a 14 achados e contexto | 6,5 a 8,7 mil | 2,5 a 3,5 mil (−51% a −61%) |
+| Mesma busca com `output_mode: "files"` | 6,5 mil | 64 (−99%) |
+| `list_files` da raiz | 989 | 277 (−72%) |
+| Reler um arquivo que não mudou | o arquivo inteiro | aviso de ~330 caracteres (−97%) |
+| Saída de comando com barra de progresso | todos os redesenhos | só o último (−97%) |
+
+- **Busca e listagem em texto**, não em JSON: a busca sai agrupada por arquivo no formato do
+  `rg` (`12:` linha que casou, `11-` contexto) e contexto sobreposto entre achados vizinhos sai
+  uma vez só; a listagem recursiva escreve o caminho da pasta uma vez, com os arquivos embaixo.
+- **Releitura sem mudança** devolve um aviso apontando a leitura anterior, que continua na
+  conversa. Se ela já foi compactada, o conteúdo volta completo.
+- **Terminal limpo**: cor ANSI, redesenho de barra de progresso, CRLF e linhas repetidas em
+  sequência saem antes de o resultado ir ao modelo. O eco do comando também sai.
+- **Várias edições numa chamada** (`edits`): cada chamada a menos é um reenvio a menos do
+  contexto inteiro. E quando o `write_file` reescreve um arquivo com a maior parte das linhas
+  iguais, o resultado sugere o `edit_file` para a próxima vez.
+- **Arquivo não encontrado** vem com o caminho provável (mesmo nome em outra pasta, outra
+  extensão, erro de digitação), sem precisar de um `list_files` na volta.
 
 ### Menções de arquivo
 
@@ -296,6 +326,9 @@ O código-fonte é **TypeScript**, todo em `src/`. O `tsc` emite a saída em **`
 │   ├── preload.cts   # Ponte contextBridge (.cts porque o preload é CommonJS → preload.cjs)
 │   ├── renderer.ts   # Loop do agente, ferramentas, streaming, diff, render das mensagens
 │   ├── tool-results.ts # Cursores de leitura e resultados recuperáveis
+│   ├── tool-output.ts  # Formato compacto de busca, listagem e saída de terminal
+│   ├── edit-match.ts   # Casamento do edit_file (exato → tolerante a espaço) e lote atômico
+│   ├── edit-diagnostics.ts # Diagnóstico quando o trecho do edit_file não é encontrado
 │   ├── constants.ts  # system_prompt, padrões e limites
 │   ├── types.d.ts    # Tipos compartilhados (Settings, Chat, ElectronAPI…)
 │   ├── websearch.js  # Busca web (arquivo gerado noutro repositório — veja o cabeçalho)
@@ -342,3 +375,11 @@ sem depender de disponibilidade de buscadores. Para salvar screenshots reais do 
 defina `POFU_QA_OUTPUT` com a pasta de destino antes do teste de integração.
 
 O seletor combina três efeitos discretos: faixa de luz, textura em movimento e brilho interno pulsante. Todos são desativados com movimento reduzido.
+
+Quando `edit_file` não encontra o trecho exato, tenta de novo ignorando só **espaço em branco** (indentação, espaço no fim da linha, aspas tipográficas): se isso achar um único lugar, a troca é feita, o texto novo herda a indentação do arquivo e o resultado avisa (`matched_ignoring_whitespace`). Se nem assim houver casamento, volta um diagnóstico do conteúdo atual em disco: trecho candidato, primeira diferença e indicação de que o texto novo já aparece no arquivo. Casamento por **semelhança** nunca grava — serve só a esse diagnóstico. Trechos extensos indicam o recorte e os parâmetros para continuar a leitura.
+
+Para comandos com aspas ou expressões regulares, `execute_command` aceita `command: "node"` e `args: ["-e", "console.log(1)"]`. Os argumentos são enviados diretamente ao programa, sem interpretação do shell e sem criar scripts temporários. Falhas de processo distinguem saída não zero de erros de inicialização; PIDs desconhecidos orientam consultar `list_processes`.
+
+`delete_file` informa quando o arquivo já está ausente, sem repetir a exclusão nem criar um registro de alteração. Falhas de permissão ou tentativa de apagar diretório retornam erro estruturado; arquivos existentes continuam protegidos pela exigência de leitura.
+
+Os resultados distinguem operação concluída, processo ainda ativo e falha. `list_processes` separa processos em execução dos encerrados; capturas preservam resultados JSON do script como objetos e indicam falha do script separadamente do sucesso da captura. Essas informações ajudam a verificar o resultado antes de declarar sucesso.

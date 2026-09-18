@@ -28,6 +28,8 @@ são da INTERFACE e continuam em pt-BR.
 | [index.html](index.html) | UI inteira: Tailwind (vendorizado), `<style>` grande no topo, markup e modais. Carrega `out/renderer.js` ao final. |
 | [src/renderer.ts](src/renderer.ts) | Cérebro do renderer: estado dos chats, loop do agente, definição das `tools`, streaming, execução de tool calls, render de mensagens. |
 | [src/constants.ts](src/constants.ts) | `system_prompt`, `DEFAULT_SETTINGS` e os limites, todos comentados com o *porquê*: janela de leitura derivada do contexto, orçamento de histórico, prints por requisição, retries e trava de loop. |
+| [src/tool-output.ts](src/tool-output.ts) | O que busca, listagem e terminal devolvem ao MODELO: texto compacto, não JSON. Também `globToRegex` e `suggestPaths`. |
+| [src/edit-match.ts](src/edit-match.ts) | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e o lote `edits`. |
 | [src/types.d.ts](src/types.d.ts) | Tipos GLOBAIS (o arquivo não exporta nada de propósito): `Settings`, `Chat`, `ChatMessage`, `ElectronAPI`, `ProcEntry`. Main e renderer os enxergam sem importar. |
 | [src/websearch.js](src/websearch.js) | **Arquivo gerado** — não edite, e não converta para `.ts`. Saída do `tsc` sobre o módulo portátil `…/chat/src/lib/websearch.ts`, mantido em OUTRO repositório. Os tipos dele estão em [src/websearch.d.ts](src/websearch.d.ts). |
 | `vendor/` | Libs offline do RENDERER (tailwind, marked, purify, highlight). Sem CDN. |
@@ -132,21 +134,43 @@ que a ausência dele.
   mensagem original possui `retainedResult`, recupere sua saída integral. Conversas antigas
   sem esse campo só preservam a janela original. Reduza do mais antigo para o mais novo, inclusive
   entre os recentes, para evitar podar imediatamente uma leitura recém-recebida.
+- **Marcas de poda são índices**: `podaManualAte`/`podaAutoAte` apontam posições de
+  `chat.messages`, então todo truncamento passa por `truncaHistorico`, que as leva junto. Sem
+  isso, editar a primeira mensagem de um chat de 1794 deixou as marcas em 1794 com 45 mensagens,
+  e o `Math.min(marca, length)` virou "compactar tudo": cada resultado chegava ao modelo como
+  aviso de compactado, ele pedia de volta com `read_tool_result` e acabou lendo `package.json`
+  com `type` e `powershell Get-Content`. Marca maior que o histórico é tratada como corrompida
+  no `compactToolResults` e zerada (chats salvos antes da correção).
 - **`edit_file` antes de `write_file`**: alterar arquivo existente é trabalho de `edit_file`
   (troca de trecho exato). Reescrever tudo com `write_file` gasta tokens de saída à toa e a
   geração é cortada no meio, truncando o arquivo. O prompt e as descrições das ferramentas
   reforçam isso — não afrouxe.
-- **A substituição do `edit_file` é `split/join`, nunca `replace`**: mesmo com pattern string,
-  o `String.prototype.replace` continua expandindo `$&`, `` $` ``, `$'`, `$1` e `$$` DENTRO do
-  texto de substituição. Um `new_text` com `$$var` (PHP, sed, LaTeX) era gravado corrompido e
-  ainda voltava `success: true` — erro silencioso, do tipo que só aparece muito depois. O
-  `split(alvo).join(troca)` é literal e serve aos dois modos, porque o caso ambíguo já saiu
-  antes com erro.
+- **A substituição do `edit_file` é montagem por fatia, nunca `replace`**: mesmo com pattern
+  string, o `String.prototype.replace` continua expandindo `$&`, `` $` ``, `$'`, `$1` e `$$`
+  DENTRO do texto de substituição. Um `new_text` com `$$var` (PHP, sed, LaTeX) era gravado
+  corrompido e ainda voltava `success: true` — erro silencioso, do tipo que só aparece muito
+  depois. O `applyEdit` (`src/edit-match.ts`) acha os trechos e monta o resultado com `slice`,
+  do fim para o começo, o que é literal e serve aos dois modos.
+- **Tolerância do `edit_file` para em espaço em branco**: quando o exato falha, o `applyEdit`
+  tenta de novo comparando linhas inteiras sem indentação/espaço nas pontas, depois com
+  sequências de espaço colapsadas, depois com aspas e traços tipográficos trocados pelos
+  retos (a cadeia do Hermes, sem os dois níveis finais dele). Só grava se o casamento for
+  ÚNICO; o `new_text` herda a indentação do arquivo (`reindent`, senão um bloco Python/YAML
+  entraria no recuo errado) e o resultado diz `matched_ignoring_whitespace`. `replace_all`
+  com mais de um casamento exige o texto exato. Casamento por SEMELHANÇA (o `block_anchor`/
+  `context_aware` do Hermes) fica de fora de propósito: grava num trecho que só parece o
+  pedido. Semelhança serve ao `editDiagnostics`, que mostra o candidato sem escrever. O
+  motivo de existir a tolerância: sem ela, um espaço de diferença custava "trecho não
+  encontrado → reler o arquivo inteiro → tentar de novo", uma leitura completa em tokens.
+- **Lote do `edit_file` (`edits`) é tudo ou nada**: as trocas rodam em ordem, cada uma sobre o
+  resultado da anterior, e qualquer falha devolve `edits[i]: …` sem gravar nada — por isso o
+  erro manda reenviar o lote inteiro. O diagnóstico de "não encontrado" é feito contra o
+  conteúdo JÁ com as edições anteriores do lote, que é o que a troca `i` enxergaria.
 - **Quebra de linha do `edit_file`**: o `read_file` entrega as linhas de um arquivo CRLF com o
   `\r`, e o modelo copia o trecho sem ele — a busca exata nunca casava, e a dica ainda mandava
   reler, num vaivém que não convergia. Por isso a busca é refeita com o `old_text` convertido
-  para CRLF, e o `new_text` é normalizado para a quebra do arquivo **mesmo quando o `old_text`
-  casou de primeira**: trecho de uma linha só não passa pelo fallback, e gravar LF no meio de um
+  para CRLF (estratégia `crlf`), e o `new_text` é normalizado para a quebra do arquivo
+  (`naQuebraDo`) **mesmo quando o `old_text` casou de primeira**: trecho de uma linha só não passa pelo fallback, e gravar LF no meio de um
   arquivo CRLF deixa quebras misturadas que quebram a edição SEGUINTE.
 - **Imagem anexada pelo usuário usa o MESMO caminho do print**: bytes em
   `userData/screenshots` (com a poda de lá), caminho no histórico, data URL no `shotCache`
@@ -206,9 +230,23 @@ que a ausência dele.
   Limite conhecido: mensagens do ASSISTENTE não são podadas (só as `tool`), então o
   `content` e os argumentos de `tool_call` — o conteúdo de um `write_file`, por exemplo —
   formam um piso que a poda não alcança; nas conversas medidas esse piso chegou a 59k tokens.
-- **Escrita sem leitura**: `write_file` recusa sobrescrever arquivo existente que não está em
-  `arquivosLidos` (a checagem mora no main, junto da escrita, para não haver intervalo entre
-  verificar e gravar). Criar arquivo novo passa livre. O conjunto zera ao trocar de chat.
+- **Escrita sem leitura, ou com leitura velha**: `write_file` recusa sobrescrever arquivo
+  existente que não está em `arquivosLidos` — e também o que MUDOU em disco depois da leitura
+  (usuário editou, formatador rodou, "Desfazer" clicado): o mapa guarda o `mtimeMs` do que o
+  agente viu e o main compara (`expectedMtimeMs`, `stale: true`). A checagem mora no main,
+  junto da escrita, para não haver intervalo entre verificar e gravar. Todo handler que grava
+  devolve o `mtimeMs` novo, e o renderer atualiza o mapa — senão a trava acusaria a própria
+  edição do agente. `edit_file` só ATUALIZA quem já estava no mapa: editar um trecho não prova
+  que o arquivo inteiro foi visto. A chave é `chaveArquivo` (minúsculas quando o caminho tem
+  letra de unidade: no Windows "SRC/x.ts" e "src/x.ts" são o mesmo arquivo). Criar arquivo
+  novo passa livre. O mapa zera ao trocar de chat.
+- **Releitura sem mudança vira aviso**: `leiturasEntregues` guarda, por janela pedida
+  (caminho + offset/limit/char_offset/query), o `mtimeMs`/tamanho e o `tool_call_id` que
+  entregou o conteúdo. Mesma janela, arquivo igual e mensagem ainda VISÍVEL → volta
+  `{unchanged: true}` com o `history:<id>` de reserva. "Visível" é estar depois das marcas
+  `podaManualAte`/`podaAutoAte`: antes delas o conteúdo já vai ao servidor como aviso de
+  compactado, e o "use o resultado anterior" apontaria para o nada. Sem `toolCallId` (harness
+  de teste) não há deduplicação.
 - **Janela de console no Windows**: `windowsHide: true` sozinho NÃO esconde nada quando o
   spawn também usa `detached: true`. `detached` vira `DETACHED_PROCESS`, e o `CreateProcess`
   ignora o `CREATE_NO_WINDOW` (o que o `windowsHide` liga) quando os dois vêm juntos — sem
@@ -217,12 +255,25 @@ que a ausência dele.
   windowsHide:true` abre 0. Por isso o `execute-command` só usa `detached` fora do Windows —
   os dois motivos do `detached` são POSIX (sudo e grupo de processos), e quem derruba a
   árvore no Windows é o `taskkill /T` do `killTree`. Não volte a ligar `detached` lá.
-- **Saída de comando cortada**: `execute_command`/`read_process_output`/`wait_for_process`
-  passam a saída pelo `cortaSaida` (corte no meio, `MAX_CMD_STDOUT_CHARS`/`MAX_CMD_STDERR_CHARS`).
-  O marcador é em INGLÊS e diz o que fazer ("re-run narrowing the output with head/tail/findstr"),
-  porque quem lê é o modelo: com o marcador mudo ele repetia o comando despejando em arquivo.
-  Os tetos eram 3000/2500 e cortavam a saída de um `dir` ou de um teste no meio — economia que
-  saía cara, porque o contorno gastava mais tokens do que o corte poupava.
+- **Saída de comando**: `execute_command`/`read_process_output`/`wait_for_process` passam por
+  `saidaDeProcesso` no renderer: `cleanTerminalOutput` tira cor ANSI, redesenho de barra de
+  progresso (`\r`: fica o último, que é o que o terminal mostraria), CRLF (no JSON cada `\r\n`
+  custa 4 caracteres) e linhas repetidas em sequência; campos vazios e o eco do comando saem.
+  O main ainda liga `NO_COLOR=1`. Saída grande não é cortada: vai para o `ToolResultStore` e
+  volta por `read_tool_result`. O antigo `cortaSaida` com teto de 3000 caracteres cortava um
+  `dir` ou um teste no meio, e o contorno (repetir o comando despejando em arquivo) gastava
+  mais tokens do que o corte poupava.
+- **Busca e listagem vão ao modelo em TEXTO**: JSON com as mesmas chaves repetidas em cada
+  item custava mais que o conteúdo. `formatSearch` agrupa por arquivo no formato do `rg`
+  (`N:` casou, `N-` contexto, `--` entre blocos, contexto sobreposto uma vez só) e
+  `formatTree` escreve o caminho da pasta uma vez. Medido neste repositório: busca de 6,5–8,7
+  mil caracteres caiu para 2,5–3,5 mil; `output_mode: "files"` para 64. O IPC continua
+  estruturado — quem formata é o renderer. O `ToolResultStore` guarda string como está (sem
+  `JSON.stringify`, que escaparia cada aspa e quebra) e o `restore` aceita texto não-JSON.
+- **Custo fixo por requisição**: `tools` + `system_prompt` vão em TODA requisição. Eram 21,3
+  mil caracteres; a revisão levou a 17,2 mil tirando do prompt o que a descrição da
+  ferramenta já dizia. Ao mexer numa descrição, meça (o comprimento de
+  `JSON.stringify(tools)`) e não repita a regra nos dois lugares.
 - **Processos longos**: comandos que passam de `cmdTimeout` viram background e retornam PID,
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava

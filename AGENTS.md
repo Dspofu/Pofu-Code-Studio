@@ -25,6 +25,9 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `src/main.ts` | Processo main: janela, menu, **todos os 25 handlers IPC** (fs, processos, HTTP, captura, busca, store) |
 | `src/preload.cts` | Ponte `contextBridge` → `window.electronAPI` (`.cts` porque o preload é CommonJS → `preload.cjs`) |
 | `src/renderer.ts` | Cérebro: estado, loop do agente, `tools`, streaming, cards de ferramenta, diff, menções `@`, anexos, workspace |
+| `src/edit-diagnostics.ts` | Diagnóstico de edições sem correspondência; sugestões nunca escrevem no arquivo |
+| `src/edit-match.ts` | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e lote `edits` atômico |
+| `src/tool-output.ts` | Formato compacto ao modelo: busca agrupada, listagens, terminal limpo, glob e sugestão de caminho |
 | `src/tool-results.ts` | Recorte de arquivos, schemas de leitura e cache recuperável de resultados |
 | `src/providers.ts` | Migração da conexão antiga, validação e seleção de perfis de provedor |
 | `src/mention-highlight.ts`, `src/workspace-path.ts` | Menções azuis sem alterar o textarea e resolução de caminhos do projeto |
@@ -73,13 +76,13 @@ Cada um tem correspondente 1:1 em `src/preload.cts` e assinatura em `ElectronAPI
 |---|---|
 | `select-folder` | Diálogo de pasta |
 | `list-files` | Lista arquivos **com tamanho** (evita round-trip para o agente decidir se lê) |
-| `read-file` | Leitura em **janelas** — recorte por orçamento de contexto, sem teto fixo de linhas; cursor `char_offset` |
+| `read-file` | Leitura em **janelas** — recorte por orçamento de contexto, sem teto fixo de linhas; cursor `char_offset`; devolve `mtimeMs`; "não encontrado" traz `did_you_mean` |
 | `get-diff` / `undo-change` | Remonta diff de instantâneo / desfaz (e grava outro instantâneo → refazer) |
-| `write-file` / `delete-file` | **Trava**: recusa sobrescrever/apagar arquivo não lido (`arquivosLidos`) |
-| `edit-file` | Troca de trecho exato, `replaceAll` opcional |
+| `write-file` / `delete-file` | **Trava**: recusa sobrescrever/apagar arquivo não lido (`arquivosLidos`); `write-file` também recusa se mudou em disco depois da leitura (`expectedMtimeMs`) |
+| `edit-file` | `applyEdits` de `edit-match.ts`: trecho exato ou tolerante a espaço (único), `replaceAll`, lote `opts.edits` atômico |
 | `create-directory` | Cria pasta |
 | `get-app-info` | Lê `package.json` (`../package.json`, pois main roda de out/): githubUrl, version, name |
-| `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (contagem total, cap 10000) além de `matches` (limitados a max) |
+| `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (cap 10000), `fileCounts` e `matches` (limitados a max); `opts.mode` `files`/`count` pula o texto |
 | `list-tree` | Árvore do workspace (para o menu `@`) |
 | `execute-command` | Spawn; Windows: `cmd.exe` + `detached:false` + `windowsHide` (ver CLAUDE.md); background só por READY_PATTERNS, idle **pós-primeira-saída** ou timeout |
 | `read-process-output` / `wait-for-process` / `list-processes` / `stop-process` / `clear-finished-processes` | Gestão dos processos em segundo plano |
@@ -218,6 +221,20 @@ Resultados paginados guardam a saída íntegra em `ChatMessage.retainedResult`, 
 no histórico local: preserve a exclusão desse campo em `toApiMessages`.
 O destaque azul usa uma camada atrás do textarea nativo; sincronize-a após mudanças
 programáticas de valor ou tamanho. Menções com espaços usam `@"caminho com espaços"`.
+
+## Ferramentas e tokens: setembro de 2026
+
+Revisão com o Hermes Agent como referência (detalhes e medições em CLAUDE.md e README).
+- Busca e listagem vão ao modelo em **texto** (`tool-output.ts`), não JSON. O IPC continua
+  estruturado; quem formata é o renderer. Testes de integração leem o texto.
+- `ToolResultStore.encode` aceita string e guarda como está; `restore` aceita texto que não
+  é JSON. Não volte a passar texto por `JSON.stringify` antes de guardar.
+- `runTool(name, args, workspace, toolCallId)`: o id alimenta `leiturasEntregues` (releitura
+  sem mudança vira aviso). Sem id, não há deduplicação — é o caso do harness de testes.
+- `arquivosLidos` é `Map<chave, mtimeMs>` com `chaveArquivo` (minúsculas quando o caminho tem
+  letra de unidade). Todo handler que grava devolve `mtimeMs`, e o renderer atualiza o mapa.
+- Cada caractere de `tools`/`system_prompt` vai em toda requisição: meça com um script antes
+  de alongar uma descrição, e não repita no prompt o que a descrição da ferramenta já diz.
 
 ## Provedores e thinking
 

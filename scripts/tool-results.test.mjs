@@ -102,3 +102,19 @@ test('erro enorme não impede avanço do cursor', () => {
   assert.ok(first.next_offset > 0);
   assert.ok(first.content.length > 0);
 });
+
+test('saída em texto é guardada sem JSON por cima e sobrevive à restauração', () => {
+  const texto = 'src/a.ts\n10:  const "x" = 1;\n' + 'y'.repeat(5000);
+  const store = new ToolResultStore();
+  assert.equal(store.encode('curto "sem escape"', 1000, 'chat'), 'curto "sem escape"');
+  const page = JSON.parse(store.encode(texto, 1500, 'chat'));
+  assert.equal(page.content, texto.slice(0, page.content.length));
+  const outro = new ToolResultStore();
+  outro.restore(page.result_id, texto, 'chat');
+  let cursor = 0, junto = '';
+  while (cursor !== null) {
+    const p = JSON.parse(outro.read(page.result_id, cursor, 1500, 'chat'));
+    junto += p.content; cursor = p.next_offset;
+  }
+  assert.equal(junto, texto);
+});

@@ -267,7 +267,7 @@ interface ElectronAPI {
   listTree(rootPath: string): Promise<any>;
   readFile(filePath: string, opts?: any): Promise<any>;
   writeFile(filePath: string, content: string, opts?: any): Promise<any>;
-  editFile(filePath: string, oldText: string, newText: string, replaceAll?: boolean): Promise<any>;
+  editFile(filePath: string, oldText: string, newText: string, replaceAll?: boolean, opts?: any): Promise<any>;
   searchFiles(rootPath: string, opts?: any): Promise<any>;
   createDirectory(dirPath: string): Promise<any>;
   deleteFile(filePath: string, opts?: any): Promise<any>;

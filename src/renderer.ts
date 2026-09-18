@@ -3,6 +3,7 @@ import { mountMentionHighlight, paintMentions } from './mention-highlight.js';
 import { activateProvider, migrateProviders, rememberProvider, validateProvider, type ProviderConfig } from './providers.js';
 import { mountSlashCommands } from './slash-commands.js';
 import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
+import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
@@ -151,13 +152,17 @@ function resolveConfirm(decision) {
   }
 }
 
+function commandLabel(args) {
+  return (args.command || '') + (Array.isArray(args.args) ? ' ' + args.args.map(arg => JSON.stringify(arg)).join(' ') : '');
+}
+
 function showConfirmModal(name, args) {
   const modal = el('confirm-modal');
   const label = el('confirm-label');
   const cmd = el('confirm-command');
   if (name === 'execute_command') {
     label.innerText = 'Executar comando no terminal?';
-    cmd.innerText = '$ ' + (args.command || '');
+    cmd.innerText = '$ ' + commandLabel(args);
   } else if (name === 'delete_file') {
     label.innerText = 'Apagar arquivo?';
     cmd.innerText = '🗑 ' + (args.filename || '');
@@ -1172,7 +1177,8 @@ function switchChat(id) {
   state.activeChatId = id;
   filaMensagens = [];        // a fila é da conversa que estava aberta, não vai junto
   renderFila();
-  arquivosLidos = new Set(); // o que foi lido vale por conversa
+  arquivosLidos = new Map(); // o que foi lido vale por conversa
+  leiturasEntregues = new Map();
   ultimaPoda = 0;
   avisouPoda = false;
   renderChatList();
@@ -1492,6 +1498,17 @@ function attachMsgAction(msgDiv, kind, index) {
   msgDiv.appendChild(bar);
 }
 
+// As marcas de poda são ÍNDICES em chat.messages, então truncar o histórico tem de levá-las
+// junto. Uma marca velha maior que o histórico novo fazia o `Math.min(marca, length)` da poda
+// virar "compactar tudo": cada resultado de ferramenta chegava ao modelo já como aviso de
+// compactado, ele pedia de volta com read_tool_result, recebia compactado de novo e acabava
+// lendo arquivo pelo terminal (visto num chat de 1794 mensagens reeditado desde a primeira).
+function truncaHistorico(chat, n) {
+  chat.messages = chat.messages.slice(0, n);
+  if ((chat.podaManualAte || 0) > n) chat.podaManualAte = n;
+  if ((chat.podaAutoAte || 0) > n) chat.podaAutoAte = n;
+}
+
 // Reenvia a partir de uma mensagem do usuário: coloca no composer e trunca o histórico
 function editUserMessage(index) {
   if (isRunning) return;
@@ -1502,7 +1519,7 @@ function editUserMessage(index) {
   input.value = msg.content || '';
   pendingAttachments = (msg.attachments || []).map(a => ({ ...a }));
   renderAttachments();
-  chat.messages = chat.messages.slice(0, index); // remove esta solicitação e tudo depois
+  truncaHistorico(chat, index); // remove esta solicitação e tudo depois
   renderActiveChat();
   persist();
   input.focus();
@@ -1518,7 +1535,7 @@ async function regenerateFromAssistant(index) {
     if (chat.messages[i].role === 'user') { userIdx = i; break; }
   }
   if (userIdx === -1) return;
-  chat.messages = chat.messages.slice(0, userIdx + 1); // mantém até a solicitação do usuário
+  truncaHistorico(chat, userIdx + 1); // mantém até a solicitação do usuário
   // O await não é decoração: numa conversa longa o render espera um quadro (ver
   // renderActiveChat) e limpa a caixa DEPOIS. Sem esperar, ele apagaria o indicador e o
   // texto que o runAgent já tivesse começado a escrever.
@@ -1570,7 +1587,7 @@ const TOOL_META = {
 function summarizeToolCall(name, args) {
   args = args || {};
   switch (name) {
-    case 'execute_command': return '$ ' + (args.command || '');
+    case 'execute_command': return '$ ' + commandLabel(args);
     case 'read_file':
       return (args.filename || '') + (args.offset > 1 ? ` (a partir da linha ${args.offset})` : '');
     case 'write_file':
@@ -1628,6 +1645,8 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
     () => '↷ O arquivo já existe e ainda não foi lido nesta conversa — o agente vai lê-lo antes de sobrescrever.'],
   [/has not been read in this conversation/i,
     () => '↷ O arquivo ainda não foi lido nesta conversa — o agente vai lê-lo antes de apagar.'],
+  [/changed on disk after you last read it/i,
+    () => '↷ O arquivo mudou em disco depois da última leitura — o agente vai relê-lo antes de sobrescrever.'],
   [/^Snippet not found/i, () => '↷ Trecho não encontrado — o agente vai reler o arquivo antes de tentar de novo.'],
   [/^The snippet appears (\d+) times/i,
     m => `↷ O trecho aparece ${m[1]} vezes no arquivo — o agente precisa de mais contexto para escolher.`],
@@ -1666,8 +1685,13 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
 
 // Uma linha, em pt-BR, para o card — nunca o `hint`.
 function erroParaTela(erro): string {
-  const texto = String(erro == null ? '' : erro).trim();
+  // Num lote do edit_file o erro vem prefixado com a posição ("edits[2]: ..."); a tabela
+  // casa a mensagem, e o número volta na frente da tradução.
+  const bruto = String(erro == null ? '' : erro).trim();
+  const lote = bruto.match(/^edits\[(\d+)\]: /);
+  const texto = lote ? bruto.slice(lote[0].length) : bruto;
   if (!texto) return '⚠ A ferramenta falhou sem dizer o motivo.';
+  if (lote) return erroParaTela(texto).replace(/^(\S+) /, `$1 Edição ${Number(lote[1]) + 1} do lote: `);
   for (const [padrao, traduz] of ERROS_NA_TELA) {
     const m = texto.match(padrao);
     if (m) return traduz(m);
@@ -1685,7 +1709,9 @@ function summarizeToolResult(name, resultStr) {
     if (resultStr.startsWith('{')) {
       try {
         const erro = JSON.parse(resultStr);
-        if (erro && erro.error) return erroParaTela(erro.error);
+        if (erro && erro.error) return erroParaTela(erro.error) +
+          (Array.isArray(erro.did_you_mean) && erro.did_you_mean.length ? `\nTalvez: ${erro.did_you_mean.join(', ')}` : '');
+        if (erro && erro.unchanged) return '↷ Sem mudanças desde a última leitura — o agente reaproveita o que já leu.';
       } catch (e) { /* não era JSON: segue como conteúdo do arquivo */ }
     }
     const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)[;\]]/);
@@ -1728,13 +1754,14 @@ function summarizeToolResult(name, resultStr) {
     }
     case 'edit_file': {
       if (!data.success) return erroParaTela(data.error);
-      const onde = data.replacements > 1 ? `${data.replacements} ocorrências` : `linha ${data.line}`;
+      const onde = data.edits_applied > 1 ? `${data.edits_applied} trechos (linhas ${data.lines_edited.join(', ')})`
+        : data.replacements > 1 ? `${data.replacements} ocorrências` : `linha ${data.line}`;
       // Só mostra o saldo quando os dois contadores vieram: sem a guarda, um campo
       // ausente vira "(NaN linha)" na tela.
       const temContagem = Number.isFinite(data.linesAfter) && Number.isFinite(data.linesBefore);
       const delta = temContagem ? data.linesAfter - data.linesBefore : 0;
       const saldo = delta === 0 ? '' : `  (${delta > 0 ? '+' : ''}${delta} linha${Math.abs(delta) > 1 ? 's' : ''})`;
-      return `✓ Editado · ${onde}${saldo}`;
+      return `✓ Editado · ${onde}${saldo}${data.matched_ignoring_whitespace ? ' · casou ignorando espaços' : ''}`;
     }
     case 'ask_user': {
       if (!data.answered) return '↷ pergunta pulada';
@@ -1756,10 +1783,11 @@ function summarizeToolResult(name, resultStr) {
     }
     case 'capture_page': {
       if (data.error) return erroParaTela(data.error);
-      const partes = [`${data.titulo || '(sem título)'} · HTTP ${data.status ?? '?'} · ${data.tamanho || ''}`];
+      const partes = [`${data.title || data.titulo || '(sem título)'} · HTTP ${data.status ?? '?'} · ${data.size || data.tamanho || ''}`];
       if (data.seletor_encontrado === false) partes.push('⚠ seletor não apareceu');
-      if (data.erro_no_script) partes.push(`⚠ erro no script: ${data.erro_no_script}`);
-      if (data.resultado_do_script !== undefined) partes.push(`script → ${data.resultado_do_script}`);
+      if (data.script_error || data.erro_no_script) partes.push(`⚠ erro no script: ${data.script_error || data.erro_no_script}`);
+      const scriptResult = data.script_result ?? data.resultado_do_script;
+      if (scriptResult !== undefined) partes.push(`script → ${typeof scriptResult === 'object' ? JSON.stringify(scriptResult) : scriptResult}`);
       if (data.erros_de_console && data.erros_de_console.length) {
         partes.push('Erros de console:\n' + data.erros_de_console.map(e => '  ' + e).join('\n'));
       }
@@ -1769,7 +1797,7 @@ function summarizeToolResult(name, resultStr) {
       return partes.join('\n');
     }
     case 'create_directory': return data.success ? '✓ Pasta criada' : erroParaTela(data.error || resultStr);
-    case 'delete_file': return data.success ? '✓ Arquivo apagado' : erroParaTela(data.error || resultStr);
+    case 'delete_file': return data.success ? (data.already_absent ? '✓ Arquivo já ausente · nenhuma alteração' : '✓ Arquivo apagado') : erroParaTela(data.error || resultStr);
     case 'stop_process': return data.success ? `✓ Processo ${data.pid} encerrado` : erroParaTela(data.error || resultStr);
     case 'web_search': {
       if (!data.success) return erroParaTela(data.error || 'falha na busca');
@@ -1787,10 +1815,11 @@ function summarizeToolResult(name, resultStr) {
     case 'fetch_url':
       if (!data.success) return erroParaTela(data.error || 'falha ao baixar');
       return `[${data.status}] ${data.url}\n\n${(data.content || '').slice(0, 1000)}${(data.content || '').length > 1000 ? '…' : ''}`;
-    case 'list_processes':
-      return Array.isArray(data)
-        ? (data.length ? data.map(p => `PID ${p.pid} · ${p.status} · ${p.uptimeSec}s · ${p.command}`).join('\n') : '(nenhum processo em segundo plano)')
-        : resultStr;
+    case 'list_processes': {
+      const list = Array.isArray(data) ? data : [...(data.running || []), ...(data.finished || [])];
+      const active = list.filter(p => p.status === 'running').length;
+      return active + ' em execução · ' + (list.length - active) + ' encerrado(s)' + (list.length ? '\n' + list.map(p => 'PID ' + p.pid + ' · ' + p.status + ' · ' + p.command).join('\n') : '');
+    }
     case 'read_process_output': {
       if (!data.success) return erroParaTela(data.error || resultStr);
       const head = `PID ${data.pid} · ${data.status} · ${data.uptimeSec}s`;
@@ -2347,17 +2376,21 @@ function clipMiddle(str, max, marcador = null) {
 // --------------------------------------------------------------------------
 //  Definição das Ferramentas expostas ao modelo
 // --------------------------------------------------------------------------
+// Cada caractere daqui vai ao modelo em TODA requisição: descrição que repete o prompt de
+// sistema, ou que narra o óbvio, é custo fixo sem retorno. O que fica é o que muda a chamada
+// que o modelo faz (quando usar, qual parâmetro, o que o resultado significa).
 const tools = [
   {
     type: 'function',
     function: {
       name: 'list_files',
-      description: 'Lists files and folders. Use recursive=true to discover project files in one call, without terminal dir/find commands. Generated/dependency folders are excluded from recursive results.',
+      description: 'Lists a folder: subfolders end with "/", files show their size. recursive=true lists every project file grouped by folder (dependency/build folders skipped). Use instead of dir/ls/find.',
       parameters: {
         type: 'object',
         properties: {
-          subpath: { type: 'string', description: 'Optional subfolder (default: workspace root)' },
-          recursive: { type: 'boolean', description: 'List project files recursively. Capped at 5000 paths; narrow subpath if capped.' }
+          subpath: { type: 'string', description: 'Folder relative to the workspace (default: root).' },
+          recursive: { type: 'boolean', description: 'All files below subpath (cap 5000).' },
+          pattern: { type: 'string', description: 'Glob filter on file names/paths, e.g. "*.test.ts", "src/**/*.css".' }
         }
       }
     }
@@ -2368,14 +2401,14 @@ const tools = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Creates a new file or COMPLETELY OVERWRITES an existing one. To change part of ' +
-        'a file that already exists, use edit_file — rewriting everything costs far more tokens and ' +
-        'the response may be cut off midway, truncating the file.',
+      description: 'Creates a file, or REPLACES an existing one entirely (it must have been read, and unchanged since). ' +
+        'To change part of a file use edit_file: rewriting pays output tokens for every unchanged line, and a long ' +
+        'output can be cut off midway, truncating the file.',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Name of the file to save' },
-          content: { type: 'string', description: 'Full content to write to the file' }
+          filename: { type: 'string', description: 'Path of the file.' },
+          content: { type: 'string', description: 'Complete file content.' }
         },
         required: ['filename', 'content']
       }
@@ -2385,19 +2418,34 @@ const tools = [
     type: 'function',
     function: {
       name: 'edit_file',
-      description: 'The DEFAULT way to change an existing file: replaces the exact snippet old_text ' +
-        'with new_text, keeping the rest of the file untouched. Read the file first and copy old_text ' +
-        'exactly as it appears (same indentation), including enough surrounding lines to make it ' +
-        'unique. Fails without changing anything if the snippet is missing or appears more than once.',
+      description: 'The DEFAULT way to change an existing file: replaces old_text with new_text and keeps the rest. ' +
+        'Copy old_text from the file with enough context to be unique; differences only in indentation or ' +
+        'whitespace are tolerated when the match is unique, and new_text is re-indented to the file. For several ' +
+        'changes in one file pass edits (applied in order, all-or-nothing) instead of calling it repeatedly. On ' +
+        'failure nothing changes: fix old_text from current_excerpt/difference (replacement_present=true means ' +
+        'new_text is already there — check before retrying).',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: 'Relative path of the file to edit' },
-          old_text: { type: 'string', description: 'Exact snippet to be replaced (copied from the file)' },
-          new_text: { type: 'string', description: 'Text that takes its place (use an empty string to delete it)' },
-          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique snippet (default: false)' }
+          filename: { type: 'string', description: 'Path of the file to edit.' },
+          old_text: { type: 'string', description: 'Snippet to replace, copied from the file.' },
+          new_text: { type: 'string', description: 'Replacement ("" deletes the snippet).' },
+          replace_all: { type: 'boolean', description: 'Replace every exact occurrence.' },
+          edits: {
+            type: 'array',
+            description: 'Several replacements in this file, instead of old_text/new_text.',
+            items: {
+              type: 'object',
+              properties: {
+                old_text: { type: 'string' },
+                new_text: { type: 'string' },
+                replace_all: { type: 'boolean' }
+              },
+              required: ['old_text', 'new_text']
+            }
+          }
         },
-        required: ['filename', 'old_text', 'new_text']
+        required: ['filename']
       }
     }
   },
@@ -2405,22 +2453,21 @@ const tools = [
     type: 'function',
     function: {
       name: 'search_files',
-      description: 'Searches for text or a pattern inside the workspace files and returns the file, ' +
-        'the line number and the line content. Includes surrounding lines. Use it to find where something is defined or used — it ' +
-        'is far cheaper than reading whole files looking for it. Skips node_modules, dist, .git and ' +
-        'binaries. The "totalFound" field gives the TOTAL number of matches (even when "matches" is ' +
-        'capped at max_results): if totalFound is much larger than max_results, refine the search ' +
-        'instead of raising the limit.',
+      description: 'Searches file contents (literal, or regex=true) and returns matches grouped by file: "N:" is a ' +
+        'matching line, "N-" is context. Far cheaper than reading files to find something. Skips node_modules, ' +
+        'dist, .git and binaries. output_mode "files" lists matching files with counts and "count" only totals — ' +
+        'use them to scope a broad search. If the total is far above what is shown, refine instead of paging.',
       parameters: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Text to search for (or a regular expression, if regex=true)' },
-          regex: { type: 'boolean', description: 'Treat query as a regular expression (default: false)' },
-          context_lines: { type: 'integer', description: 'Surrounding lines before and after each match (default 2, maximum 20). Use this instead of terminal grep/rg for context.' },
-          case_sensitive: { type: 'boolean', description: 'Match case (default: false)' },
-          file_pattern: { type: 'string', description: 'Glob-style file filter (e.g. *.js, src/**/*.test.js)' },
-          offset: { type: 'integer', description: 'Skip this many matching lines; use next_offset from a previous search.' },
-          max_results: { type: 'number', description: 'Maximum number of result lines (default 60, cap 200)' }
+          query: { type: 'string', description: 'Text to find (a regular expression if regex=true).' },
+          regex: { type: 'boolean' },
+          case_sensitive: { type: 'boolean' },
+          file_pattern: { type: 'string', description: 'Glob, e.g. *.ts or src/**/*.test.js.' },
+          context_lines: { type: 'integer', description: 'Lines around each match (default 2, max 20).' },
+          output_mode: { type: 'string', enum: ['content', 'files', 'count'], description: 'Default "content".' },
+          offset: { type: 'integer', description: 'Skip N matches (from "continue with offset").' },
+          max_results: { type: 'number', description: 'Default 60, max 200.' }
         },
         required: ['query']
       }
@@ -2430,12 +2477,10 @@ const tools = [
     type: 'function',
     function: {
       name: 'create_directory',
-      description: 'Creates a folder (and any missing parent folders) in the workspace.',
+      description: 'Creates a folder and any missing parents.',
       parameters: {
         type: 'object',
-        properties: {
-          dirname: { type: 'string', description: 'Relative path of the folder to create (e.g. src/components)' }
-        },
+        properties: { dirname: { type: 'string', description: 'Folder path, e.g. src/components.' } },
         required: ['dirname']
       }
     }
@@ -2444,14 +2489,11 @@ const tools = [
     type: 'function',
     function: {
       name: 'delete_file',
-      description: 'Deletes a file from the workspace. Use it ONLY when the user asked for the removal, ' +
-        'or for a temporary file you created yourself. Never delete an existing file to "start over" ' +
-        'after a failed edit — to fix content, use edit_file or write_file.',
+      description: 'Deletes a file. ONLY when the user asked for it, or for a temporary file you created — ' +
+        'never to "start over" after a failed edit.',
       parameters: {
         type: 'object',
-        properties: {
-          filename: { type: 'string', description: 'Name or relative path of the file to delete' }
-        },
+        properties: { filename: { type: 'string', description: 'Path of the file.' } },
         required: ['filename']
       }
     }
@@ -2460,17 +2502,16 @@ const tools = [
     type: 'function',
     function: {
       name: 'execute_command',
-      description: 'Runs a shell command in the workspace. Commands that finish return stdout/stderr. ' +
-        'Servers, APIs and watchers are detected automatically: as soon as they are ready (log banner or ' +
-        'idleness) they return a PID and keep running in the BACKGROUND without blocking the chat — you ' +
-        'can go on running other commands (curl, tests, and so on) while the server is up. Avoid sudo. ' +
-        'Chaining commands: on Windows the shell is cmd.exe — use "&" or "&&" (";" is read as an argument ' +
-        'and breaks the command); on Linux/macOS it is bash, where ";" and "&&" both work. If you really ' +
-        'need ";" on Windows, run "powershell -NoProfile -Command \"a; b\"".',
+      description: 'Runs a command in the workspace and returns exit code, stdout and stderr. Servers and watchers ' +
+        'go to the BACKGROUND by themselves once ready and return a PID — do not append "&". Shell: cmd.exe on ' +
+        'Windows (chain with & or &&; ";" breaks the command), bash elsewhere. For quotes, regexes or inline ' +
+        'scripts pass the executable in command and each argument in args: no shell parsing, no temp files. ' +
+        'Avoid sudo and interactive prompts.',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'Shell command to run (e.g. npm run dev, node app.js, curl localhost:3000)' }
+          command: { type: 'string', description: 'Shell command, or the executable when args is given.' },
+          args: { type: 'array', items: { type: 'string' }, description: 'Literal arguments; any value (even []) disables the shell. Use shell mode for .cmd/.bat.' }
         },
         required: ['command']
       }
@@ -2480,13 +2521,10 @@ const tools = [
     type: 'function',
     function: {
       name: 'read_process_output',
-      description: 'Reads the logs (stdout/stderr) collected so far from a background process, by PID. ' +
-        'Useful to check whether a server started correctly, or to debug errors.',
+      description: 'Output collected so far from a background process.',
       parameters: {
         type: 'object',
-        properties: {
-          pid: { type: 'number', description: 'PID returned by execute_command' }
-        },
+        properties: { pid: { type: 'number', description: 'PID from execute_command.' } },
         required: ['pid']
       }
     }
@@ -2495,15 +2533,13 @@ const tools = [
     type: 'function',
     function: {
       name: 'wait_for_process',
-      description: 'WAITS for a background process to FINISH and returns its exit code with the full ' +
-        'output. Use it whenever you need the result of something slow (npm install, a build, a test ' +
-        'suite) instead of calling read_process_output over and over to ask whether it is done — that ' +
-        'wastes calls and speeds up nothing. For servers, which never finish, do NOT wait: keep working.',
+      description: 'WAITS for a background process to exit and returns its exit code and output — one call ' +
+        'instead of polling read_process_output. Not for servers: they never exit.',
       parameters: {
         type: 'object',
         properties: {
-          pid: { type: 'number', description: 'PID returned by execute_command' },
-          timeout_ms: { type: 'number', description: 'Maximum time to wait, in ms (default 120000, cap 600000)' }
+          pid: { type: 'number', description: 'PID from execute_command.' },
+          timeout_ms: { type: 'number', description: 'Default 120000, max 600000.' }
         },
         required: ['pid']
       }
@@ -2513,7 +2549,7 @@ const tools = [
     type: 'function',
     function: {
       name: 'list_processes',
-      description: 'Lists the background processes (PID, command, status, uptime).',
+      description: 'Lists managed processes, running and finished. Check it before starting another server.',
       parameters: { type: 'object', properties: {} }
     }
   },
@@ -2521,12 +2557,10 @@ const tools = [
     type: 'function',
     function: {
       name: 'stop_process',
-      description: 'Terminates a background process (and its process group) by the PID returned by execute_command.',
+      description: 'Stops a background process and its children.',
       parameters: {
         type: 'object',
-        properties: {
-          pid: { type: 'number', description: 'PID of the process to terminate' }
-        },
+        properties: { pid: { type: 'number', description: 'PID from execute_command.' } },
         required: ['pid']
       }
     }
@@ -2535,17 +2569,16 @@ const tools = [
     type: 'function',
     function: {
       name: 'http_request',
-      description: 'Makes an HTTP request and returns status, headers and body separately. Use it to ' +
-        'validate APIs (including ones you started yourself with execute_command): check the status AND ' +
-        'the body, and try invalid input too, to see whether the error you get back is the expected one.',
+      description: 'Makes an HTTP request and returns status, key headers and body. To validate an API check the ' +
+        'status AND the body, and try an invalid input too.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'Full URL (e.g. http://localhost:3000/api/items)' },
-          method: { type: 'string', description: 'GET, POST, PUT, PATCH, DELETE… (default: GET)' },
-          headers: { type: 'object', description: 'Extra headers, e.g. { "Authorization": "Bearer x" }' },
-          body: { type: 'string', description: 'Request body (JSON as a string). Content-Type: application/json is assumed when it looks like JSON.' },
-          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 15000)' }
+          url: { type: 'string', description: 'Full URL, e.g. http://localhost:3000/api/items.' },
+          method: { type: 'string', description: 'Default GET.' },
+          headers: { type: 'object' },
+          body: { type: 'string', description: 'Request body; JSON content-type is assumed when it looks like JSON.' },
+          timeout_ms: { type: 'number', description: 'Default 15000.' }
         },
         required: ['url']
       }
@@ -2555,21 +2588,20 @@ const tools = [
     type: 'function',
     function: {
       name: 'capture_page',
-      description: 'Opens a URL in a hidden browser, takes a SCREENSHOT and returns what happened: ' +
-        'console errors, failed requests, the page title and its visible text. Use it to visually verify ' +
-        'pages and interfaces you created or changed, and to debug JavaScript errors that never show up ' +
-        'in the terminal. The server has to be up.',
+      description: 'Opens a URL in a hidden browser, takes a SCREENSHOT and returns title, visible text, console ' +
+        'errors and failed requests. Use it to verify pages you built and to catch JS errors that never reach the ' +
+        'terminal. The server must be running.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'URL to open (e.g. http://localhost:5173)' },
-          width: { type: 'number', description: 'Window width in px (default 1280)' },
-          height: { type: 'number', description: 'Window height in px (default 800)' },
-          wait_ms: { type: 'number', description: 'Wait after load, so the page can mount (default 700)' },
-          full_page: { type: 'boolean', description: 'Captures the WHOLE PAGE, not just the first fold. Use it when validating a layout — without it you never see the footer or anything below the scroll.' },
-          crop_selector: { type: 'string', description: 'Crops the capture to this CSS element and sends it at FULL size. Use it whenever the task is about DETAIL (alignment, spacing, overlap, crooked text): in a full-page screenshot the image is scaled down and exactly that kind of defect disappears. E.g. ".wheel", "#header".' },
-          selector: { type: 'string', description: 'Waits for this CSS selector to appear before the screenshot (e.g. #app .list)' },
-          script: { type: 'string', description: 'JavaScript run on the page BEFORE the screenshot, to interact or measure. Use "return" to send a value back. E.g. document.querySelector("#save").click(); return document.body.innerText;' }
+          url: { type: 'string' },
+          width: { type: 'number', description: 'Default 1280.' },
+          height: { type: 'number', description: 'Default 800.' },
+          wait_ms: { type: 'number', description: 'Extra wait after load (default 700).' },
+          full_page: { type: 'boolean', description: 'Whole page instead of the first fold — needed to validate a layout.' },
+          crop_selector: { type: 'string', description: 'CSS element to crop and send at FULL size. Use it for detail (alignment, spacing, overlap): such defects vanish in the scaled-down full screenshot.' },
+          selector: { type: 'string', description: 'Wait for this CSS selector before capturing.' },
+          script: { type: 'string', description: 'JavaScript run on the page before capturing (click, fill, measure); "return" a value to get it back.' }
         },
         required: ['url']
       }
@@ -2579,26 +2611,17 @@ const tools = [
     type: 'function',
     function: {
       name: 'ask_user',
-      description: 'Asks the user a question and WAITS for the answer, shown as a card with ' +
-        'clickable options. Use it only when the request is genuinely ambiguous AND the readings ' +
-        'lead to different work — never for something you can settle by reading the project, and ' +
-        'never to ask permission for what you were already asked to do. Prefer ONE question with ' +
-        '2 to 4 concrete options over a paragraph of open questions. Do everything that does not ' +
-        'depend on the answer BEFORE asking. The user may skip: if that happens, decide for ' +
-        'yourself, say which assumption you made, and carry on.',
+      description: 'Asks the user and WAITS for the answer, shown with clickable options. Only for genuine ' +
+        'ambiguity where the readings lead to different work — never for what the project can answer, nor to ' +
+        'ask permission for what you were asked to do. One question with 2-4 concrete options; do the ' +
+        'independent work first. If the user skips, decide, state the assumption and carry on.',
       parameters: {
         type: 'object',
         properties: {
-          question: { type: 'string', description: 'The question, complete and specific.' },
-          options: {
-            type: 'array',
-            items: { type: 'string' },
-            description: 'The choices, 2 to 4 of them, each a short label. They must be real ' +
-              'alternatives, not "yes/no" for something you should decide yourself. Leave it out ' +
-              'for an open question and the user answers in free text.'
-          },
-          multi_select: { type: 'boolean', description: 'Let the user pick more than one option (default: false).' },
-          header: { type: 'string', description: 'Very short label for the card, up to 24 characters (e.g. "Database", "Approach").' }
+          question: { type: 'string' },
+          options: { type: 'array', items: { type: 'string' }, description: 'Short labels, 2-4 real alternatives. Omit for a free-text answer.' },
+          multi_select: { type: 'boolean' },
+          header: { type: 'string', description: 'Card label, up to 24 characters.' }
         },
         required: ['question']
       }
@@ -2725,16 +2748,49 @@ async function hydrateShots(messages) {
   }
 }
 
-// Arquivos que o agente já leu (ou escreveu) nesta sessão. Serve para barrar um
-// write_file que sobrescreveria conteúdo que ele nunca viu. Zera ao trocar de chat,
-// porque quem manda é o que está no histórico da conversa atual.
-let arquivosLidos = new Set();
+// Arquivos que o agente já leu (ou escreveu) nesta conversa, com o mtime do que ele viu.
+// Barra o write_file que sobrescreveria conteúdo nunca visto — ou visto numa versão que
+// mudou depois. Zera ao trocar de chat, porque quem manda é o histórico da conversa atual.
+let arquivosLidos = new Map<string, number>();
+// Janela de leitura → estado do arquivo e a chamada que entregou o conteúdo. Reler a mesma
+// janela de um arquivo que não mudou devolve um aviso curto em vez do conteúdo de novo
+// (ideia do Hermes): o modelo relia por insegurança, e cada releitura custava o arquivo
+// inteiro em tokens de entrada. Só vale enquanto aquela mensagem não foi compactada.
+let leiturasEntregues = new Map<string, { mtimeMs: number; size: number; toolCallId: string }>();
+// No Windows o mesmo arquivo chega com caixa diferente ("SRC/x.ts" e "src/x.ts"); é a
+// letra de unidade no caminho que diz que a caixa não importa.
+const chaveArquivo = (caminho: string) => /^[a-zA-Z]:\//.test(caminho) ? caminho.toLowerCase() : caminho;
+
+// Antes das marcas de poda a mensagem já vai ao servidor como aviso de "compactado": aí o
+// aviso de "sem mudanças" apontaria para um conteúdo que o modelo não tem mais.
+function leituraAindaVisivel(toolCallId: string) {
+  const chat = activeChat();
+  if (!chat) return false;
+  const i = chat.messages.findIndex(m => m.role === 'tool' && m.tool_call_id === toolCallId);
+  return i >= 0 && i >= Math.max(chat.podaManualAte || 0, chat.podaAutoAte || 0);
+}
+
+// Saída de processo para o MODELO: terminal limpo e sem campo vazio. O eco do comando sai
+// do resultado do execute_command porque o modelo acabou de escrevê-lo — e um `node -e`
+// longo custaria de novo em tokens a cada execução.
+function saidaDeProcesso(res, semComando = false) {
+  if (!res || typeof res !== 'object') return res;
+  const out = { ...res };
+  for (const k of ['stdout', 'stderr']) {
+    if (typeof out[k] === 'string') out[k] = cleanTerminalOutput(out[k]);
+    if (out[k] === '') delete out[k];
+  }
+  for (const k of ['stdoutDropped', 'stderrDropped']) if (!out[k]) delete out[k];
+  if (out.error == null) delete out.error;
+  if (semComando) delete out.command;
+  return out;
+}
 
 // Separa o que vai para o MODELO do que vai para a TELA. O diff é do usuário: mandá-lo
 // ao modelo repetiria o conteúdo que ele acabou de escrever, dobrando o custo em contexto.
 function comAlteracao(res, arquivo, extras: Partial<Alteracao> = {}): ToolOutput {
-  const { diff, snapshotId, ...paraModelo } = res;
-  const saida: ToolOutput = { text: JSON.stringify(paraModelo) };
+  const { diff, snapshotId, mtimeMs, ...paraModelo } = res;
+  const saida: ToolOutput = { text: JSON.stringify({ operation_status: res.success === false ? 'failed' : res.already_absent ? 'already_absent' : 'completed', ...paraModelo }) };
   if (snapshotId) {
     saida.alteracao = {
       snapshotId, arquivo,
@@ -2769,7 +2825,7 @@ function retainToolOutput(message: ChatMessage) {
   } catch { /* leitura de arquivo pode ser texto puro */ }
 }
 
-async function runTool(name, args, workspace) {
+async function runTool(name, args, workspace, toolCallId = '') {
   try {
     if (name === 'read_tool_result') {
       if (String(args.result_id).startsWith('history:')) {
@@ -2781,7 +2837,11 @@ async function runTool(name, args, workspace) {
           resultStore.restore(saved.id, saved.text, state.activeChatId);
           return resultStore.read(saved.id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
         }
-        const retained = JSON.parse(resultStore.encode({ original_tool_output: message.content }, 1, state.activeChatId));
+        // O texto original entra como está: embrulhado num objeto ele virava JSON dentro de
+        // JSON, com cada aspa escapada duas vezes (6,9 mil caracteres para devolver 4,2 mil).
+        const original = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
+        if (original.length < 2) return JSON.stringify({ result_id: args.result_id, content: original });
+        const retained = JSON.parse(resultStore.encode(original, 1, state.activeChatId));
         if (retained.error) return JSON.stringify(retained);
         return resultStore.read(retained.result_id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
       }
@@ -2793,28 +2853,35 @@ async function runTool(name, args, workspace) {
       const dir = workspacePath(workspace, args.subpath || '');
       if (args.recursive) {
         const tree = await window.electronAPI.listTree(dir);
-        return encodeToolResult({ ...tree, note: tree.capped ? 'Path listing capped at 5000; narrow subpath to inspect the remaining folders.' : undefined });
+        return encodeToolResult(formatTree(tree.files, { capped: tree.capped, pattern: args.pattern }));
       }
-      const files = await window.electronAPI.listFiles(dir);
-      return encodeToolResult(files);
+      return encodeToolResult(formatListing(await window.electronAPI.listFiles(dir), args.pattern));
     }
     if (name === 'read_file') {
       const budget = toolBudget();
       const alvo = workspacePath(workspace, args.filename);
       const res = await window.electronAPI.readFile(alvo, {
         offset: args.offset, limit: args.limit, char_offset: args.char_offset, query: args.query,
-        maxChars: budget
+        maxChars: budget, workspace
       });
-      if (res && res.success) arquivosLidos.add(alvo);
+      if (!res || !res.success) return formatFileWindow(args.filename, res);
+      const chave = chaveArquivo(alvo);
+      arquivosLidos.set(chave, res.mtimeMs);
+      const janela = [chave, args.offset, args.limit, args.char_offset, args.query].join('|');
+      const antes = leiturasEntregues.get(janela);
+      if (antes && antes.mtimeMs === res.mtimeMs && antes.size === res.size && leituraAindaVisivel(antes.toolCallId))
+        return JSON.stringify({ unchanged: true, note: `read_file already returned this range (tool call ${antes.toolCallId}) and the file has not changed since. Use that result instead of re-reading; if it is no longer in context, call read_tool_result with result_id "history:${antes.toolCallId}".` });
+      if (toolCallId) leiturasEntregues.set(janela, { mtimeMs: res.mtimeMs, size: res.size, toolCallId });
       return formatFileWindow(args.filename, res);
     }
     if (name === 'write_file') {
       const alvo = workspacePath(workspace, args.filename);
+      const chave = chaveArquivo(alvo);
       const res = await window.electronAPI.writeFile(alvo, args.content ?? '', {
-        requireRead: !arquivosLidos.has(alvo)
+        requireRead: !arquivosLidos.has(chave), expectedMtimeMs: arquivosLidos.get(chave)
       });
       // Depois de escrever, o agente conhece o conteúdo: as próximas escritas passam direto.
-      if (res.success) arquivosLidos.add(alvo);
+      if (res.success) arquivosLidos.set(chave, res.mtimeMs);
       // Um arquivo que já existia e encolheu muito quase sempre veio de uma reescrita
       // feita a partir de leitura parcial. Avisar aqui é o último ponto em que dá
       // para o modelo perceber e restaurar o conteúdo.
@@ -2825,9 +2892,13 @@ async function runTool(name, args, workspace) {
       return comAlteracao(res, args.filename);
     }
     if (name === 'edit_file') {
-      const res = await window.electronAPI.editFile(
-        workspacePath(workspace, args.filename), args.old_text, args.new_text ?? '', !!args.replace_all
-      );
+      const alvo = workspacePath(workspace, args.filename);
+      const res = await window.electronAPI.editFile(alvo, args.old_text, args.new_text ?? '', !!args.replace_all,
+        { edits: Array.isArray(args.edits) && args.edits.length ? args.edits : undefined });
+      // Editar não prova que o agente viu o arquivo inteiro, então não libera o write_file;
+      // mas se ele já tinha lido, o mtime novo é obra dele — senão a trava acusaria a própria edição.
+      const chave = chaveArquivo(alvo);
+      if (res.success && arquivosLidos.has(chave)) arquivosLidos.set(chave, res.mtimeMs);
       return comAlteracao(res, args.filename);
     }
     if (name === 'ask_user') {
@@ -2838,9 +2909,10 @@ async function runTool(name, args, workspace) {
     if (name === 'search_files') {
       const res = await window.electronAPI.searchFiles(workspace, {
         query: args.query, regex: !!args.regex, caseSensitive: !!args.case_sensitive,
-        filePattern: args.file_pattern, maxResults: args.max_results, offset: args.offset, contextLines: args.context_lines
+        filePattern: args.file_pattern, maxResults: args.max_results, offset: args.offset, contextLines: args.context_lines,
+        mode: args.output_mode
       });
-      return encodeToolResult(res);
+      return encodeToolResult(formatSearch(res));
     }
     if (name === 'create_directory') {
       const res = await window.electronAPI.createDirectory(workspacePath(workspace, args.dirname));
@@ -2848,26 +2920,30 @@ async function runTool(name, args, workspace) {
     }
     if (name === 'delete_file') {
       const alvo = workspacePath(workspace, args.filename);
-      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(alvo) });
+      const res = await window.electronAPI.deleteFile(alvo, { requireRead: !arquivosLidos.has(chaveArquivo(alvo)) });
+      if (res.success) arquivosLidos.delete(chaveArquivo(alvo));
       return comAlteracao(res, args.filename, { apagado: true, removidas: res.deletedLines || 0 });
     }
     if (name === 'execute_command') {
       const timeoutMs = (state.settings.cmdTimeout || 25) * 1000;
       const res = await window.electronAPI.executeCommand(args.command, workspace, {
-        timeoutMs,
+        timeoutMs, args: args.args,
         hideConsole: state.settings.hideCommandConsole !== false
       });
-      return encodeToolResult(res);
+      return encodeToolResult(saidaDeProcesso(res, true));
     }
     if (name === 'read_process_output') {
-      return encodeToolResult(await window.electronAPI.readProcessOutput(args.pid));
+      return encodeToolResult(saidaDeProcesso(await window.electronAPI.readProcessOutput(args.pid)));
     }
     if (name === 'wait_for_process') {
-      return encodeToolResult(await window.electronAPI.waitForProcess(args.pid, args.timeout_ms));
+      return encodeToolResult(saidaDeProcesso(await window.electronAPI.waitForProcess(args.pid, args.timeout_ms)));
     }
     if (name === 'list_processes') {
       const res = await window.electronAPI.listProcesses();
-      return JSON.stringify(res);
+      const running = res.filter(p => p.status === 'running');
+      const finished = res.filter(p => p.status !== 'running');
+      return JSON.stringify({ success: true, running_count: running.length, running, finished_count: finished.length, finished,
+        note: running.length ? 'The processes in running are active. Do not start duplicate servers; inspect their output or test the URL first.' : 'No running processes are registered in this app session. This does not prove that an external server is offline; test its URL before starting another.' });
     }
     if (name === 'stop_process') {
       const res = await window.electronAPI.stopProcess(args.pid);
@@ -2910,7 +2986,14 @@ async function runTool(name, args, workspace) {
       if (args.selector) resumo.selector_found = res.selectorFound;
       if (res.recorte) resumo.cropped_to = res.recorte;
       if (res.recorteFalhou) resumo.crop_warning = res.recorteFalhou;
-      if (res.scriptResult !== undefined) resumo.script_result = res.scriptResult;
+      if (res.scriptResult !== undefined) {
+        resumo.script_result = res.scriptResult;
+        try {
+          const parsed = JSON.parse(res.scriptResult);
+          if (parsed !== null && typeof parsed === 'object') resumo.script_result = parsed;
+        } catch { /* Texto simples de script permanece texto. */ }
+      }
+      if (args.script) resumo.script_status = res.scriptError ? 'failed' : 'completed';
       if (res.scriptError) resumo.script_error = res.scriptError;
       resumo.screenshot = visionEnabled()
         ? 'The screenshot image comes attached to this result — look at it.'
@@ -3652,7 +3735,7 @@ async function agentTurns(chat) {
             logSystem(`Ação rejeitada pelo usuário: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
           } else {
             setAppTitle(`executando: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
-            const saida = await runTool(name, args, chat.path);
+            const saida = await runTool(name, args, chat.path, toolCall && toolCall.id);
             // Ferramentas que produzem algo além de texto (print, diff) devolvem objeto;
             // as demais devolvem a string que vai direto para o modelo.
             if (saida && typeof saida === 'object') {
@@ -3791,6 +3874,13 @@ function compactToolResults(messages) {
   // O `limite` protege as recentes até de uma marca velha, sobrevivente de um histórico
   // mais longo (o usuário editou uma mensagem e o resto foi descartado).
   const chat = activeChat();
+  // Marca além do fim só existe em chat truncado antes do truncaHistorico existir. Não dá
+  // para saber onde foi o corte, então a poda recomeça do zero: uma quebra de cache, em vez
+  // de compactar para sempre até o resultado que acabou de chegar.
+  if (chat && ((chat.podaManualAte || 0) > messages.length || (chat.podaAutoAte || 0) > messages.length)) {
+    chat.podaManualAte = 0;
+    chat.podaAutoAte = 0;
+  }
   const manual = Math.min((chat && chat.podaManualAte) || 0, messages.length);
   const auto = Math.min((chat && chat.podaAutoAte) || 0, limite);
   let marca = Math.max(manual, auto);
@@ -5041,4 +5131,4 @@ async function init() {
 
 init();
 
-export { runTool, tools, compactToolResults, retainToolOutput, toApiMessages };
+export { runTool, tools, compactToolResults, retainToolOutput, toApiMessages, activeChat, truncaHistorico };

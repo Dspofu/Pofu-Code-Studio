@@ -1,6 +1,6 @@
 // Exercita o app real com preload, IPC e renderer; perfil e arquivos são isolados.
 const { app, BrowserWindow, Notification } = require('electron');
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, utimesSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -64,7 +64,7 @@ async function main() {
     writeFileSync(join(captures, name), (await win.webContents.capturePage()).toPNG());
     win.hide();
   };
-  const tool = (name, args) => js(`import('./out/renderer.js').then(m => m.runTool(${JSON.stringify(name)}, ${JSON.stringify(args)}, ${JSON.stringify(workspace)}))`);
+  const tool = (name, args, id = '') => js(`import('./out/renderer.js').then(m => m.runTool(${JSON.stringify(name)}, ${JSON.stringify(args)}, ${JSON.stringify(workspace)}, ${JSON.stringify(id)}))`);
   const data = raw => JSON.parse(typeof raw === 'string' ? raw : raw.text);
   await js(`new Promise((resolve,reject) => { let n=0; const poll=()=> { if(document.getElementById('studio-welcome') && document.getElementById('studio-model').textContent.includes('pofu-local')) resolve(true); else if(++n>100) reject(new Error('App did not initialize')); else setTimeout(poll,50); }; poll(); })`);
   await check('brilho do thinking e movimento reduzido', async () => {
@@ -74,6 +74,8 @@ async function main() {
     await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{name: 'prefers-reduced-motion', value: 'no-preference'}] });
     await new Promise(r => setTimeout(r, 700));
     const shimmer = () => js(`getComputedStyle(document.getElementById('think-slider')).getPropertyValue('--thinking-shimmer')`);
+    await js("document.getElementById('think-menu').hidden=false" );
+    await new Promise(r => setTimeout(r, 550));
     const first = await shimmer();
     await new Promise(r => setTimeout(r, 160));
     assert.notEqual(await shimmer(), first, await js(`JSON.stringify({disabled:document.getElementById('think-slider').disabled,animation:getComputedStyle(document.getElementById('think-slider')).animation,hidden:document.getElementById('think-menu').hidden})`));
@@ -280,12 +282,11 @@ async function main() {
     assert.equal(hash(restored), hash(text)); assert.equal(restored, text);
     const found = await tool('read_file', { filename, query: 'FINAL_GIGANTE_POFU' });
     assert.match(found, /FINAL_GIGANTE_POFU🦆/); assert.ok(found.length < 1500);
-    const search = data(await tool('search_files', { query: 'FINAL_GIGANTE_POFU', file_pattern: 'large/single.txt' }));
-    assert.equal(search.matches[0].column, 20 * 1024 * 1024 + 1);
-    const broad = data(await tool('search_files', { query: '^x+', regex: true, file_pattern: 'large/single.txt' }));
-    assert.equal(broad.matches[0].matchChars, 20 * 1024 * 1024);
-    assert.equal(broad.matches[0].shortened, true);
-    assert.ok(broad.matches[0].text.length < 1000); assert.match(broad.note, /read_file/);
+    const search = await tool('search_files', { query: 'FINAL_GIGANTE_POFU', file_pattern: 'large/single.txt' });
+    assert.match(search, new RegExp(`^1:\\[col ${20 * 1024 * 1024 + 1}\\] …x+FINAL_GIGANTE_POFU`, 'm'));
+    const broad = await tool('search_files', { query: '^x+', regex: true, file_pattern: 'large/single.txt' });
+    assert.match(broad, /^1:\[col 1\] x+…$/m);
+    assert.ok(broad.length < 1500); assert.match(broad, /read_file with query/);
     largeReads.push({ test: '20 MiB, linha única via IPC', bytes: Buffer.byteLength(text), calls, queryCalls: 1, sha256: hash(restored), elapsedMs: Date.now() - started });
   });
   await check('arquivo acima de 25 MiB: proteção explícita sem conteúdo parcialmente perdido', async () => {
@@ -299,10 +300,12 @@ async function main() {
   });
   await check('list_files e create_directory', async () => {
     assert.equal(data(await tool('create_directory', { dirname: 'src/nested' })).success, true);
-    const entries = data(await tool('list_files', {}));
-    assert.ok(entries.some(x => x.name === 'many.txt' && x.size > 0));
-    const tree = data(await tool('list_files', { recursive: true }));
-    assert.ok(tree.files.includes('many.txt'));
+    const entries = await tool('list_files', {});
+    assert.match(entries, /^many\.txt  \d+(\.\d)? KB$/m); assert.match(entries, /^src\/$/m);
+    const tree = await tool('list_files', { recursive: true });
+    assert.match(tree, /^\.\/\n(  .+\n)*  many\.txt$/m);
+    const md = await tool('list_files', { recursive: true, pattern: '*.md' });
+    assert.match(md, /arquivo com espaços\.md/); assert.doesNotMatch(md, /many\.txt/);
   });
   await check('write_file bloqueia arquivo não lido e permite arquivo novo', async () => {
     writeFileSync(join(workspace, 'protected.txt'), 'preservar');
@@ -310,30 +313,130 @@ async function main() {
     assert.equal(readFileSync(join(workspace, 'protected.txt'), 'utf8'), 'preservar');
     assert.equal(data(await tool('write_file', { filename: 'new.txt', content: 'const value = 1;\r\n' })).success, true);
   });
+  await check('edit_file diagnostica texto antigo e permite corrigir sem terminal', async () => {
+    const current = '    let ny = p.y + this.vel.y * dt;\n    this.onGround = false;\n    if (!this.collides(p.x, ny, p.z)) {\n      p.y = ny;\n    }';
+    writeFileSync(join(workspace, 'stale-edit.js'), current);
+    const old = current.replace('p.x, ny, p.z', 'p.x, p.y, nz');
+    const failed = data(await tool('edit_file', {filename: 'stale-edit.js', old_text: old, new_text: current}));
+    assert.equal(failed.success, false);
+    assert.equal(failed.operation_status, 'failed');
+    assert.equal(failed.replacement_present, true);
+    assert.match(failed.difference.actual, /p.x, ny, p.z/);
+    assert.equal(readFileSync(join(workspace, 'stale-edit.js'), 'utf8'), current);
+    const changed = data(await tool('edit_file', {filename: 'stale-edit.js', old_text: failed.current_excerpt, new_text: current.replace('p.y = ny;', 'p.y = Math.max(ny, 0);')}));
+    assert.equal(changed.success, true);
+    assert.match(readFileSync(join(workspace, 'stale-edit.js'), 'utf8'), /Math.max/);
+  });
   await check('edit_file preserva CRLF e substituições literais com cifrão', async () => {
     assert.equal(data(await tool('edit_file', { filename: 'new.txt', old_text: 'value = 1', new_text: 'value = "$&"' })).success, true);
     assert.equal(readFileSync(join(workspace, 'new.txt'), 'utf8'), 'const value = "$&";\r\n');
     assert.equal(data(await tool('edit_file', { filename: 'new.txt', old_text: 'nao existe', new_text: 'x' })).success, false);
+  });
+  await check('edit_file tolera indentação e aplica lote atômico', async () => {
+    const py = join(workspace, 'src', 'lote.py');
+    writeFileSync(py, 'def f():\n    if x:\n        return 1\n    return 2\n');
+    const tolerante = data(await tool('edit_file', { filename: 'src/lote.py', old_text: 'if x:\n    return 1', new_text: 'if x:\n    log()\n    return 1' }));
+    assert.equal(tolerante.success, true); assert.equal(tolerante.matched_ignoring_whitespace, true);
+    assert.equal(readFileSync(py, 'utf8'), 'def f():\n    if x:\n        log()\n        return 1\n    return 2\n');
+    const antes = readFileSync(py, 'utf8');
+    const falhou = data(await tool('edit_file', { filename: 'src/lote.py', edits: [{ old_text: 'return 2', new_text: 'return 3' }, { old_text: 'nao existe', new_text: 'x' }] }));
+    assert.equal(falhou.success, false); assert.match(falhou.error, /^edits\[1\]: Snippet not found/);
+    assert.equal(readFileSync(py, 'utf8'), antes);
+    const lote = data(await tool('edit_file', { filename: 'src/lote.py', edits: [{ old_text: 'return 2', new_text: 'return 3' }, { old_text: 'log()', new_text: 'trace()' }] }));
+    assert.equal(lote.success, true); assert.equal(lote.edits_applied, 2); assert.deepEqual(lote.lines_edited, [5, 3]);
+    assert.match(readFileSync(py, 'utf8'), /trace\(\)[\s\S]*return 3/);
+  });
+  await check('write_file recusa arquivo alterado em disco desde a leitura', async () => {
+    const f = join(workspace, 'src', 'stale.txt');
+    writeFileSync(f, 'v1');
+    await tool('read_file', { filename: 'src/stale.txt' });
+    writeFileSync(f, 'v2 do usuário');
+    utimesSync(f, new Date(), new Date(Date.now() + 5000));
+    const stale = data(await tool('write_file', { filename: 'src/stale.txt', content: 'v3' }));
+    assert.equal(stale.success, false); assert.equal(stale.stale, true);
+    assert.equal(readFileSync(f, 'utf8'), 'v2 do usuário');
+    await tool('read_file', { filename: 'src/stale.txt' });
+    assert.equal(data(await tool('write_file', { filename: 'src/stale.txt', content: 'v3' })).success, true);
+    // A edição do próprio agente atualiza o mtime conhecido: a escrita seguinte não é barrada.
+    assert.equal(data(await tool('edit_file', { filename: 'src/stale.txt', old_text: 'v3', new_text: 'v4' })).success, true);
+    assert.equal(data(await tool('write_file', { filename: 'src/stale.txt', content: 'v5' })).success, true);
+    if (process.platform === 'win32')
+      assert.equal(data(await tool('write_file', { filename: 'SRC/STALE.TXT', content: 'v6' })).success, true);
+  });
+  await check('read_file sugere o caminho certo e não reenvia leitura sem mudança', async () => {
+    const miss = data(await tool('read_file', { filename: 'lotte.py' }));
+    assert.match(miss.error, /File not found/); assert.deepEqual(miss.did_you_mean, ['src/lote.py']);
+    writeFileSync(join(workspace, 'src', 'dedup.txt'), 'conteúdo original\n');
+    const r = await js(`import('./out/renderer.js').then(async m => {
+      const chat = m.activeChat();
+      const ws = ${JSON.stringify(workspace)};
+      const call = id => ({ role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name: 'read_file', arguments: '{}' } }] });
+      chat.messages.push(call('dedup-1'));
+      const first = await m.runTool('read_file', { filename: 'src/dedup.txt' }, ws, 'dedup-1');
+      chat.messages.push({ role: 'tool', tool_call_id: 'dedup-1', name: 'read_file', content: first });
+      const second = await m.runTool('read_file', { filename: 'src/dedup.txt' }, ws, 'dedup-2');
+      const other = await m.runTool('read_file', { filename: 'src/dedup.txt', query: 'original' }, ws, 'dedup-3');
+      chat.messages.splice(-2);
+      return { first, second, other };
+    })`);
+    assert.equal(r.first, 'conteúdo original\n');
+    assert.equal(JSON.parse(r.second).unchanged, true); assert.match(JSON.parse(r.second).note, /history:dedup-1/);
+    assert.match(r.other, /original/);
   });
   await check('delete_file mantém a proteção de leitura', async () => {
     assert.equal(data(await tool('delete_file', { filename: 'protected.txt' })).success, false);
     await tool('read_file', { filename: 'protected.txt' });
     assert.equal(data(await tool('delete_file', { filename: 'protected.txt' })).success, true);
   });
+  await check('delete_file trata ausência e falha sem exceção IPC ou exclusão indevida', async () => {
+    const absent = await tool('delete_file', {filename: 'already-missing.txt'});
+    assert.equal(data(absent).success, true);
+    assert.equal(data(absent).already_absent, true);
+    assert.equal(data(absent).deleted, false);
+    assert.equal(absent.alteracao, undefined);
+    const again = data(await tool('delete_file', {filename: 'protected.txt'}));
+    assert.equal(again.already_absent, true);
+    const directory = await js(`window.electronAPI.deleteFile(${JSON.stringify(join(workspace, 'src'))})`);
+    assert.equal(directory.success, false);
+    assert.equal(directory.deleted, false);
+    assert.ok(directory.code);
+    assert.ok(readdirSync(workspace).includes('src'));
+  });
   await check('search_files localiza termo no meio de linha minificada', async () => {
     const line = 'a'.repeat(10000) + 'ALVO_POFU' + 'z'.repeat(10000);
     writeFileSync(join(workspace, 'search.txt'), line);
-    const result = data(await tool('search_files', { query: 'ALVO_POFU', file_pattern: '*.txt' }));
-    assert.match(result.matches[0].text, /ALVO_POFU/); assert.equal(result.matches[0].column, 10001);
+    const result = await tool('search_files', { query: 'ALVO_POFU', file_pattern: '*.txt' });
+    assert.match(result, /^search\.txt\n1:\[col 10001\] …a+ALVO_POFUz+…$/m);
+    // O oversize.txt (>25 MiB) de um teste anterior é pulado e o resultado diz isso.
+    assert.match(await tool('search_files', { query: 'ALVO_POFU', output_mode: 'files' }), /^1 file with 1 matching line:\nsearch\.txt: 1\n1 file\(s\) over 25 MiB were not scanned\.$/);
+    // many.txt tem 12000 linhas com "valor": a contagem para no teto e diz isso.
+    assert.equal(await tool('search_files', { query: 'valor', file_pattern: 'many.txt', output_mode: 'count' }),
+      '10000 matching lines in 1 file (scanned 1).\nCount capped at 10000 matching lines; narrow the query or file_pattern.');
   });
   await check('search_files pagina e valida regex', async () => {
-    const first = data(await tool('search_files', { query: 'valor', file_pattern: 'many.txt', max_results: 2 }));
-    assert.equal(first.next_offset, 2);
-    const next = data(await tool('search_files', { query: 'valor', file_pattern: 'many.txt', max_results: 2, offset: first.next_offset }));
-    assert.equal(next.matches[0].line, 3);
-    assert.equal(next.matches[0].before[0].line, 1);
-    assert.equal(next.matches[0].after[0].line, 4);
+    const first = await tool('search_files', { query: 'valor', file_pattern: 'many.txt', max_results: 2 });
+    assert.match(first, /continue with offset=2:/);
+    const next = await tool('search_files', { query: 'valor', file_pattern: 'many.txt', max_results: 2, offset: 2 });
+    assert.match(next, /^many\.txt\n1-valor\n2-valor\n3:valor\n4:valor\n5-valor\n6-valor$/m);
     assert.ok(data(await tool('search_files', { query: '[', regex: true })).error);
+  });
+  await check('execute_command preserva argumentos literais sem shell nem temporários', async () => {
+    const literal = 'aspas " e \' & | > < %PATH% $HOME ; acentuação';
+    const result = data(await tool('execute_command', { command: 'node', args: ['-e', 'console.log(process.argv[1])', literal] }));
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.trim(), literal);
+    const colorido = data(await tool('execute_command', { command: 'node', args: ['-e', "const e=String.fromCharCode(27);process.stdout.write(e+'[31mRED'+e+'[0m'+String.fromCharCode(13,10))"] }));
+    assert.equal(colorido.stdout, 'RED\n'); assert.equal(colorido.command, undefined);
+    assert.equal(colorido.stderr, undefined); assert.equal(colorido.stdoutDropped, undefined);
+    const failed = data(await tool('execute_command', {command:'node', args:['-e','process.exit(7)']}));
+    assert.equal(failed.exitCode, 7); assert.equal(failed.failure_kind, 'command_exit');
+    assert.equal(failed.success, false); assert.equal(failed.operation_status, 'failed');
+    assert.equal(result.success, true); assert.equal(result.operation_status, 'completed');
+    const invalid = data(await tool('execute_command', {command:'node', args:'not-an-array'}));
+    assert.equal(invalid.success, false);
+    const unknown = data(await tool('stop_process', {pid: -12345}));
+    assert.equal(unknown.success, false); assert.ok(Array.isArray(unknown.managed_pids));
+    assert.match(unknown.hint, /list_processes/);
   });
   await check('execute_command preserva stdout acima do antigo teto', async () => {
     const result = data(await tool('execute_command', { command: `node -e "process.stdout.write('x'.repeat(22000)+'FIM')"` }));
@@ -346,11 +449,17 @@ async function main() {
     assert.equal(started.backgrounded, true);
     const result = data(await tool('wait_for_process', { pid: started.pid, timeout_ms: 5000 }));
     assert.equal(result.exitCode, 0); assert.match(result.stdout, /FINAL_OK/);
-    assert.ok(data(await tool('list_processes', {})).some(p => p.pid === started.pid));
+    const listed = data(await tool('list_processes', {}));
+    assert.ok(listed.finished.some(p => p.pid === started.pid));
+    assert.equal(listed.running_count, listed.running.length);
+    assert.ok(listed.finished.every(p => p.status !== 'running'));
     assert.equal(data(await tool('stop_process', { pid: 2147483647 })).success, false);
   });
   await check('stop_process encerra somente um processo gerenciado vivo', async () => {
     const started = data(await tool('execute_command', { command: `node -e "console.log('Listening on fixture');setInterval(()=>{},1000)"` }));
+    const active = data(await tool('list_processes', {}));
+    assert.ok(active.running.some(p => p.pid === started.pid));
+    assert.equal(started.operation_status, 'running');
     assert.equal(data(await tool('stop_process', { pid: started.pid })).success, true);
     let status;
     for (let i = 0; i < 30; i++) {
@@ -385,6 +494,15 @@ async function main() {
     const result = await tool('capture_page', { url: url + '/page', width: 800, height: 600, crop_selector: 'h1', wait_ms: 50 });
     assert.ok(result.image?.path, typeof result === 'string' ? result : JSON.stringify(result)); assert.match(data(result).visible_text, /Pofu funcionando/);
   });
+  await check('capture_page preserva booleanos e separa falha de script', async () => {
+    const good = data(await tool('capture_page', {url: url + '/page', wait_ms: 0, script: 'return {colChao:true, colAr:false};'}));
+    assert.deepEqual(good.script_result, {colChao:true, colAr:false});
+    assert.equal(good.script_status, 'completed');
+    const bad = data(await tool('capture_page', {url: url + '/page', wait_ms: 0, script: 'throw new Error("SCRIPT_FAILED_FIXTURE");'}));
+    assert.equal(bad.ok, true);
+    assert.equal(bad.script_status, 'failed');
+    assert.match(bad.script_error, /SCRIPT_FAILED_FIXTURE/);
+  });
   await check('ask_user aguarda seleção e devolve a escolha', async () => {
     const pending = tool('ask_user', { question: 'Escolha uma opção de teste', options: ['Primeira', 'Segunda'] });
     await js(`new Promise(resolve => { const poll = () => document.querySelector('#question-options button') ? resolve(true) : setTimeout(poll, 20); poll(); })`);
@@ -393,6 +511,26 @@ async function main() {
   });
   await check('web_search rejeita consulta vazia antes de acessar provedores', async () => {
     assert.match(data(await tool('web_search', { query: ' ' })).error, /must not be empty/);
+  });
+  await check('histórico truncado não deixa marca de poda compactando o resultado novo', async () => {
+    const r = await js(`import('./out/renderer.js').then(m => {
+      const chat = m.activeChat();
+      const salvo = { msgs: chat.messages, manual: chat.podaManualAte, auto: chat.podaAutoAte };
+      const tool = i => ({ role: 'tool', tool_call_id: 'p' + i, name: 'read_file', content: 'resultado ' + i });
+      // Estado real visto num chat salvo: marcas de um histórico de 1794 mensagens, chat com 4.
+      chat.podaManualAte = 1794; chat.podaAutoAte = 1781;
+      chat.messages = [0, 1, 2, 3].map(tool);
+      const cortes = m.compactToolResults(chat.messages).size;
+      const curado = [chat.podaManualAte, chat.podaAutoAte];
+      // E o truncamento de agora em diante já leva as marcas junto.
+      chat.messages = Array.from({ length: 30 }, (_, i) => tool(i));
+      chat.podaManualAte = 25; chat.podaAutoAte = 20;
+      m.truncaHistorico(chat, 10);
+      const truncado = [chat.messages.length, chat.podaManualAte, chat.podaAutoAte];
+      chat.messages = salvo.msgs; chat.podaManualAte = salvo.manual; chat.podaAutoAte = salvo.auto;
+      return { cortes, curado, truncado };
+    })`);
+    assert.equal(r.cortes, 0); assert.deepEqual(r.curado, [0, 0]); assert.deepEqual(r.truncado, [10, 10, 10]);
   });
   await check('compactação preserva resultado recente e o histórico original', async () => {
     const result = await js(`import('./out/renderer.js').then(m => {
@@ -405,7 +543,7 @@ async function main() {
     assert.ok(result.count > 0); assert.match(result.notices[0], /read_tool_result/);
   });
   await check('nenhum arquivo temporário criado pelas ferramentas de leitura', async () => {
-    assert.deepEqual(readdirSync(workspace).sort(), ['arquivo com espaços.md','binary.bin','large','many.txt','minified.txt','new.txt','search.txt','src']);
+    assert.deepEqual(readdirSync(workspace).sort(), ['arquivo com espaços.md','binary.bin','large','many.txt','minified.txt','new.txt','search.txt','src','stale-edit.js']);
     assert.deepEqual(readdirSync(join(workspace, 'large')).sort(), ['oversize.txt','single.txt','source.txt']);
   });
   await check('resultado compactado é recuperável depois de recarregar o app', async () => {

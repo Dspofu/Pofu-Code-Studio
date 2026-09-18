@@ -14,6 +14,9 @@ import { fileURLToPath } from 'url';
 import { WebSearch } from './websearch.js';
 import packageJson from '../package.json' with { type: "json" };
 import { fileWindow } from './tool-results.js';
+import { editDiagnostics } from './edit-diagnostics.js';
+import { applyEdits } from './edit-match.js';
+import { globToRegex, suggestPaths } from './tool-output.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -166,9 +169,13 @@ function looksBinary(buf) {
 // A janela é recortada AQUI, e não no renderer: antes o arquivo inteiro atravessava o
 // IPC para mostrar uma fração dele. Os padrões abaixo são rede de segurança — quem
 // chama manda o orçamento real, derivado do n_ctx do modelo.
-ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
+ipcMain.handle('read-file', async (event, filePath, opts: any = {}) => {
   let st;
-  try { st = statSync(filePath); } catch (e) { return { success: false, error: `File not found: ${filePath}` }; }
+  try { st = statSync(filePath); } catch (e) {
+    const suggestions = opts.workspace ? suggestPaths(filePath, arvoreDoProjeto(opts.workspace).files) : [];
+    return { success: false, error: `File not found: ${filePath}`,
+      ...(suggestions.length ? { did_you_mean: suggestions } : {}) };
+  }
   if (st.isDirectory()) return { success: false, error: `"${filePath}" is a directory — use list_files.` };
   if (st.size > READ_MAX_BYTES) {
     return { success: false, error: `File too large (${(st.size / 1e6).toFixed(1)} MB, cap ${READ_MAX_BYTES / 1e6} MB). No content was read. This file exceeds the memory guard for read_file and search_files; use a streaming reader with a bounded output for this large dataset.` };
@@ -179,8 +186,19 @@ ipcMain.handle('read-file', async (event, filePath, opts = {}) => {
     return { success: false, binary: true, size: st.size, error: `Binary file (${st.size} bytes) — the content is not readable text.` };
   }
   const text = buf.toString('utf-8');
-  return { ...fileWindow(text, opts), size: st.size };
+  return { ...fileWindow(text, opts), size: st.size, mtimeMs: st.mtimeMs };
 });
+
+// Mudou em disco depois da última leitura/escrita do agente? O renderer guarda o mtime do
+// que entregou ao modelo; a comparação mora aqui, colada na escrita, pelo mesmo motivo da
+// trava de leitura — sem intervalo entre conferir e gravar.
+function mudouDesde(filePath, esperado) {
+  if (typeof esperado !== 'number') return false;
+  try { return Math.abs(statSync(filePath).mtimeMs - esperado) > 1; } catch { return false; }
+}
+function mtimeDe(filePath) {
+  try { return statSync(filePath).mtimeMs; } catch { return undefined; }
+}
 
 // ==========================================================================
 //  Diff e desfazer
@@ -388,6 +406,15 @@ ipcMain.handle('write-file', async (event, filePath, content, opts = {}) => {
       hint: 'Call read_file on this file and try again. To change only part of it, edit_file keeps the rest. DO NOT delete the file to recreate it: that destroys what you have not read yet, and delete_file refuses for the same reason.'
     };
   }
+  // Leu, mas o arquivo mudou depois (o usuário editou, um formatador rodou, o "Desfazer"
+  // foi clicado): sobrescrever agora apagaria uma versão que o agente nunca viu.
+  if (existed && mudouDesde(filePath, opts.expectedMtimeMs)) {
+    return {
+      success: false, stale: true,
+      error: `File ${filePath} changed on disk after you last read it — overwriting it would discard changes you have not seen.`,
+      hint: 'Call read_file again, then write. edit_file is safer: it only touches the exact snippet.'
+    };
+  }
 
   const anterior = existed ? readFileSync(filePath, 'utf-8') : '';
   mkdirSync(dirname(filePath), { recursive: true }); // cria as pastas pai se não existirem
@@ -395,80 +422,69 @@ ipcMain.handle('write-file', async (event, filePath, content, opts = {}) => {
   const lines = String(content).split('\n').length;
   return {
     success: true, created: !existed, lines, previousLines,
-    bytes: Buffer.byteLength(content, 'utf-8'),
+    bytes: Buffer.byteLength(content, 'utf-8'), mtimeMs: mtimeDe(filePath),
+    ...dicaDeReescrita(anterior, String(content)),
     snapshotId: salvaInstantaneo(filePath, anterior, existed, String(content)),
     diff: calculaDiff(anterior, content)
   };
 });
 
+// Reescrever um arquivo inteiro para mudar poucas linhas paga, em tokens de SAÍDA, cada
+// linha que já estava lá. A dica vem depois da escrita (que já aconteceu e está certa) para
+// o modelo escolher edit_file na próxima. Contagem por multiconjunto de linhas, linear,
+// como no Hermes: um diff de sequência seria quadrático em arquivo de linhas repetidas.
+function dicaDeReescrita(antes: string, depois: string) {
+  if (antes.length < 2000 || depois.length < 2000) return {};
+  const velhas = new Map<string, number>();
+  for (const l of antes.split('\n')) velhas.set(l, (velhas.get(l) || 0) + 1);
+  const novas = depois.split('\n');
+  let iguais = 0;
+  for (const l of novas) { const n = velhas.get(l); if (n) { iguais++; velhas.set(l, n - 1); } }
+  const total = Math.max(novas.length, antes.split('\n').length);
+  if (iguais / total < 0.6) return {};
+  return { hint: `${iguais} of ${novas.length} lines were already on disk; only ~${total - iguais} changed. ` +
+    'For edits like this use edit_file (with edits[] for several spots): it sends only the changed snippets.' };
+}
+
 // Edição cirúrgica: troca um trecho exato em vez de reescrever o arquivo inteiro.
 // É a ferramenta de escrita padrão do agente — write_file de um arquivo de 800 linhas
 // para mudar 3 delas gasta ~10x mais tokens de saída e é onde a geração costuma ser
 // cortada no limite, produzindo arquivos truncados.
-ipcMain.handle('edit-file', async (event, filePath, oldText, newText, replaceAll = false) => {
-  if (typeof oldText !== 'string' || oldText === '') {
-    return { success: false, error: 'Empty old_text. Provide the exact snippet to replace (use write_file to create a new file).' };
-  }
-  // O modelo às vezes manda número ou objeto aqui; sem o String() o texto gravado no
-  // arquivo viraria "[object Object]".
-  newText = String(newText ?? '');
-  if (oldText === newText) return { success: false, error: 'old_text and new_text are identical — nothing to do.' };
+ipcMain.handle('edit-file', async (event, filePath, oldText, newText, replaceAll = false, opts: any = {}) => {
+  // edits[] faz várias trocas numa chamada só; o formato antigo vira uma lista de uma.
+  const lote = Array.isArray(opts.edits) && opts.edits.length;
+  const pedidos = lote ? opts.edits : [{ old_text: oldText, new_text: newText, replace_all: replaceAll }];
+  if (lote && pedidos.length > 50) return { success: false, error: 'Too many edits in one call (max 50).' };
+  // O modelo às vezes manda número ou objeto no new_text; sem o String() o arquivo
+  // receberia "[object Object]".
+  for (const e of pedidos) if (e && e.new_text != null) e.new_text = String(e.new_text);
 
   let original;
   try { original = readFileSync(filePath, 'utf-8'); }
   catch (e) { return { success: false, error: `File not found: ${filePath}. Use write_file to create it.` }; }
 
-  const conta = (agulha) => {
-    let n = 0, at = 0, first = -1;
-    while ((at = original.indexOf(agulha, at)) !== -1) {
-      if (first === -1) first = at;
-      n++; at += agulha.length;
-    }
-    return { n, first };
-  };
-
-  let alvo = oldText, troca = newText;
-  let { n: count, first } = conta(alvo);
-
-  // Arquivo em CRLF: o read_file entrega as linhas com o \r no fim e o modelo copia o
-  // trecho sem ele, então a busca exata NUNCA casava — e a dica ainda mandava reler,
-  // num vaivém que não convergia (sintoma clássico no Windows). A busca é refeita na
-  // quebra de linha do próprio arquivo.
-  if (count === 0 && original.includes('\r\n') && !oldText.includes('\r')) {
-    const emCRLF = oldText.replace(/\n/g, '\r\n');
-    const r = conta(emCRLF);
-    if (r.n > 0) { alvo = emCRLF; count = r.n; first = r.first; }
-  }
-
-  // O texto que ENTRA acompanha a quebra de linha do arquivo. Vale também quando o
-  // old_text casou de primeira (trecho de uma linha só, sem \n nenhum): gravar o
-  // new_text em LF no meio de um arquivo CRLF deixa quebras misturadas, e o edit_file
-  // seguinte — que copia do read_file, em CRLF — não casaria mais nessa região.
-  if (original.includes('\r\n') && /(^|[^\r])\n/.test(troca)) troca = troca.replace(/\r?\n/g, '\r\n');
-
-  if (count === 0) {
-    // Quase sempre a diferença é indentação/espaço no fim da linha, e o modelo fica
-    // tentando a mesma edição em loop. Dizer QUAL é a diferença encerra o loop.
-    const norm = (s) => s.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/[ \t]+$/gm, '').trim();
-    const hint = norm(original).includes(norm(oldText))
-      ? 'The snippet is there but with different whitespace or indentation — read the file again with read_file and copy the text exactly as it appears.'
-      : 'Read the file again with read_file: the content may have changed, or the snippet is not in this file.';
-    return { success: false, error: `Snippet not found in ${filePath}.`, hint };
-  }
-  if (count > 1 && !replaceAll) {
-    return {
-      success: false, occurrences: count,
-      error: `The snippet appears ${count} times in ${filePath}.`,
-      hint: 'Add surrounding context lines to make old_text unique, or pass replace_all: true to replace every occurrence.'
+  const r = applyEdits(original, pedidos);
+  if (r.ok === false) {
+    const f = r.failure, qual = lote ? `edits[${r.index}]: ` : '';
+    // Ninguém ficou gravado: o lote é atômico, então repetir só o que falhou não basta.
+    const nada = lote ? ' No edit from this call was applied; resend the whole batch after fixing it.' : '';
+    if (f.kind === 'empty') return { success: false, error: `${qual}Empty old_text. Provide the exact snippet to replace (use write_file to create a new file).` + nada };
+    if (f.kind === 'identical') return { success: false, error: `${qual}old_text and new_text are identical — nothing to do.` + nada };
+    if (f.kind === 'ambiguous' || f.kind === 'ambiguous_fuzzy') return {
+      success: false, occurrences: f.count, lines: f.lines,
+      error: `${qual}The snippet appears ${f.count} times in ${filePath}` + (f.kind === 'ambiguous_fuzzy' ? ' (ignoring whitespace).' : '.'),
+      hint: (f.kind === 'ambiguous_fuzzy'
+        ? 'replace_all only applies to exact text; copy the snippet exactly, whitespace included.'
+        : 'Add surrounding lines to make old_text unique, or pass replace_all: true to replace every occurrence.') + nada
     };
+    // Não achou nem ignorando espaço: diagnóstico do disco, sem escrever nada aproximado.
+    // Num lote, o diagnóstico é contra o conteúdo JÁ com as edições anteriores aplicadas.
+    const e = pedidos[r.index];
+    return { success: false, error: `${qual}Snippet not found in ${filePath}.` + nada,
+      ...editDiagnostics(r.content, e.old_text, e.new_text ?? '') };
   }
 
-  // split/join e NÃO replace(): mesmo com pattern string, o replace continua expandindo
-  // $&, $$, $1 e $` DENTRO do texto de substituição. Um new_text com "$$var" (PHP, sed,
-  // LaTeX) era gravado corrompido e ainda voltava success: true — o pior jeito de errar.
-  // Como o caso ambíguo já saiu acima, aqui o split/join serve aos dois modos.
-  const updated = original.split(alvo).join(troca);
-
+  const updated = r.content;
   try { writeFileSync(filePath, updated, 'utf-8'); }
   catch (err) {
     // Somente-leitura, arquivo aberto por outro programa, pasta protegida: sem esta
@@ -481,12 +497,19 @@ ipcMain.handle('edit-file', async (event, filePath, oldText, newText, replaceAll
     };
   }
 
+  // Casamento que ignorou espaço é dito ao modelo: o texto que ele "lembra" daquele trecho
+  // não é o que está no arquivo, e a próxima edição ali deve partir do que foi gravado.
+  const tolerante = r.applied.filter(a => a.strategy !== 'exact' && a.strategy !== 'crlf');
   return {
     success: true,
-    replacements: count,
-    line: original.slice(0, first).split('\n').length, // linha da primeira substituição
+    replacements: r.applied.reduce((n, a) => n + a.count, 0),
+    line: r.applied[0].line, // linha da primeira substituição
+    ...(lote ? { edits_applied: r.applied.length, lines_edited: r.applied.map(a => a.line) } : {}),
+    ...(tolerante.length ? { matched_ignoring_whitespace: true,
+      note: 'old_text matched after normalizing whitespace/indentation/quotes; new_text was re-indented to the file. Copy exact text from the file for later edits here.' } : {}),
     linesBefore: original.split('\n').length,
     linesAfter: updated.split('\n').length,
+    mtimeMs: mtimeDe(filePath),
     snapshotId: salvaInstantaneo(filePath, original, true, updated),
     diff: calculaDiff(original, updated)
   };
@@ -583,9 +606,17 @@ ipcMain.handle('delete-file', async (event, filePath, opts = {}) => {
   let anterior = null;
   try { anterior = readFileSync(filePath, 'utf-8'); } catch (e) { /* binário ou ilegível */ }
   const linhas = anterior != null ? anterior.split('\n').length : 0;
-  unlinkSync(filePath);
+  try { unlinkSync(filePath); }
+  catch (err) {
+    if (err.code === 'ENOENT') return {
+      success: true, deleted: false, already_absent: true,
+      note: 'The file is already absent. Nothing was deleted; no retry is needed.'
+    };
+    return { success: false, deleted: false, error: `Could not delete ${filePath}: ${err.message}`,
+      code: err.code, hint: 'Check whether the path is a directory, read-only, or locked. No deletion was completed; do not retry unchanged arguments.' };
+  }
   return {
-    success: true, deletedLines: linhas,
+    success: true, deleted: true, deletedLines: linhas,
     snapshotId: anterior != null ? salvaInstantaneo(filePath, anterior, true, '') : null
   };
 });
@@ -616,26 +647,6 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
     return { success: false, error: `Invalid regex: ${e.message}` };
   }
 
-  // Filtro de nome de arquivo no estilo glob (*.js, *.test.*), aplicado ao caminho relativo
-  // Glob simples (*.js, src/**/*.test.js) convertido caractere a caractere: "*" fica
-  // dentro de um segmento e "**" atravessa barras, como nas ferramentas de busca usuais.
-  const globToRegex = (glob) => {
-    let out = '';
-    for (let i = 0; i < glob.length; i++) {
-      const c = glob[i];
-      if (c === '*') {
-        if (glob[i + 1] === '*') {
-          // "src/**/*.js" precisa casar também com "src/app.js" — o "**/" cobre
-          // ZERO ou mais pastas, senão só acha o que está aninhado.
-          if (glob[i + 2] === '/') { out += '(?:.*/)?'; i += 2; } else { out += '.*'; i++; }
-        } else out += '[^/]*';
-      } else if (c === '?') out += '[^/]';
-      else if ('.+^${}()|[]\\'.includes(c)) out += '\\' + c;
-      else out += c;
-    }
-    return new RegExp('^' + out + '$', 'i');
-  };
-
   let nameRe = null;
   if (opts.filePattern) {
     try { nameRe = globToRegex(String(opts.filePattern)); } catch (e) { nameRe = null; }
@@ -644,6 +655,10 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
   const max = Math.min(Math.max(opts.maxResults || 60, 1), SEARCH_MAX_RESULTS);
   const offset = Math.max(0, Math.floor(Number(opts.offset) || 0));
   const matches = [];
+  // files/count não precisam do texto de cada achado — só da contagem por arquivo, que é
+  // o que responde "onde isso é usado?" por uma fração dos tokens.
+  const mode = opts.mode === 'files' || opts.mode === 'count' ? opts.mode : 'content';
+  const fileCounts = {};
   let scanned = 0, skippedLarge = 0, truncated = false;
   const contextLines = Math.min(20, Math.max(0, Math.floor(Number(opts.contextLines ?? 2) || 0)));
   // totalFound conta TODAS as ocorrências (não só as devolvidas): sem ele o agente
@@ -684,9 +699,10 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
         const match = re.exec(lines[i]);
         if (!match) continue;
         totalFound++;
+        fileCounts[relPath] = (fileCounts[relPath] || 0) + 1;
         // Devolve só as primeiras `max` (o resto é ruído no contexto), mas CONTINUA
         // contando para o totalFound — para de empilhar, não de escanear.
-        if (totalFound > offset && matches.length < max) {
+        if (mode === 'content' && totalFound > offset && matches.length < max) {
           const snippetStart = Math.max(0, match.index - 120);
           const snippetEnd = Math.min(lines[i].length, match.index + Math.min(Math.max(match[0].length, 1), 500) + 180);
           matches.push({
@@ -710,7 +726,7 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
 
   try { walk(rootPath, ''); } catch (e) { /* ignora */ }
   truncated = totalFound > offset + matches.length;
-  return { success: true, query, count: matches.length, totalFound, scanned, skippedLarge, truncated, matches,
+  return { success: true, query, mode, fileCounts, offset, count: matches.length, totalFound, scanned, skippedLarge, truncated, matches,
     next_offset: truncated ? offset + matches.length : null,
     countCapped: done,
     note: [done ? 'Count capped at 10000 matching lines; narrow the query or file_pattern.' : '',
@@ -718,7 +734,8 @@ ipcMain.handle('search-files', async (event, rootPath, opts = {}) => {
       matches.some(m => m.shortened) ? 'Matches are excerpts. Use read_file with filename and offset (line), or query to jump directly to a literal term in a long line.' : ''].filter(Boolean).join(' ') || undefined };
 });
 
-ipcMain.handle('list-tree', async (event, rootPath) => {
+// Usada pelo menu "@", pelo list_files recursivo e pelas sugestões de "arquivo não encontrado".
+function arvoreDoProjeto(rootPath) {
   const files = [];
   const walk = (dir, rel) => {
     if (files.length >= MENTION_FILE_CAP) return;
@@ -738,7 +755,8 @@ ipcMain.handle('list-tree', async (event, rootPath) => {
   };
   try { walk(rootPath, ''); } catch (e) { /* ignora */ }
   return { files, capped: files.length >= MENTION_FILE_CAP };
-});
+}
+ipcMain.handle('list-tree', async (event, rootPath) => arvoreDoProjeto(rootPath));
 
 // ==========================================================================
 //  Execução de comandos com gerenciamento inteligente de processos
@@ -787,6 +805,13 @@ function killTree(pid, { force = false } = {}) {
 }
 
 ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
+  const direct = opts.args !== undefined;
+  if (typeof command !== 'string' || !command.trim() || command.includes('\0') ||
+      (direct && (!Array.isArray(opts.args) || opts.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))))) {
+    return { success: false, finished: true, error: 'Invalid command or args. command must be a nonempty string; args must be an array of strings without NUL characters.' };
+  }
+  const executable = command;
+  if (direct) command = [command, ...opts.args.map(arg => JSON.stringify(arg))].join(' ');
   const hardTimeoutMs = opts.timeoutMs || 25000; // teto absoluto para tarefas que terminam
   const idleMs = opts.idleMs || 2500;            // silêncio => provável servidor ocioso esperando conexões
   const graceMs = 600;                           // tempo mínimo antes de considerar "ocioso"
@@ -806,15 +831,17 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
     const esconderConsole = opts.hideConsole !== false;
     let child;
     try {
-      child = spawn(command, {
-        cwd, shell: SHELL,
+      child = spawn(executable, direct ? opts.args : [], {
+        cwd, shell: direct ? false : SHELL,
         detached: !isWindows || !esconderConsole,
         windowsHide: esconderConsole,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', FORCE_COLOR: '0' }
+        // NO_COLOR é a convenção que a maioria das CLIs respeita; o que ainda vier colorido
+        // o renderer limpa (cleanTerminalOutput) antes de mandar ao modelo.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', FORCE_COLOR: '0', NO_COLOR: '1' }
       });
     } catch (err) {
-      return resolve({ command, stdout: '', stderr: '', error: err.message, finished: true });
+      return resolve({ success: false, operation_status: 'failed', command, stdout: '', stderr: '', error: err.message, finished: true });
     }
 
     const entry: ProcEntry = { command, child, stdout: '', stderr: '', startedAt: Date.now(), ready: false, status: 'running' };
@@ -836,7 +863,7 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       procs.set(child.pid, entry);
       child.unref();
       resolve({
-        command, pid: child.pid, finished: false, backgrounded: true, reason,
+        success: true, operation_status: 'running', command, pid: child.pid, finished: false, backgrounded: true, reason,
         stdout: entry.stdout, stderr: entry.stderr,
         stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0,
         note: `Process moved to the background (PID ${child.pid}) — ${reason}. ` +
@@ -890,7 +917,7 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer); clearTimeout(idleTimer);
-      resolve({ command, pid: child.pid, stdout: entry.stdout, stderr: entry.stderr,
+      resolve({ success: false, operation_status: 'failed', command, pid: child.pid, stdout: entry.stdout, stderr: entry.stderr,
         stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0, error: err.message, finished: true });
     });
 
@@ -903,7 +930,10 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
       resolve({
         command, pid: child.pid, stdout: entry.stdout, stderr: entry.stderr,
         stdoutDropped: entry.stdoutDropped || 0, stderrDropped: entry.stderrDropped || 0,
+        success: code === 0, operation_status: code === 0 ? 'completed' : 'failed',
         error: code === 0 ? null : `Process exited with code ${code}`,
+        failure_kind: code === 0 ? undefined : 'command_exit',
+        hint: code === 0 ? undefined : 'The process ran and returned a nonzero exit code. Inspect stderr/stdout to diagnose the command or code. For quote-heavy commands, pass the executable as command and each argument in args to bypass shell parsing.',
         exitCode: code, finished: true
       });
     });
@@ -911,9 +941,15 @@ ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
 });
 
 // Lê o output acumulado de um processo em segundo plano
+function unknownProcess(pid) {
+  return { success: false, error: `Unknown managed process: ${pid}`,
+    managed_pids: [...procs.keys()].slice(-32),
+    hint: 'This PID is not registered in this app session. Use list_processes and the PID returned by execute_command; a child PID from terminal output or an earlier app session may differ. No process was stopped.' };
+}
+
 ipcMain.handle('read-process-output', async (event, pid) => {
   const entry = procs.get(pid);
-  if (!entry) return { success: false, error: `No background process with PID ${pid}` };
+  if (!entry) return unknownProcess(pid);
   return {
     success: true, pid, command: entry.command, status: entry.status,
     uptimeSec: Math.round((Date.now() - entry.startedAt) / 1000),
@@ -928,7 +964,7 @@ ipcMain.handle('read-process-output', async (event, pid) => {
 // parado no main até o processo sair (ou até o prazo), e volta UMA resposta.
 ipcMain.handle('wait-for-process', async (event, pid, timeoutMs = 120000) => {
   const entry = procs.get(pid);
-  if (!entry) return { success: false, error: `No background process with PID ${pid}` };
+  if (!entry) return unknownProcess(pid);
 
   const limite = clamp(timeoutMs, 1000, 600000);
   const inicio = Date.now();
@@ -969,7 +1005,7 @@ ipcMain.handle('list-processes', async () => {
 // Encerra um processo em segundo plano (e todo o seu grupo, por ser detached)
 ipcMain.handle('stop-process', async (event, pid) => {
   const entry = procs.get(pid);
-  if (!entry) return { success: false, error: `Unknown managed process: ${pid}` };
+  if (!entry) return unknownProcess(pid);
   if (entry.status !== 'running') return { success: true, pid, note: 'Process already finished.' };
   try {
     killTree(pid);                                       // pedido educado (SIGTERM / taskkill sem /F)
