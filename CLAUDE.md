@@ -317,6 +317,16 @@ que a ausência dele.
   (`libatspi.so.0`, `libuuid.so.1`); sem eles o `dnf install` conclui e o app não abre num
   Fedora enxuto (Server, spin, toolbox) — no Workstation passa despercebido porque já vêm
   instalados. Compare com o default antes de mexer nessa lista.
+- **Atalho em branco no Windows = `description` longa demais**: o NSIS do electron-builder
+  grava o `description` do package.json no atalho do Menu Iniciar, e o campo do `.lnk` guarda
+  até 260 caracteres (`MAX_PATH`). Com 412, o excedente invadiu os campos seguintes: a pasta
+  de trabalho virou um trecho da frase e o `IconLocation` virou `"eriza respostas em
+  Markdown…<E:\…"`, um arquivo que não existe — daí o ícone em branco. Medido lendo o `.lnk`
+  em binário e renderizando o ícone pelo `SHGetFileInfo` antes e depois de reparar os campos.
+  O `.ico` com todas as imagens em PNG NÃO era a causa (o mesmo `.exe` renderiza normalmente
+  depois do reparo). `scripts/package-metadata.test.mjs` barra descrição com 260 ou mais.
+  Atalho já instalado com o defeito: reinstalar, ou regravar Description/WorkingDirectory/
+  IconLocation (`WScript.Shell`), e `ie4uinit.exe -show` para o shell redesenhar.
 - **Ícone no Windows vem de dois lugares**: a JANELA lê o ícone embutido no `.exe` (o
   `build/icon.ico`, gravado pelo electron-builder), mas a BARRA DE TAREFAS e as
   NOTIFICAÇÕES resolvem pelo AUMID → atalho do Menu Iniciar. Por isso um ícone pode estar
