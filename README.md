@@ -39,6 +39,7 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 | `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido — e que não mudou em disco desde a leitura |
 | `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente. `edits` faz várias trocas numa chamada, tudo ou nada |
 | `search_files` | Busca por texto/regex com glob, paginação e linhas vizinhas, agrupada por arquivo; `output_mode` `files`/`count` só conta |
+| `list_definitions` | **Estrutura do código** de um arquivo ou pasta — funções, classes, métodos e tipos com a linha, sem os corpos |
 | `ask_user` | **Faz uma pergunta e espera a resposta**, em card com opções clicáveis |
 | `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
 | `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
@@ -47,6 +48,26 @@ Toda alteração vira um **diff revisável com botão de desfazer**:
 | `http_request` | Chama uma API e devolve status, cabeçalhos e corpo separados |
 | `capture_page` | Abre a URL num navegador oculto, tira print e reporta erros de console e de rede |
 | `web_search` / `fetch_url` | Busca na web e leitura de páginas (opcional, em *Ajustes → Ferramentas*) |
+| `mcp__servidor__ferramenta` | Ferramentas dos **servidores MCP** que você configurar (ver abaixo) |
+
+### Servidores MCP
+
+O Pofu é cliente de [MCP (Model Context Protocol)](https://modelcontextprotocol.io): as ferramentas de qualquer servidor MCP viram ferramentas do agente. Em *Ajustes → Ferramentas → Servidores MCP*, cole o JSON que vem no README do servidor — o mesmo formato do Claude Desktop, Cursor e Cline:
+
+```json
+{
+  "mcpServers": {
+    "arquivos": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/projetos"] },
+    "remoto":   { "url": "https://exemplo.com/mcp", "headers": { "Authorization": "Bearer …" } },
+    "pausado":  { "command": "uvx", "args": ["algum-servidor"], "disabled": true }
+  }
+}
+```
+
+- **Local** (`command`, `args`, `env`, `cwd`) roda como processo e conversa por stdio; **remoto** (`url`, `headers`) usa Streamable HTTP.
+- Abaixo do campo aparece o estado de cada servidor e **quantos tokens as ferramentas dele custam por mensagem**, porque elas vão ao modelo em toda requisição. Deixe ligados só os servidores que você usa; `"disabled": true` desliga sem apagar.
+- No modo manual, ferramenta MCP pede confirmação, exceto as que o próprio servidor declara somente-leitura (`readOnlyHint`).
+- Os servidores sobem em segundo plano quando o app abre e são encerrados quando ele fecha.
 
 ### Leitura sem cortes perdidos
 
@@ -100,6 +121,17 @@ abaixo foi medida neste próprio repositório:
   iguais, o resultado sugere o `edit_file` para a próxima vez.
 - **Arquivo não encontrado** vem com o caminho provável (mesmo nome em outra pasta, outra
   extensão, erro de digitação), sem precisar de um `list_files` na volta.
+
+### Desempenho com modelo local
+
+Ideias de outros agentes de código, medidas aqui:
+
+- **Estrutura antes do conteúdo** (como o `list_code_definition_names` do Cline e o *repo map* do Aider): `list_definitions` mostra funções, classes e métodos com a linha de cada um. Num arquivo de 246 mil caracteres, a estrutura tem 9,5 mil (**−96%**); a pasta `src/` inteira cai de 386 mil para 15 mil.
+- **Arquivo de código grande não é despejado** (como o Read do Claude Code): `read_file` sem trecho definido num arquivo de código a partir de 60 mil caracteres devolve a estrutura e a orientação de ler só a parte necessária; `full: true` traz o arquivo inteiro. Medido com o Qwen 27B local, perguntando por uma função num arquivo de 230 mil caracteres: de **182 s e 122 mil tokens** para **12,8 s e 13 mil**, com a mesma resposta certa.
+- **Trava de looping** (como o *doom loop* do opencode, mas pelo resultado): quando a mesma chamada volta com o mesmo resultado duas vezes seguidas, sem nada com efeito colateral no meio, a terceira não é executada e o agente é orientado a mudar de abordagem. Pega também repetição alternada e entre turnos, que o critério "3 chamadas iguais seguidas" deixa passar.
+- **Estouro de contexto não mata o turno** (como no Roo Code): se o servidor recusa por excesso de tokens, o app compacta mais e reenvia, até duas vezes.
+- **Tokens contados pelo servidor**: a estimativa de caracteres por token é calibrada com o que o servidor devolve em `usage`, por modelo — a fixa errava para menos em conversas de código. A reserva de contexto agora inclui as definições das ferramentas e limita a da resposta a metade da janela (um `maxTokens` enorme não espreme mais o histórico).
+- **Acerto de cache na tela**: com llama.cpp, abaixo de cada resposta aparece quanto do prompt veio do cache e a velocidade de leitura — o número que mostra se a conversa está reaproveitando o prefixo.
 
 ### Menções de arquivo
 
@@ -369,6 +401,11 @@ Você pode usar, modificar, redistribuir e criar derivados, inclusive comercialm
   enviados dados sintéticos, incluindo consultas a trechos distantes em 5 e 20 MiB.
   O terminal é oferecido para medir a escolha da ferramenta; se o modelo o escolher,
   o teste falha sem executar o comando. Não coloque chaves em scripts ou arquivos versionados.
+- `npm run test:agent`: ponta a ponta com modelo real DENTRO do app — loop do agente, poda,
+  trava de looping, métricas e MCP como para o usuário. Mesmas variáveis do `test:api`.
+  Cenários: fórmula num arquivo grande e num muito grande, ferramenta MCP (servidor falso em
+  `scripts/fixtures/`) e duas trocas num mesmo arquivo. Imprime requisições, ferramentas
+  usadas, uso de terminal, acerto de cache e velocidade de cada um.
 
 O teste de integração usa um servidor HTTP local; a busca web valida entrada inválida,
 sem depender de disponibilidade de buscadores. Para salvar screenshots reais do app,

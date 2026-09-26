@@ -4,12 +4,14 @@ import { activateProvider, migrateProviders, rememberProvider, validateProvider,
 import { mountSlashCommands } from './slash-commands.js';
 import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
 import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
+import { LoopGuard, chaveDaChamada, temEfeito } from './loop-guard.js';
+import { formataEstrutura, suportaEstrutura } from './outline.js';
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, REQUEST_RETRY_DELAY_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -118,6 +120,9 @@ const CONFIRM_TOOLS = {
 };
 
 function precisaConfirmar(name, args) {
+  // Ferramenta de servidor MCP pode fazer qualquer coisa: só passa direto a que o próprio
+  // servidor declara somente-leitura (annotations.readOnlyHint).
+  if (mcpRota.has(name)) return !mcpRota.get(name).readOnly;
   const regra = CONFIRM_TOOLS[name];
   return typeof regra === 'function' ? regra(args || {}) : !!regra;
 }
@@ -170,6 +175,9 @@ function showConfirmModal(name, args) {
     label.innerText = 'Enviar requisição que altera dados?';
     cmd.innerText = `${String(args.method || 'GET').toUpperCase()} ${args.url || ''}` +
       (args.body ? `\n\n${truncate(String(args.body), 400)}` : '');
+  } else if (mcpRota.has(name)) {
+    label.innerText = 'Executar ferramenta de servidor MCP?';
+    cmd.innerText = `🧩 ${TOOL_META[name]?.label || name}\n${JSON.stringify(args)}`;
   } else {
     label.innerText = 'Confirmar ação?';
     cmd.innerText = JSON.stringify(args);
@@ -277,7 +285,7 @@ function renderSkillList() {
     meta.className = 'skill-meta';
     // O custo aparece em tokens porque é assim que ele é sentido: some do contexto da
     // conversa toda, não do arquivo.
-    meta.innerText = `${skill.arquivo} · ~${Math.round(skill.content.length / CHARS_PER_TOKEN).toLocaleString('pt-BR')} tokens por mensagem`;
+    meta.innerText = `${skill.arquivo} · ~${Math.round(skill.content.length / charsPorToken()).toLocaleString('pt-BR')} tokens por mensagem`;
     corpo.append(nome, desc, meta);
 
     const liga = document.createElement('label');
@@ -1569,6 +1577,7 @@ const TOOL_META = {
   write_file: { icon: '✏️', label: 'Escrever arquivo' },
   edit_file: { icon: '🖊️', label: 'Editar arquivo' },
   search_files: { icon: '🔍', label: 'Buscar no projeto' },
+  list_definitions: { icon: '🧭', label: 'Estrutura do código' },
   create_directory: { icon: '📂', label: 'Criar pasta' },
   delete_file: { icon: '🗑️', label: 'Apagar arquivo' },
   http_request: { icon: '🔌', label: 'Requisição HTTP' },
@@ -1609,6 +1618,7 @@ function summarizeToolCall(name, args) {
       return String(args.question || '') +
         (opcoes.length ? '\n' + opcoes.map(o => '• ' + o.label).join('\n') : '');
     }
+    case 'list_definitions': return (args.path || './') + (args.pattern ? `   (${args.pattern})` : '');
     case 'search_files':
       return (args.query || '') + (args.file_pattern ? `   em ${args.file_pattern}` : '');
     case 'http_request': return `${(args.method || 'GET').toUpperCase()} ${args.url || ''}`;
@@ -1653,6 +1663,9 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^old_text and new_text are identical/i, () => '↷ Nada a fazer: o trecho novo é igual ao antigo.'],
   [/^Empty old_text/i, () => '↷ Edição sem trecho de busca.'],
   [/^Empty query/i, () => '↷ Busca sem termo.'],
+  [/^Loop detected/i, () => '↷ Mesma chamada, mesmo resultado, de novo — bloqueada para o agente mudar de abordagem.'],
+  [/does not support this file type/i, () => '↷ Sem estrutura para esse tipo de arquivo — o agente vai ler o arquivo.'],
+  [/^Path not found/i, () => '⚠ Caminho não encontrado.'],
   [/^WARNING: the file had (\d+) lines and now has (\d+)/i,
     m => `⚠ O arquivo tinha ${m[1]} linhas e agora tem ${m[2]} — confira se a redução foi intencional.`],
   [/^File not found/i, () => '⚠ Arquivo não encontrado.'],
@@ -1714,6 +1727,7 @@ function summarizeToolResult(name, resultStr) {
         if (erro && erro.unchanged) return '↷ Sem mudanças desde a última leitura — o agente reaproveita o que já leu.';
       } catch (e) { /* não era JSON: segue como conteúdo do arquivo */ }
     }
+    if (/^\[File ".*?" is large:/.test(resultStr)) return '↷ Arquivo grande: o agente recebeu a estrutura e vai ler só o trecho de que precisa.';
     const m = resultStr.match(/^\[File ".*?" — lines (\d+)–(\d+) of (\d+)[;\]]/);
     if (m) {
       const restam = Number(m[3]) - Number(m[2]);
@@ -2476,6 +2490,22 @@ const tools = [
   {
     type: 'function',
     function: {
+      name: 'list_definitions',
+      description: 'Lists the definitions of a source file, or of every source file in a folder: functions, classes, ' +
+        'methods and types, each with its line number, without the bodies. Use it to learn a large file or an ' +
+        'unfamiliar folder before reading, then read_file only the part you need (offset or query).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File or folder (default: workspace root).' },
+          pattern: { type: 'string', description: 'Glob filter inside a folder, e.g. "src/**/*.ts".' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'create_directory',
       description: 'Creates a folder and any missing parents.',
       parameters: {
@@ -2667,9 +2697,81 @@ const webTools = [
   }
 ];
 
+// Ferramentas dos servidores MCP no formato da API, com o nome na convenção do Claude Code
+// (mcp__servidor__ferramenta): não colide com as nativas e diz ao modelo de onde ela vem.
+let mcpEstado: McpEstado[] = [];
+let mcpFerramentas = [];
+const mcpRota = new Map<string, { server: string; tool: string; readOnly: boolean }>();
+
+// Aceita o JSON como vem no README dos servidores ({ "mcpServers": {…} }) ou só o objeto
+// interno. Erro em pt-BR porque aparece no formulário, para quem está configurando.
+function parseMcpConfig(texto): Record<string, any> {
+  const t = String(texto || '').trim();
+  if (!t) return {};
+  let j;
+  try { j = JSON.parse(t); } catch (e) { throw new Error(`MCP: o JSON não é válido — ${e.message}`); }
+  const servers = j && typeof j === 'object' && j.mcpServers && typeof j.mcpServers === 'object' ? j.mcpServers : j;
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('MCP: esperado { "mcpServers": { "nome": { "command": … } } }.');
+  for (const [nome, cfg] of Object.entries<any>(servers)) {
+    if (!cfg || typeof cfg !== 'object' || (!cfg.command && !cfg.url)) throw new Error(`MCP: o servidor "${nome}" precisa de "command" (local) ou "url" (remoto).`);
+  }
+  return servers;
+}
+
+const slugMcp = (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
+function aplicaEstadoMcp(estado: McpEstado[]) {
+  mcpEstado = estado || [];
+  mcpFerramentas = [];
+  mcpRota.clear();
+  for (const s of mcpEstado) {
+    if (s.status !== 'ok') continue;
+    for (const f of s.tools || []) {
+      let nome = `mcp__${slugMcp(s.name)}__${slugMcp(f.name)}`.slice(0, 64);
+      for (let n = 2; mcpRota.has(nome); n++) nome = nome.slice(0, 60) + '_' + n;
+      mcpRota.set(nome, { server: s.name, tool: f.name, readOnly: f.annotations?.readOnlyHint === true });
+      // $schema/$id não descrevem parâmetro nenhum e há servidor de modelo que recusa a
+      // requisição inteira ao montar a gramática com eles.
+      const params = { ...(f.inputSchema && typeof f.inputSchema === 'object' ? f.inputSchema : {}), type: 'object' };
+      delete params.$schema; delete params.$id;
+      if (!params.properties) params.properties = {};
+      // Vai em TODA requisição: descrição de servidor MCP chega a ter páginas.
+      const desc = String(f.description || f.annotations?.title || f.name);
+      mcpFerramentas.push({ type: 'function', function: { name: nome, description: desc.length > 1024 ? desc.slice(0, 1023) + '…' : desc, parameters: params } });
+      TOOL_META[nome] = { icon: '🧩', label: `${s.name} · ${f.annotations?.title || f.name}` };
+    }
+  }
+  renderMcpStatus();
+}
+
+function renderMcpStatus(conectando: string[] = []) {
+  const box = el('mcp-status');
+  if (!box) return;
+  const linhas = conectando.map(n => `… ${n} — conectando`);
+  for (const s of mcpEstado) {
+    if (conectando.includes(s.name)) continue;
+    if (s.status === 'ok') {
+      const chars = JSON.stringify(mcpFerramentas.filter(t => mcpRota.get(t.function.name)?.server === s.name)).length;
+      linhas.push(`● ${s.name} — ${s.tools.length} ferramenta(s), ~${Math.round(chars / charsPorToken()).toLocaleString('pt-BR')} tokens por mensagem`);
+    } else if (s.status === 'desligado') linhas.push(`○ ${s.name} — desligado`);
+    else linhas.push(`⚠ ${s.name} — ${String(s.error || 'falhou').split('\n')[0]}`);
+  }
+  box.innerText = linhas.join('\n');
+}
+
+async function sincronizaMcp() {
+  let servers = {};
+  try { servers = parseMcpConfig(state.settings.mcpConfig); } catch (e) { logSystem(e.message); return; }
+  const nomes = Object.keys(servers);
+  if (!nomes.length && !mcpEstado.length) return;
+  renderMcpStatus(nomes.filter(n => !servers[n].disabled && !mcpEstado.some(s => s.name === n && s.status === 'ok')));
+  aplicaEstadoMcp(await window.electronAPI.mcpSync(servers));
+  for (const s of mcpEstado) if (s.status === 'erro') logSystem(`MCP: o servidor "${s.name}" não conectou — ${String(s.error || '').split('\n')[0]}`);
+}
+
 // Monta a lista de ferramentas disponíveis conforme as configurações
 function activeTools() {
-  return state.settings.webSearch ? [...tools, ...webTools] : tools;
+  const base = state.settings.webSearch ? [...tools, ...webTools] : tools;
+  return mcpFerramentas.length ? [...base, ...mcpFerramentas] : base;
 }
 
 // --------------------------------------------------------------------------
@@ -2697,6 +2799,37 @@ function guardaNoCacheDeImagens(caminho, dataUrl) {
 let ultimaPoda = 0;          // quantos resultados o último payload encurtou
 let avisouPoda = false;      // o aviso de compactação é dado uma vez por conversa, não por turno
 let ultimoSystemChars = 0;   // tamanho do prompt de sistema atual, descontado do orçamento do histórico
+let ultimoToolsChars = 0;    // idem para as definições das ferramentas, que também vão em toda requisição
+
+// Caracteres por token medidos contra o que o servidor COBROU (usage.prompt_tokens), por
+// modelo. O 3,5 fixo errava para os dois lados conforme o conteúdo — 99 mil estimados para
+// 123 mil reais num chat de código —, e errar para menos é o que faz o servidor recusar
+// por excesso de contexto. Média móvel, para um turno atípico não dominar.
+let razaoCalibrada = 0, razaoDoModelo = '';
+function charsPorToken() {
+  return razaoDoModelo === state.settings.model && razaoCalibrada ? razaoCalibrada : CHARS_PER_TOKEN;
+}
+function calibraTokens(chars, tokens) {
+  if (!(chars > 0 && tokens > 0)) return;
+  // Fora dessa faixa é contagem estranha do servidor (só os tokens novos, sem os do cache,
+  // por exemplo), não texto real: aceitar afrouxaria a poda justamente quando ela importa.
+  const r = chars / tokens;
+  if (r < 1.2 || r > 5) return;
+  if (razaoDoModelo !== state.settings.model) { razaoDoModelo = state.settings.model; razaoCalibrada = 0; }
+  razaoCalibrada = razaoCalibrada ? razaoCalibrada * 0.6 + r * 0.4 : r;
+}
+
+// Tudo o que não é histórico: resposta, prompt de sistema, definições das ferramentas e a
+// folga do template. As ferramentas ficavam de fora (~3 mil tokens em toda requisição), e
+// a resposta reservava o maxTokens inteiro: com 650 mil configurados — maior que qualquer
+// n_ctx local — o histórico ficava só com o piso e era compactado cedo demais.
+function reservaTokens(ctx) {
+  const resposta = Math.min(state.settings.maxTokens || 4096, Math.floor(ctx * RESPOSTA_MAX_FRACAO));
+  return resposta + Math.ceil((ultimoSystemChars + ultimoToolsChars) / charsPorToken()) + CONTEXT_MARGIN_TOKENS;
+}
+// Aperto extra da poda depois que o servidor recusou por excesso de contexto (vale até o
+// fim da execução, zerado a cada mensagem nova).
+let apertoPoda = 1;
 
 function visionEnabled() {
   return !!(state.settings.visionFeedback && modelSupportsVision);
@@ -2807,7 +2940,7 @@ function comAlteracao(res, arquivo, extras: Partial<Alteracao> = {}): ToolOutput
 const resultStore = new ToolResultStore();
 function toolBudget() {
   const ctx = state.modelCtx || ASSUMED_CTX_WHEN_UNKNOWN;
-  const reserve = (state.settings.maxTokens || 4096) + Math.ceil(ultimoSystemChars / CHARS_PER_TOKEN) + CONTEXT_MARGIN_TOKENS;
+  const reserve = reservaTokens(ctx);
   const available = Math.max(ctx - reserve, ctx * HISTORY_MIN_FRACTION);
   const cap = Number(state.settings.historyCap) || available;
   return readCharBudget(Math.min(available, cap));
@@ -2865,9 +2998,27 @@ async function runTool(name, args, workspace, toolCallId = '') {
         maxChars: budget, workspace
       });
       if (!res || !res.success) return formatFileWindow(args.filename, res);
+      // Leitura "inteira" de um arquivo de código grande: vai a estrutura, não o conteúdo.
+      // Medido com o Qwen 27B num arquivo de 230 mil caracteres: ler tudo para achar UMA
+      // função custou 122 mil tokens de prompt e 182 s; a estrutura mais o trecho custam uma
+      // fração disso. É o que o Read do Claude Code faz ao recusar arquivo grande sem offset.
+      // Não é corte calado — o arquivo inteiro sai com full: true — e a estrutura não entra em
+      // arquivosLidos: o write_file segue exigindo ter visto o conteúdo de verdade.
+      const semRecorte = args.offset == null && args.limit == null && args.char_offset == null && !args.query;
+      if (semRecorte && !args.full && res.totalChars >= READ_OUTLINE_MIN_CHARS && suportaEstrutura(alvo)) {
+        const est = await window.electronAPI.outline(alvo, { workspace });
+        const defs = est && est.success && est.files[0] ? est.files[0].defs : [];
+        if (defs.length) {
+          const tokens = Math.round(res.totalChars / charsPorToken());
+          return `[File ${JSON.stringify(args.filename)} is large: ${res.totalChars.toLocaleString('en-US')} characters (~${tokens.toLocaleString('en-US')} tokens), ${res.total} lines. ` +
+            'Its structure is below instead of the content. Read only the part you need: read_file with query (e.g. a function name) ' +
+            'or offset/limit from these line numbers. To load the whole file anyway (e.g. before rewriting it), call read_file with full: true.]\n' +
+            formataEstrutura(est.files, est.notes);
+        }
+      }
       const chave = chaveArquivo(alvo);
       arquivosLidos.set(chave, res.mtimeMs);
-      const janela = [chave, args.offset, args.limit, args.char_offset, args.query].join('|');
+      const janela = [chave, args.offset, args.limit, args.char_offset, args.query, args.full].join('|');
       const antes = leiturasEntregues.get(janela);
       if (antes && antes.mtimeMs === res.mtimeMs && antes.size === res.size && leituraAindaVisivel(antes.toolCallId))
         return JSON.stringify({ unchanged: true, note: `read_file already returned this range (tool call ${antes.toolCallId}) and the file has not changed since. Use that result instead of re-reading; if it is no longer in context, call read_tool_result with result_id "history:${antes.toolCallId}".` });
@@ -2913,6 +3064,11 @@ async function runTool(name, args, workspace, toolCallId = '') {
         mode: args.output_mode
       });
       return encodeToolResult(formatSearch(res));
+    }
+    if (name === 'list_definitions') {
+      const res = await window.electronAPI.outline(workspacePath(workspace, args.path || ''), { pattern: args.pattern, workspace });
+      if (!res.success) return JSON.stringify({ error: res.error, ...(res.did_you_mean ? { did_you_mean: res.did_you_mean } : {}) });
+      return encodeToolResult(formataEstrutura(res.files, res.notes));
     }
     if (name === 'create_directory') {
       const res = await window.electronAPI.createDirectory(workspacePath(workspace, args.dirname));
@@ -3011,6 +3167,15 @@ async function runTool(name, args, workspace, toolCallId = '') {
     if (name === 'fetch_url') {
       const res = await window.electronAPI.fetchUrl(args.url, 2 * 1024 * 1024);
       return encodeToolResult(res);
+    }
+    const rotaMcp = mcpRota.get(name);
+    if (rotaMcp) {
+      const res = await window.electronAPI.mcpCall(rotaMcp.server, rotaMcp.tool, args);
+      // isError é a FERRAMENTA dizendo que falhou (o servidor respondeu): o texto explica o
+      // quê e vai inteiro ao modelo. Sem success e sem isError é o transporte que caiu.
+      if (res.isError) return JSON.stringify({ error: res.text || 'The MCP tool reported an error.' });
+      if (!res.success) return JSON.stringify({ error: res.error });
+      return encodeToolResult(res.text ?? '');
     }
     return `Unknown tool: ${name}`;
   } catch (err) {
@@ -3146,6 +3311,19 @@ async function clearFinishedProcesses() {
 // Traduz a falha em causa provável + o que fazer: "Failed to fetch" não diz se é
 // servidor fora do ar, porta errada ou modelo inexistente — consertos bem diferentes.
 // `transitorio` também decide se vale repetir (só 5xx vale).
+// Recusa por tamanho do prompt, nos formatos do llama.cpp ("exceed_context_size_error",
+// com n_prompt_tokens e n_ctx no corpo) e da OpenAI ("context_length_exceeded", "maximum
+// context length is N … resulted in M tokens").
+function estourouContexto(err) {
+  const msg = String((err && err.message) || err || '');
+  if (!/exceed_context_size|context_length_exceeded|maximum context length|exceeds the available context|context size (?:has been )?exceeded|prompt is too long/i.test(msg)) return null;
+  const num = (re) => { const m = msg.match(re); return m ? Number(m[1]) : 0; };
+  return {
+    nPrompt: num(/"n_prompt_tokens"\s*:\s*(\d+)/) || num(/resulted in (\d+) tokens/i),
+    nCtx: num(/"n_ctx"\s*:\s*(\d+)/) || num(/maximum context length is (\d+)/i)
+  };
+}
+
 function classificaErroDeRequisicao(err, apiUrl, model) {
   const msg = String((err && err.message) || err || '');
   const status = Number((msg.match(/^HTTP (\d{3})/) || [])[1]) || 0;
@@ -3246,7 +3424,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   let buffer = '';
   let content = '', reasoning = '';
   const toolAcc = [];
-  let usage = null, finishReason = null, aborted = false, apiError = null;
+  let usage = null, timings = null, finishReason = null, aborted = false, apiError = null;
   const startedAt = performance.now();
   let firstTokenAt = 0; // tempo até o primeiro token (TTFT)
 
@@ -3266,6 +3444,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
         try { json = JSON.parse(data); } catch (e) { continue; }
         if (json.error) { apiError = json.error.message || JSON.stringify(json.error); continue; }
         if (json.usage) usage = json.usage;
+        if (json.timings) timings = json.timings; // llama.cpp: cache_n, prompt_n, prompt_per_second
         const choice = json.choices && json.choices[0];
         if (!choice) continue;
         const delta = choice.delta || {};
@@ -3303,13 +3482,17 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   };
   return {
     message: { role: 'assistant', content, reasoning_content: reasoning, tool_calls: tool_calls.length ? tool_calls : undefined },
-    usage, finishReason, aborted, apiError, timing
+    usage, finishReason, aborted, apiError, timing, timings
   };
 }
 
 // Calcula as métricas exibidas abaixo da resposta (velocidade, tokens, tempo)
-function buildResponseStats(usage, timing) {
+function buildResponseStats(usage, timing, timings = null) {
   if (!timing) return null;
+  // Do llama.cpp: quanto do prompt veio do cache de prefixo (cache_n) e quanto precisou ser
+  // processado (prompt_n). É o número que mostra se a compactação está preservando o prefixo.
+  const reusados = timings ? Number(timings.cache_n) || 0 : 0;
+  const lidos = timings ? Number(timings.prompt_n) || 0 : 0;
   const completion = usage ? (usage.completion_tokens || 0) : 0;
   const genSec = timing.genMs > 0 ? timing.genMs / 1000 : 0;
   const tps = (completion > 0 && genSec > 0) ? completion / genSec : 0;
@@ -3319,7 +3502,9 @@ function buildResponseStats(usage, timing) {
     prompt: usage ? (usage.prompt_tokens || 0) : 0,
     total: usage ? (usage.total_tokens || 0) : 0,
     totalSec: Math.round((timing.totalMs / 1000) * 10) / 10,
-    ttftSec: Math.round((timing.ttftMs / 1000) * 10) / 10
+    ttftSec: Math.round((timing.ttftMs / 1000) * 10) / 10,
+    ...(reusados + lidos > 0 ? { cachePct: Math.round(reusados * 100 / (reusados + lidos)) } : {}),
+    ...(timings && timings.prompt_per_second && lidos > 0 ? { ppTps: Math.round(timings.prompt_per_second) } : {})
   };
 }
 
@@ -3331,6 +3516,8 @@ function renderMsgStats(msgDiv, stats) {
   if (stats.completion > 0) parts.push(`+${stats.completion} contexto`);
   if (stats.totalSec > 0) parts.push(`${stats.totalSec}s até a finalização`);
   if (stats.ttftSec > 0) parts.push(`${stats.ttftSec}s até 1º token`);
+  if (stats.cachePct != null) parts.push(`cache ${stats.cachePct}%`);
+  if (stats.ppTps > 0) parts.push(`leitura ${stats.ppTps} tok/s`);
   if (!parts.length) return;
   const bar = document.createElement('div');
   bar.className = 'msg-stats';
@@ -3419,6 +3606,9 @@ function createLiveReasoning() {
 // que o servidor devolveu — 150 mil estimados para 123 mil reais), e este número aparece
 // na tela para o usuário.
 function estimaTokensDoPrompt(mensagens): number {
+  return Math.round((caracteresDasMensagens(mensagens) + ultimoToolsChars) / charsPorToken());
+}
+function caracteresDasMensagens(mensagens): number {
   let chars = 0;
   for (const m of mensagens) {
     if (typeof m.content === 'string') chars += m.content.length;
@@ -3429,7 +3619,7 @@ function estimaTokensDoPrompt(mensagens): number {
     for (const tc of (m.tool_calls || [])) chars += ((tc.function || {}).arguments || '').length + 24;
     chars += 24; // role, tool_call_id e a estrutura de cada mensagem
   }
-  return Math.round(chars / CHARS_PER_TOKEN);
+  return chars;
 }
 
 // Chats que já tiveram uma requisição concluída desde que o app abriu — ou seja, cujo
@@ -3463,7 +3653,11 @@ async function agentTurns(chat) {
     return s;
   };
 
+  if (mcpEstado.length) aplicaEstadoMcp(await window.electronAPI.mcpStatus());
   const toolset = activeTools();
+  ultimoToolsChars = JSON.stringify(toolset).length;
+  const trava = new LoopGuard();
+  apertoPoda = 1;
 
   await persist();
 
@@ -3475,7 +3669,7 @@ async function agentTurns(chat) {
     // resposta, então o histórico aguenta receber as mensagens que o usuário escreveu
     // durante a geração. Instrução nova zera a trava de iterações — o limite existe para
     // barrar o agente em looping sozinho, não a conversa que o usuário está conduzindo.
-    if (drenaFila(chat)) { iterations = 0; await persist(); }
+    if (drenaFila(chat)) { iterations = 0; trava.novaInstrucao(); await persist(); }
     iterations++;
 
     // ANTES de montar o payload: num chat reaberto o cache de imagens está vazio, e o
@@ -3486,7 +3680,8 @@ async function agentTurns(chat) {
     // O payload é montado UMA vez por turno (antes ia dentro do laço de tentativas, e as
     // tentativas mandam exatamente o mesmo conteúdo). Além de poupar a poda repetida, é
     // daqui que sai o tamanho do contexto mostrado na espera.
-    const mensagensApi = [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)];
+    let mensagensApi = [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)];
+    let apertos = 0;
     const tokensDoPrompt = estimaTokensDoPrompt(mensagensApi);
     const contextoFrio = !chatsAquecidos.has(chat.id) && tokensDoPrompt >= LIMIAR_CONTEXTO_FRIO;
     showTyping(contextoFrio ? tokensDoPrompt : 0);
@@ -3592,6 +3787,23 @@ async function agentTurns(chat) {
         attempt--; // o reenvio corrige a requisição: não gasta uma das tentativas de erro
         continue;
       }
+      // Estouro de contexto: a estimativa errou para menos. Em vez de encerrar o turno
+      // (ideia do Roo Code), aperta a poda em 25% e remonta o payload, até duas vezes. O
+      // llama.cpp diz quantos tokens o prompt tinha e qual é o n_ctx — dá para calibrar
+      // a estimativa com o número real antes de remontar.
+      const estouro = estourouContexto(lastErr);
+      if (estouro && apertos < 2) {
+        apertos++;
+        apertoPoda *= 0.75;
+        if (estouro.nPrompt) calibraTokens(caracteresDasMensagens(mensagensApi) + ultimoToolsChars, estouro.nPrompt);
+        if (estouro.nCtx) state.modelCtx = estouro.nCtx;
+        descartaParcial();
+        mensagensApi = [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)];
+        logSystem(`O servidor recusou por excesso de contexto; compactando mais e reenviando (${apertos}/2).`);
+        showTyping();
+        attempt--;
+        continue;
+      }
       // Repetir só faz sentido para falha transitória; servidor fora do ar ou modelo
       // inexistente falham igual nas três tentativas e atrasam o diagnóstico.
       const diag = classificaErroDeRequisicao(lastErr, apiUrl, model);
@@ -3626,6 +3838,7 @@ async function agentTurns(chat) {
     }
 
     trackUsage(result.usage);
+    if (result.usage && result.usage.prompt_tokens) calibraTokens(caracteresDasMensagens(mensagensApi) + ultimoToolsChars, result.usage.prompt_tokens);
     chatsAquecidos.add(chat.id); // o servidor acabou de ver este prefixo
     const message = result.message;
     const aborted = result.aborted || stopRequested;
@@ -3644,7 +3857,7 @@ async function agentTurns(chat) {
 
     // Se foi interrompido, NÃO guarda tool_calls (ficariam órfãos, sem resposta → erro no próximo turno)
     const hasContent = !!(message.content && message.content.trim());
-    const stats = buildResponseStats(result.usage, result.timing);
+    const stats = buildResponseStats(result.usage, result.timing, result.timings);
     const stored: ChatMessage = { role: 'assistant', content: message.content || '' };
     if (!aborted && message.tool_calls && message.tool_calls.length > 0) stored.tool_calls = message.tool_calls;
 
@@ -3727,9 +3940,15 @@ async function agentTurns(chat) {
           appendToolLog(`⚠ ${name}: argumentos inválidos, chamada não executada`);
         } else {
           const card = appendToolCall(name, args, cardStream ? cardStream.encerra() : null);
+          const chaveLoop = chaveDaChamada(name, args);
+          const repetida = name === 'ask_user' ? 0 : trava.bloqueia(chaveLoop);
           // Modo manual: pede confirmação para ações que executam/apagam
-          const decision = await maybeConfirmTool(name, args);
-          if (decision === 'reject') {
+          const decision = repetida ? 'loop' : await maybeConfirmTool(name, args);
+          if (decision === 'loop') {
+            // Nem pede confirmação: a resposta seria a mesma das duas vezes anteriores.
+            result = JSON.stringify({ error: `Loop detected: this exact ${name} call already returned the same result ${repetida} times in a row, with nothing that has side effects in between. It was not run again — the result would be identical. Use the earlier result, change the approach, or ask the user.` });
+            fillToolResult(card, name, result);
+          } else if (decision === 'reject') {
             result = JSON.stringify({ rejected: true, error: 'O usuário rejeitou esta ação. Não a repita; aguarde novas instruções ou proponha uma alternativa.' });
             fillToolResult(card, name, result);
             logSystem(`Ação rejeitada pelo usuário: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
@@ -3753,6 +3972,9 @@ async function agentTurns(chat) {
             }
             fillToolResult(card, name, result, { image, alteracao, diff: diffVivo });
             refreshProcesses(); // atualiza o painel de processos (pode ter subido/encerrado algo)
+            // A resposta do usuário a uma pergunta é instrução nova, igual a uma mensagem.
+            if (name === 'ask_user') trava.novaInstrucao();
+            else trava.registra(chaveLoop, String(result ?? ''), temEfeito(name, args) || (mcpRota.has(name) && !mcpRota.get(name).readOnly));
           }
         }
       }
@@ -3813,16 +4035,14 @@ function compactToolResults(messages) {
   const ctx = state.modelCtx || ASSUMED_CTX_WHEN_UNKNOWN;
   // Reserva o que não é histórico: o prompt de sistema (que vai junto em toda requisição)
   // e o espaço da resposta. O piso evita orçamento negativo se maxTokens for quase a janela.
-  const reserva = (state.settings.maxTokens || 4096)
-    + Math.ceil(ultimoSystemChars / CHARS_PER_TOKEN)
-    + CONTEXT_MARGIN_TOKENS;
+  const reserva = reservaTokens(ctx);
   const tokensHistorico = Math.max(ctx - reserva, Math.floor(ctx * HISTORY_MIN_FRACTION));
   // O teto do usuário só APERTA: ele existe para pagar menos por requisição, não para
   // liberar mais do que o modelo aguenta. Com n_ctx grande (262k, por exemplo) o orçamento
   // do contexto sozinho nunca dispara a poda, e cada requisição reenvia o histórico inteiro.
   const capUsuario = Number(state.settings.historyCap) || 0;
   const teto = capUsuario > 0 ? Math.min(tokensHistorico, capUsuario) : tokensHistorico;
-  const orcamento = Math.floor(teto * CHARS_PER_TOKEN);
+  const orcamento = Math.floor(teto * charsPorToken() * apertoPoda);
   // A poda DISPARA no orçamento, mas desce até o alvo de uma vez — ver PODA_FOLGA: parar no
   // mínimo que cabe faz o turno seguinte podar mais um pedaço, e cada poda muda o prefixo
   // que o cache do servidor (e o desconto das APIs pagas) reaproveitaria.
@@ -4523,6 +4743,8 @@ function applySettingsToForm() {
   el('check-vision').checked = s.visionFeedback;
   el('check-hide-console').checked = s.hideCommandConsole !== false;
   el('input-custom-prompt').value = s.customPrompt || '';
+  el('input-mcp').value = s.mcpConfig || '';
+  renderMcpStatus();
   el('check-prompt-replace').checked = s.promptMode === 'replace';
   renderSkillList();
   updateVisionStatus();
@@ -4545,7 +4767,7 @@ const CAMPO_DA_SETTING = {
   cmdTimeout: 'input-cmdtimeout', historyCap: 'input-historycap',
   safetyInteractions: 'check-safety-interactions',
   webSearch: 'check-websearch', visionFeedback: 'check-vision',
-  hideCommandConsole: 'check-hide-console', customPrompt: 'input-custom-prompt',
+  hideCommandConsole: 'check-hide-console', customPrompt: 'input-custom-prompt', mcpConfig: 'input-mcp',
   promptMode: 'check-prompt-replace'
 };
 
@@ -4570,6 +4792,7 @@ function leSettingsDoFormulario(): Partial<Settings> {
     visionFeedback: el('check-vision').checked,
     hideCommandConsole: el('check-hide-console').checked,
     customPrompt: el('input-custom-prompt').value,
+    mcpConfig: el('input-mcp').value,
     promptMode: el('check-prompt-replace').checked ? 'replace' : 'append'
   };
 }
@@ -4578,6 +4801,7 @@ function readSettingsFromForm() {
   if (isRunning) throw new Error('Pare a geração antes de alterar a conexão.');
   captureProviderDraft();
   providerDrafts.forEach(validateProvider);
+  parseMcpConfig(el('input-mcp').value); // JSON inválido não chega ao disco
   Object.assign(state.settings, leSettingsDoFormulario());
   state.settings.providers = providerDrafts.map(p => ({ ...p }));
   activateProvider(state.settings, draftProviderId);
@@ -4934,6 +5158,7 @@ function wireEvents() {
     closeModal();
     await refreshModelContext();
     logSystem('Configurações salvas.');
+    void sincronizaMcp(); // um servidor via npx leva segundos para subir: não prende o modal
   });
 
   // Recarregar modelos manualmente
@@ -5124,6 +5349,7 @@ async function init() {
   buildThinkMenu();     // monta o menu a partir de THINK_LEVELS
   updateThinkUI();      // reflete o nível de raciocínio salvo
   refreshProcesses();   // popula o badge de processos
+  void sincronizaMcp();  // em segundo plano: a janela não espera servidor MCP nenhum
   void loadAppInfo().then(checkForUpdate);
   // Já na abertura: modelos, n_ctx, visão e níveis de raciocínio do endpoint salvo
   fetchModels();
@@ -5131,4 +5357,4 @@ async function init() {
 
 init();
 
-export { runTool, tools, compactToolResults, retainToolOutput, toApiMessages, activeChat, truncaHistorico };
+export { runTool, tools, activeTools, compactToolResults, retainToolOutput, toApiMessages, activeChat, truncaHistorico };

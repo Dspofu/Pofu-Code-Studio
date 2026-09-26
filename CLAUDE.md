@@ -30,6 +30,10 @@ são da INTERFACE e continuam em pt-BR.
 | [src/constants.ts](src/constants.ts) | `system_prompt`, `DEFAULT_SETTINGS` e os limites, todos comentados com o *porquê*: janela de leitura derivada do contexto, orçamento de histórico, prints por requisição, retries e trava de loop. |
 | [src/tool-output.ts](src/tool-output.ts) | O que busca, listagem e terminal devolvem ao MODELO: texto compacto, não JSON. Também `globToRegex` e `suggestPaths`. |
 | [src/edit-match.ts](src/edit-match.ts) | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e o lote `edits`. |
+| [src/outline.ts](src/outline.ts) | `list_definitions`: definições por linguagem (regex, sem tree-sitter) com a linha de cada uma. |
+| [src/loop-guard.ts](src/loop-guard.ts) | Trava de looping: bloqueia a chamada que já voltou com o mesmo resultado duas vezes seguidas. |
+| [src/mcp.ts](src/mcp.ts) | Cliente MCP no main: transportes stdio e Streamable HTTP, `initialize`/`tools/list`/`tools/call`. |
+| [src/atalho-windows.ts](src/atalho-windows.ts) | Repara, ao abrir, o ícone do atalho do Menu Iniciar que ficou apontando para um `.exe` que não existe (pasta movida). |
 | [src/types.d.ts](src/types.d.ts) | Tipos GLOBAIS (o arquivo não exporta nada de propósito): `Settings`, `Chat`, `ChatMessage`, `ElectronAPI`, `ProcEntry`. Main e renderer os enxergam sem importar. |
 | [src/websearch.js](src/websearch.js) | **Arquivo gerado** — não edite, e não converta para `.ts`. Saída do `tsc` sobre o módulo portátil `…/chat/src/lib/websearch.ts`, mantido em OUTRO repositório. Os tipos dele estão em [src/websearch.d.ts](src/websearch.d.ts). |
 | `vendor/` | Libs offline do RENDERER (tailwind, marked, purify, highlight). Sem CDN. |
@@ -122,6 +126,14 @@ que a ausência dele.
   voltam inteiros; os demais incluem `char_offset` (UTF-16, base 0), inclusive no meio
   de uma linha minificada. Preserve CRLF e pares Unicode nas fronteiras. O renderer só
   formata. O orçamento considera contexto, reserva da resposta e teto de histórico.
+  **Exceção medida — código grande sem recorte**: `read_file` sem `query`/`offset`/`limit`/
+  `char_offset` num arquivo de código a partir de `READ_OUTLINE_MIN_CHARS` (60 mil) devolve
+  a ESTRUTURA (`list_definitions`) com as linhas e a instrução de ler só o trecho; o inteiro
+  sai com `full: true`. Com o Qwen 27B local, num arquivo de 230 mil caracteres, achar uma
+  função lendo tudo custou 182 s e 122 mil tokens de prompt; com a estrutura, 12,8 s e 13
+  mil (o modelo seguiu para `search_files`). Não é o corte calado que já apagou arquivo: é
+  explícito, e a estrutura NÃO entra em `arquivosLidos`, então o `write_file` continua
+  exigindo ter lido o conteúdo. Texto, JSON e log (sem estrutura) seguem voltando inteiros.
 - **Saídas recuperáveis**: não corte uma string JSON depois de serializá-la. Use
   `encodeToolResult` / `ToolResultStore` e a ferramenta `read_tool_result`, com cursor ou
   consulta literal. Cache por conversa: até 32 resultados e 8 Mi caracteres, em memória.
@@ -270,10 +282,57 @@ que a ausência dele.
   mil caracteres caiu para 2,5–3,5 mil; `output_mode: "files"` para 64. O IPC continua
   estruturado — quem formata é o renderer. O `ToolResultStore` guarda string como está (sem
   `JSON.stringify`, que escaparia cada aspa e quebra) e o `restore` aceita texto não-JSON.
+- **Enxugar prompt se mede com o modelo REAL**: a revisão da v1.5.1 tirou do prompt o bullet
+  "quando o usuário dá um nome de arquivo, chame read_file direto… arquivo grande não precisa
+  de ls/stat" por repetir a descrição da ferramenta — e o `test:api` mostrou o Qwen 27B
+  voltando a fazer `list_files` → `ls -la && wc -c` pelo terminal no arquivo de 5 MiB, nas
+  duas execuções, contra `read_file(query)` direto com o prompt anterior. Voltou o bullet e
+  voltou a descrição antiga do `read_file` ("milhões de caracteres numa linha", "o orçamento
+  não limita até onde a query busca"), que também tirava um `list_files` no caso de 20 MiB.
+  Redundância entre prompt e descrição às vezes É o que faz o modelo obedecer: antes de
+  cortar texto que ensina a escolher ferramenta, rode `npm run test:api` antes e depois.
+  A regra "não leia nem busque arquivo com comando de shell, nem para conferir um valor"
+  (medida no 1.4.2 e perdida na reescrita do 1.5.0) também voltou: sem ela o modelo achava os
+  dois valores com `read_file(query)` e ainda rodava `grep` para conferir. Com temperatura 0
+  o llama.cpp repete a mesma escolha em sequência, mas o estado do cache de prefixo muda as
+  contas o bastante para virar um token: rode a suíte mais de uma vez antes de concluir.
 - **Custo fixo por requisição**: `tools` + `system_prompt` vão em TODA requisição. Eram 21,3
   mil caracteres; a revisão levou a 17,2 mil tirando do prompt o que a descrição da
   ferramenta já dizia. Ao mexer numa descrição, meça (o comprimento de
   `JSON.stringify(tools)`) e não repita a regra nos dois lugares.
+- **Trava de looping pelo RESULTADO** (`src/loop-guard.ts`): o opencode pausa quando as 3
+  últimas chamadas são idênticas, e o próprio projeto documenta onde isso falha (A, B, A, B e
+  repetição entre turnos). Aqui bloqueia a chamada que já voltou com o MESMO resultado duas
+  vezes, sem nada com efeito colateral entre elas — leituras no meio não zeram, um `npm
+  install` zera, mensagem do usuário ou resposta ao `ask_user` zeram. Comparar o resultado é
+  o que evita o falso positivo de esperar um servidor subir (mesmo `capture_page`, resposta
+  que muda). A assinatura tira campos voláteis (`pid`, `result_id`, `uptimeSec`…): sem isso
+  dois `cat` que falham igual nunca contariam. Ferramenta MCP conta como efeito colateral,
+  exceto a que o servidor declara `readOnlyHint`.
+- **Orçamento de contexto**: `reservaTokens` desconta resposta, prompt de sistema, definições
+  das ferramentas (`ultimoToolsChars` — antes ficavam de fora, ~3 mil tokens) e folga. A
+  resposta reserva no máximo `RESPOSTA_MAX_FRACAO` do `n_ctx`: com o `maxTokens` de 650 mil de
+  um perfil real, maior que qualquer contexto local, o histórico ficava só com o piso de 20%.
+  `charsPorToken` é calibrado pelo `usage.prompt_tokens` que o servidor devolve (média móvel,
+  por modelo; razão fora de 1,2–5 é descartada — um servidor falso de teste com contagem
+  absurda afrouxou a poda do teste seguinte). Estouro de contexto (`estourouContexto`:
+  `exceed_context_size_error` do llama.cpp, `context_length_exceeded` da OpenAI) aperta a poda
+  em 25% e reenvia, até duas vezes, em vez de encerrar o turno; o `n_prompt_tokens`/`n_ctx`
+  do erro também calibram. O llama.cpp manda `timings` (`cache_n`, `prompt_n`,
+  `prompt_per_second`) no último chunk do stream: é daí que sai o "cache N%" na tela.
+- **MCP** (`src/mcp.ts` no main, conversão no renderer): a config é o JSON do Claude Desktop/
+  Cursor/Cline (`mcpServers`), guardada como TEXTO em `settings.mcpConfig` para não perder a
+  formatação de quem colou. Nome no modelo: `mcp__servidor__ferramenta` (convenção do Claude
+  Code), limitado a 64 caracteres. Do schema saem `$schema`/`$id` — há servidor de modelo que
+  recusa a requisição inteira ao montar a gramática com eles —, e a descrição é cortada em
+  1024 caracteres porque vai em toda requisição. No Windows o stdio sobe com shell e linha de
+  comando montada à mão: `npx`/`uvx` são `.cmd`, que o Node só roda com shell desde o
+  CVE-2024-27980, e args em array com `shell: true` é depreciado; por isso o `fechar` derruba
+  a ÁRVORE (o PID é do `cmd.exe`). `mcp-sync` mantém conectado o servidor cuja config não
+  mudou (reconectar um `npx` custa segundos) e sobe tudo em segundo plano: nem a janela nem o
+  modal esperam. `isError` é erro da FERRAMENTA (vai ao modelo com o texto do servidor); sem
+  `success` e sem `isError` é o transporte que caiu. Ferramenta MCP não segue o fluxo de
+  quatro passos: o schema vem do servidor e o `TOOL_META` é preenchido na hora.
 - **Processos longos**: comandos que passam de `cmdTimeout` viram background e retornam PID,
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava
@@ -327,6 +386,18 @@ que a ausência dele.
   depois do reparo). `scripts/package-metadata.test.mjs` barra descrição com 260 ou mais.
   Atalho já instalado com o defeito: reinstalar, ou regravar Description/WorkingDirectory/
   IconLocation (`WScript.Shell`), e `ie4uinit.exe -show` para o shell redesenhar.
+- **Ícone branco na barra depois de MOVER a pasta do app**: o atalho do Menu Iniciar tem um
+  bloco Tracker, e o Windows segue o `.exe` movido e corrige sozinho o ALVO e a pasta de
+  trabalho — mas não o `IconLocation`, que fica apontando para a pasta antiga. A janela
+  continua certa (ícone embutido no `.exe`) e a barra/notificações, que resolvem pelo AUMID →
+  atalho, ficam em branco. Reinstalar NÃO conserta: com `KeepShortcuts=true` no registro o
+  instalador do electron-builder mantém o atalho como está. Visto numa instalação real (v1.5.1
+  instalada em `E:\pofuserver-coder\…` e movida para `E:\Pofu Code Studio`; o registro
+  continuou apontando a pasta antiga). Por isso o app, instalado e no Windows, roda
+  `reparaIconeDoAtalho` (`src/atalho-windows.ts`) ao abrir: atalho cujo ALVO é o próprio
+  `.exe` e cujo ícone não existe ganha `icon = process.execPath` via
+  `shell.writeShortcutLink('update')`, que preserva o AUMID, e o `ie4uinit -show` redesenha.
+  Atalho de outro executável não é tocado.
 - **Ícone no Windows vem de dois lugares**: a JANELA lê o ícone embutido no `.exe` (o
   `build/icon.ico`, gravado pelo electron-builder), mas a BARRA DE TAREFAS e as
   NOTIFICAÇÕES resolvem pelo AUMID → atalho do Menu Iniciar. Por isso um ícone pode estar
@@ -431,4 +502,7 @@ Mensagens em português, com prefixo (`feat:`, `fix:`, `docs:`, `update:`).
 `npm test` cobre cursores, JSON, Unicode e limites do cache. `npm run test:integration`
 abre o Electron com perfil e workspace temporários, exercitando o preload e os IPCs reais.
 `npm run test:api` é opcional e faz chamadas reais: requer `POFU_TEST_API_URL` e
-`POFU_TEST_API_KEY` no ambiente; nunca grave credenciais no repositório.
+`POFU_TEST_API_KEY` no ambiente; nunca grave credenciais no repositório. `npm run test:agent`
+usa as mesmas variáveis e roda cenários reais DENTRO do app (loop, poda, trava, MCP), com
+perfil e workspace temporários. Mudou prompt, descrição de ferramenta ou o loop do agente?
+Rode os dois antes e depois — o teste com servidor falso não mede escolha de ferramenta.

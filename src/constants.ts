@@ -9,7 +9,7 @@
 export const system_prompt = (path: string, web_search: boolean, vision: boolean) => `You are a senior software engineering assistant with direct access to the local project files. The current working directory is: ${path}. Write your replies in the SAME language the user writes to you in, whatever language this prompt, the code or the comments happen to be in.
 
 WORK CYCLE — investigate → change → verify → report:
-1. INVESTIGATE before acting: list_files, search_files and read_file to understand the structure, the conventions and the style BEFORE creating or changing code. Do not assume file names, dependencies or frameworks — check. To find where something is defined or used, search_files is faster and cheaper than reading whole files.
+1. INVESTIGATE before acting: list_files, search_files, list_definitions and read_file to understand the structure, the conventions and the style BEFORE creating or changing code. For a large file, list_definitions first and then read only the part you need. Do not assume file names, dependencies or frameworks — check. To find where something is defined or used, search_files is faster and cheaper than reading whole files.
 2. DO WHAT WAS ASKED. Re-read the request before answering and check it item by item: a request with three parts needs all three done. If the user points at a specific problem, that problem exists — keep looking until you find it instead of concluding everything is fine.
 3. CHANGE in small steps: one change at a time, each followed by a check. Idiomatic code, following the conventions already present in the project.
 4. VERIFY every change before moving on (see TESTING).
@@ -22,6 +22,8 @@ EDITING FILES — the most important rule:
 - Snippet not found? Do NOT repeat the same call: rebuild old_text from the current_excerpt in the failure, or read the file again.
 - If a write is BLOCKED because you never read the file (or it changed on disk since), the fix is to call read_file and try again. NEVER delete the file to recreate it: that destroys the very content the guard is protecting, and delete_file refuses for the same reason. delete_file is only for a removal the user asked for, or for a temporary file of your own.
 - Before rewriting a whole file, read ALL of its parts. Never create temporary files or use shell commands to get around tool output limits: a partial result carries its exact cursor (char_offset for read_file; result_id and next_offset for read_tool_result, which also recovers compacted "history:" results after a restart). Do NOT repeat commands or HTTP mutations to recover their output.
+- When the user gives a filename, call read_file directly; it reports missing files and size errors itself. Its query scans the entire file up to 25 MiB, including minified lines, independently of the returned context window. A large file does not require a preliminary ls/stat command or a temporary extraction script.
+- Do NOT read or search files with shell commands (cat/type/head/grep/findstr/sed/node -e), not even to double-check a value: read_file (with query) and search_files reach any file, and what they return is already exact.
 - Do not re-read what is already in the conversation: the earlier result is still valid while the file is unchanged. To find something, search_files beats reading whole files (output_mode files/count first when the term is common).
 
 TESTING AND VERIFICATION — never say it is done without having checked:
@@ -60,7 +62,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // Modelos de raciocínio gastam boa parte do orçamento no bloco de think antes de
   // emitir o tool_call; com folga de menos, a chamada é cortada no meio dos argumentos
   // e chega com JSON quebrado (finish_reason 'length').
-  maxTokens: 16384,
+  maxTokens: 32768,
   // Teto opcional do HISTÓRICO por requisição, em tokens (0 = desligado). Sem ele o
   // orçamento sai só do n_ctx, e contexto grande não é de graça em API paga: num servidor
   // de 262k a poda nunca dispara e cada requisição reenvia o histórico inteiro — medido em
@@ -75,7 +77,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // escolha explícita do usuário, que aí sabe que depende do suporte do servidor.
   thinkLevel: 'padrao', // 'padrao' | 'desligado' | 'baixo' | 'medio' | 'alto'
   cmdTimeout: 20, // segundos até um comando ser considerado "rodando em segundo plano"
-  webSearch: false, // habilita as ferramentas de busca na web (web_search / fetch_url)
+  webSearch: true, // habilita as ferramentas de busca na web (web_search / fetch_url)
   execMode: 'manual', // 'manual' pede confirmação antes de rodar comandos; 'auto' executa direto
   // Janela de console que o Windows abre ao rodar um comando. Oculta por padrão: numa
   // tarefa longa o agente dispara dezenas de comandos e cada um piscava um terminal por
@@ -91,7 +93,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // pequeno parar de chamar ferramenta.
   customPrompt: '',
   promptMode: 'append',
-  skills: []
+  skills: [],
+  // Nenhum servidor MCP de fábrica: cada ferramenta deles vai em toda requisição.
+  mcpConfig: ''
 };
 
 // Cabeçalho do bloco de instruções do usuário no prompt. Vem separado e nomeado porque
@@ -164,6 +168,11 @@ export const CHARS_PER_TOKEN = 3.5;             // média de código-fonte (text
 export const READ_FILE_FALLBACK_CHARS = 40000;  // enquanto o n_ctx do modelo não foi lido
 export const READ_FILE_MIN_CHARS = 4000;        // janela mínima, para a leitura sempre render algo
 export const READ_FILE_CHARS_CEILING = 400000;  // trava final contra minificado de vários MB
+// Acima disso, read_file SEM query/offset/limit num arquivo de código devolve a estrutura
+// (list_definitions) em vez do conteúdo, e o inteiro sai com full: true. Medido com o Qwen
+// 27B local: 22 mil caracteres lidos inteiros custaram 17 s; 230 mil, 182 s e 122 mil tokens
+// de prompt para achar uma função. 60 mil (~17 mil tokens) fica entre os dois.
+export const READ_OUTLINE_MIN_CHARS = 60000;
 
 // O piso é MIN_CHARS, e não o fallback: usar o fallback como piso daria a um modelo de
 // 8k uma leitura de ~11k tokens — maior que o contexto inteiro dele.
@@ -182,6 +191,11 @@ export function readCharBudget(modelCtx: number): number {
 // mesmo com o histórico "dentro do limite".
 export const CONTEXT_MARGIN_TOKENS = 256;     // folga para o template de chat do servidor
 export const HISTORY_MIN_FRACTION = 0.2;      // piso, caso maxTokens seja quase a janela toda
+// Teto do que o orçamento reserva para a RESPOSTA, como fração do n_ctx. O maxTokens é o
+// limite pedido ao servidor, não o que a resposta realmente usa: reservá-lo inteiro, com um
+// valor maior que o contexto (650 mil num perfil real), deixava o histórico só com o piso
+// acima e compactava cedo demais. Metade da janela cobre o raciocínio mais longo.
+export const RESPOSTA_MAX_FRACAO = 0.5;
 export const KEEP_RECENT_TOOL_RESULTS = 6;    // resultados recentes que nunca são podados
 
 // Quando a poda dispara, ela desce até esta FRAÇÃO do orçamento em vez de raspar o mínimo

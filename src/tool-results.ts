@@ -66,13 +66,14 @@ export function formatFileWindow(filename: string, res: any) {
 export const readFileTool = {
   type: 'function', function: {
     name: 'read_file',
-    description: 'Reads a UTF-8 text file (up to 25 MiB, minified lines included). Omit limit to get the whole file when it fits; otherwise the result ends with the exact char_offset to continue. query jumps to a literal anywhere in the file. Re-reading an unchanged range returns a short "unchanged" note instead of the content. Call it directly for a known filename, without ls/stat first.',
+    description: 'Reads UTF-8 workspace files up to 25 MiB, including files with millions of characters in a single minified line. query searches the ENTIRE file and returns the matching context directly; the context budget does not limit how far query can search. Omit limit to return the whole file when it fits; otherwise follow the exact char_offset. For a known filename, call this directly without a terminal existence/size check. Re-reading an unchanged range returns a short "unchanged" note instead of the content.',
     parameters: { type: 'object', properties: {
       filename: { type: 'string', description: 'Path relative to the workspace (an absolute path inside it also works).' },
       offset: { type: 'integer', description: 'First line, 1-based.' },
       limit: { type: 'integer', description: 'Max lines. Omit to read as much as fits.' },
       query: { type: 'string', description: 'Literal text to jump to; searches the whole file.' },
-      char_offset: { type: 'integer', description: 'Cursor from a previous partial read; overrides offset.' }
+      char_offset: { type: 'integer', description: 'Cursor from a previous partial read; overrides offset.' },
+      full: { type: 'boolean', description: 'Return a large source file whole instead of its structure (costly; e.g. before rewriting it).' }
     }, required: ['filename'] }
   }
 };

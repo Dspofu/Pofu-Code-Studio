@@ -28,6 +28,10 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `src/edit-diagnostics.ts` | Diagnóstico de edições sem correspondência; sugestões nunca escrevem no arquivo |
 | `src/edit-match.ts` | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e lote `edits` atômico |
 | `src/tool-output.ts` | Formato compacto ao modelo: busca agrupada, listagens, terminal limpo, glob e sugestão de caminho |
+| `src/outline.ts` | `list_definitions`: definições por linguagem (regex) com a linha, sem os corpos |
+| `src/loop-guard.ts` | Trava de looping pelo resultado (mesma chamada, mesmo resultado, 2x sem efeito colateral no meio) |
+| `src/mcp.ts` | Cliente MCP no main: stdio e Streamable HTTP; config `mcpServers` no formato do Claude Desktop |
+| `src/atalho-windows.ts` | Ao abrir (instalado, Windows): repara o ícone do atalho do Menu Iniciar que aponta para um `.exe` que sumiu |
 | `src/tool-results.ts` | Recorte de arquivos, schemas de leitura e cache recuperável de resultados |
 | `src/providers.ts` | Migração da conexão antiga, validação e seleção de perfis de provedor |
 | `src/mention-highlight.ts`, `src/workspace-path.ts` | Menções azuis sem alterar o textarea e resolução de caminhos do projeto |
@@ -84,6 +88,8 @@ Cada um tem correspondente 1:1 em `src/preload.cts` e assinatura em `ElectronAPI
 | `get-app-info` | Lê `package.json` (`../package.json`, pois main roda de out/): githubUrl, version, name |
 | `search-files` | Busca texto/regex com filtro glob; devolve `totalFound` (cap 10000), `fileCounts` e `matches` (limitados a max); `opts.mode` `files`/`count` pula o texto |
 | `list-tree` | Árvore do workspace (para o menu `@`) |
+| `outline` | Estrutura de um arquivo ou pasta (`list_definitions`); arquivos > 2 MiB pulados |
+| `mcp-sync` / `mcp-status` / `mcp-call` | Conecta os servidores MCP da config (mantém os que não mudaram), estado e chamada de ferramenta |
 | `execute-command` | Spawn; Windows: `cmd.exe` + `detached:false` + `windowsHide` (ver CLAUDE.md); background só por READY_PATTERNS, idle **pós-primeira-saída** ou timeout |
 | `read-process-output` / `wait-for-process` / `list-processes` / `stop-process` / `clear-finished-processes` | Gestão dos processos em segundo plano |
 | `load-store` / `save-store` | Lê/grava `app-store.json` do userData |

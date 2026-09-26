@@ -1,7 +1,7 @@
 {
   "name": "pofu-code-studio",
   "productName": "Pofu Code Studio",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Agente de código em desktop (Electron) para qualquer API compatível com OpenAI: lê e edita o projeto, roda comandos e servidores em segundo plano e valida o que faz.",
   "main": "out/main.js",
   "scripts": {
@@ -17,10 +17,11 @@
     "dist:win": "electron-builder --win nsis",
     "predist": "npm run build",
     "dist": "electron-builder --linux deb --win nsis",
-    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs",
+    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs",
     "test:integration": "npm run build && node scripts/run-electron-tests.cjs",
     "test:startup": "npm run build && node scripts/run-startup-tests.cjs",
-    "test:api": "npm run build && node scripts/test-api.mjs"
+    "test:api": "npm run build && node scripts/test-api.mjs",
+    "test:agent": "npm run build && electron scripts/test-agente-real.cjs"
   },
   "keywords": [
     "code-agent",

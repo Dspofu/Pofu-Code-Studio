@@ -23,10 +23,28 @@ let posts = 0, completions = 0;
 const providerRequests = [];
 let validateThinking = false;
 const thinkingBodies = [];
+// Agente roteirizado: cada requisição de chat consome o próximo passo (chamada de
+// ferramenta ou texto final), com usage e timings no último chunk, como o llama.cpp manda.
+let agenteRoteiro = null;
+const agenteCorpos = [];
 const server = createServer((req, res) => {
   providerRequests.push({ url: req.url, authorization: req.headers.authorization });
   if (req.url === '/v1/chat/completions') completions++;
   res.setHeader('Content-Type', 'application/json');
+  if (req.url === '/v1/chat/completions' && agenteRoteiro) {
+    let raw = ''; req.on('data', chunk => raw += chunk); req.on('end', () => {
+      agenteCorpos.push(JSON.parse(raw));
+      const passo = agenteRoteiro.shift() || { content: 'FIM_ROTEIRO' };
+      const delta = passo.tool
+        ? { tool_calls: [{ index: 0, id: passo.id, type: 'function', function: { name: passo.tool, arguments: JSON.stringify(passo.args) } }] }
+        : { content: passo.content };
+      const fim = { choices: [{ delta: {}, finish_reason: passo.tool ? 'tool_calls' : 'stop' }],
+        usage: { prompt_tokens: Math.round(raw.length / 4), completion_tokens: 5, total_tokens: Math.round(raw.length / 4) + 5 },
+        timings: { cache_n: 900, prompt_n: 100, prompt_per_second: 512.4 } };
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.end('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: null }] }) + '\n\ndata: ' + JSON.stringify(fim) + '\n\ndata: [DONE]\n\n');
+    }); return;
+  }
   if (req.url === '/v1/chat/completions' && validateThinking) {
     let raw = ''; req.on('data', chunk=>raw+=chunk); req.on('end', ()=>{
       const body = JSON.parse(raw); thinkingBodies.push(body);
@@ -204,6 +222,18 @@ async function main() {
     assert.equal(thinkingBodies[1].reasoning_effort, 'high');
     validateThinking = false;
     await js(`(() => { const slider=document.getElementById('think-slider');slider.value='0';slider.dispatchEvent(new Event('input'));slider.dispatchEvent(new Event('change')); })();new Promise(r=>setTimeout(r,80))`);
+  });
+  await check('trava de loop bloqueia a 3ª chamada com o mesmo resultado; métricas do cache aparecem', async () => {
+    const busca = { tool: 'search_files', args: { query: 'TERMO_QUE_NAO_EXISTE_POFU' } };
+    agenteRoteiro = [{ ...busca, id: 'loop-1' }, { ...busca, id: 'loop-2' }, { ...busca, id: 'loop-3' }, { content: 'FIM_ROTEIRO' }];
+    await typeSlash('Teste sintético de loop.'); await pressSlash('Enter');
+    await js(`new Promise((resolve,reject)=>{let n=0;const poll=()=>document.getElementById('chat-box').textContent.includes('FIM_ROTEIRO')?resolve(true):++n>250?reject(new Error('Loop script did not finish')):setTimeout(poll,40);poll();})`);
+    const resultados = agenteCorpos[3].messages.filter(m => m.role === 'tool').slice(-3).map(m => m.content);
+    assert.match(resultados[0], /No matches/); assert.equal(resultados[1], resultados[0]);
+    assert.match(resultados[2], /^\{"error":"Loop detected/);
+    const texto = await js(`document.getElementById('chat-box').textContent`);
+    assert.match(texto, /cache 90%/); assert.match(texto, /leitura 512 tok\/s/);
+    agenteRoteiro = null;
   });
   await check('menções azuis preservam texto, espaços e e-mails', async () => {
     const draft = 'Revise @src/main.ts e @"docs/meu arquivo.md"\nContato: dev@pofu.test';
@@ -383,6 +413,48 @@ async function main() {
     assert.equal(JSON.parse(r.second).unchanged, true); assert.match(JSON.parse(r.second).note, /history:dedup-1/);
     assert.match(r.other, /original/);
   });
+  await check('list_definitions mostra a estrutura sem os corpos', async () => {
+    writeFileSync(join(workspace, 'src', 'modulo.ts'), 'export class Carrinho {\n  total(): number {\n    return 1;\n  }\n}\nexport function soma(a: number, b: number) {\n  return a + b;\n}\n');
+    assert.equal(await tool('list_definitions', { path: 'src/modulo.ts' }),
+      'src/modulo.ts (9 lines)\n  1: export class Carrinho\n    2: total(): number\n  6: export function soma(a: number, b: number)');
+    const pasta = await tool('list_definitions', { path: 'src' });
+    assert.match(pasta, /^src\/lote\.py \(\d+ lines\)$/m); assert.match(pasta, /^src\/modulo\.ts \(9 lines\)$/m);
+    const falta = data(await tool('list_definitions', { path: 'src/modulx.ts' }));
+    assert.match(falta.error, /Path not found/); assert.deepEqual(falta.did_you_mean, ['src/modulo.ts']);
+    assert.match(data(await tool('list_definitions', { path: 'many.txt' })).error, /does not support/);
+  });
+  await check('read_file de código grande devolve a estrutura; full: true devolve tudo', async () => {
+    const fontes = Array.from({ length: 1500 }, (_, i) => `export function f${i}(x: number) {\n  return x * ${i} + 1; // comentário comentário\n}`).join('\n');
+    writeFileSync(join(workspace, 'src', 'enorme.ts'), fontes);
+    const est = await tool('read_file', { filename: 'src/enorme.ts' });
+    assert.match(est, /^\[File "src\/enorme\.ts" is large: [\d,]+ characters \(~[\d,]+ tokens\), 4500 lines\./);
+    assert.match(est, /^  31: export function f10\(x: number\)$/m);
+    // Teto de 400 definições por arquivo: o resto é indicado, não despejado.
+    assert.match(est, /more definitions omitted; read_file with query/);
+    // A estrutura não conta como ter lido o arquivo: reescrever continua bloqueado.
+    assert.equal(data(await tool('write_file', { filename: 'src/enorme.ts', content: 'x' })).success, false);
+    assert.match(await tool('read_file', { filename: 'src/enorme.ts', query: 'function f999(' }), /return x \* 999 \+ 1/);
+    const tudo = await tool('read_file', { filename: 'src/enorme.ts', full: true });
+    assert.ok(tudo.startsWith('export function f0(') && tudo.includes('function f1499('));
+  });
+  await check('MCP: servidor do formulário vira ferramenta do agente e sai ao ser removido', async () => {
+    const mcpNomes = () => js(`import('./out/renderer.js').then(m => m.activeTools().map(t => t.function.name).filter(n => n.startsWith('mcp__')))`);
+    const salvaMcp = (texto) => js(`(() => { document.getElementById('btn-open-settings').click(); const t = document.getElementById('input-mcp'); t.value = ${JSON.stringify(texto)}; t.dispatchEvent(new Event('input', { bubbles: true })); document.getElementById('btn-save-settings').click(); })()`);
+    const esperaMcp = (condicao, erro) => js(`new Promise((resolve, reject) => { let n = 0; const poll = () => import('./out/renderer.js').then(m => { const nomes = m.activeTools().map(t => t.function.name); (${condicao}) ? resolve(true) : ++n > 300 ? reject(new Error(${JSON.stringify(erro)} + ': ' + document.getElementById('mcp-status').innerText)) : setTimeout(poll, 50); }); poll(); })`);
+    await salvaMcp(JSON.stringify({ mcpServers: { fake: { command: 'node', args: [resolve('scripts/fixtures/mcp-fake.mjs')] } } }, null, 2));
+    await esperaMcp(`nomes.includes('mcp__fake__somar')`, 'MCP did not connect');
+    assert.deepEqual(await mcpNomes(), ['mcp__fake__somar', 'mcp__fake__anotar', 'mcp__fake__falhar']);
+    assert.equal(await tool('mcp__fake__somar', { a: 2, b: 3 }), '5');
+    assert.match(data(await tool('mcp__fake__falhar', {})).error, /falha proposital/);
+    const schema = await js(`import('./out/renderer.js').then(m => m.activeTools().find(t => t.function.name === 'mcp__fake__somar').function.parameters)`);
+    assert.equal(schema.$schema, undefined); assert.deepEqual(schema.required, ['a', 'b']);
+    assert.match(await js(`document.getElementById('mcp-status').innerText`), /● fake — 3 ferramenta\(s\), ~\d+ tokens por mensagem/);
+    if (captures) { await js(`document.getElementById('btn-open-settings').click(); document.querySelector('[data-tab="tab-personalizacao"]').click(); document.getElementById('input-mcp').scrollIntoView()`); await capture('studio-mcp.png'); await js(`document.getElementById('btn-save-settings').click()`); }
+    await salvaMcp('{ quebrado');
+    assert.match(await js(`document.getElementById('settings-dirty').innerText`), /MCP: o JSON não é válido/);
+    await js(`(() => { const t = document.getElementById('input-mcp'); t.value = ''; t.dispatchEvent(new Event('input', { bubbles: true })); document.getElementById('btn-save-settings').click(); })()`);
+    await esperaMcp(`!nomes.some(n => n.startsWith('mcp__'))`, 'MCP tools were not removed');
+  });
   await check('delete_file mantém a proteção de leitura', async () => {
     assert.equal(data(await tool('delete_file', { filename: 'protected.txt' })).success, false);
     await tool('read_file', { filename: 'protected.txt' });
@@ -531,6 +603,21 @@ async function main() {
       return { cortes, curado, truncado };
     })`);
     assert.equal(r.cortes, 0); assert.deepEqual(r.curado, [0, 0]); assert.deepEqual(r.truncado, [10, 10, 10]);
+  });
+  if (process.platform === 'win32') await check('atalho do Windows com ícone apontando para .exe que sumiu é reparado', async () => {
+    const { shell } = require('electron');
+    const { reparaIconeDoAtalho } = await import(pathToFileURL(resolve('out/atalho-windows.js')).href);
+    const lnk = join(profile, 'Pofu teste.lnk'), outro = join(profile, 'Outro app.lnk');
+    // Como fica depois de mover a pasta: alvo corrigido pelo Windows, ícone na pasta antiga.
+    assert.ok(shell.writeShortcutLink(lnk, 'create', { target: process.execPath, icon: join(profile, 'pasta-antiga', 'app.exe'), iconIndex: 0, appUserModelId: 'com.pofu.teste.aumid' }));
+    assert.equal(reparaIconeDoAtalho(shell, lnk, process.execPath), 'reparado');
+    const depois = shell.readShortcutLink(lnk);
+    assert.equal(depois.icon.toLowerCase(), process.execPath.toLowerCase());
+    assert.equal(depois.appUserModelId, 'com.pofu.teste.aumid');
+    assert.equal(reparaIconeDoAtalho(shell, lnk, process.execPath), 'ok');
+    assert.ok(shell.writeShortcutLink(outro, 'create', { target: 'C:\\Windows\\notepad.exe', icon: join(profile, 'sumiu.exe'), iconIndex: 0 }));
+    assert.equal(reparaIconeDoAtalho(shell, outro, process.execPath), 'alheio');
+    assert.equal(reparaIconeDoAtalho(shell, join(profile, 'nao-existe.lnk'), process.execPath), 'ausente');
   });
   await check('compactação preserva resultado recente e o histórico original', async () => {
     const result = await js(`import('./out/renderer.js').then(m => {

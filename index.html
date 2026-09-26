@@ -2195,6 +2195,9 @@
       line-height: 1.5; outline: none;
     }
     .prompt-textarea:focus { border-color: var(--accent-2, #a5d676); }
+    /* JSON se lê em fonte monoespaçada; o estado vem logo abaixo, uma linha por servidor. */
+    .mcp-textarea { font-family: ui-monospace, Consolas, monospace; font-size: 0.76rem; }
+    .mcp-status { margin-top: 6px; font-size: 0.74rem; line-height: 1.5; white-space: pre-line; color: var(--text-2, var(--text)); }
 
     /* Rodapé do menu: diz se a lista de níveis foi confirmada pelo servidor. */
     .think-menu-nota {
@@ -2657,6 +2660,12 @@
                   <span class="cfg-hint">Impede que uma janela de terminal apareça na tela a cada <code>execute_command</code>. Desligue apenas para acompanhar ao vivo o que o agente está rodando — no Windows a janela do console volta a abrir a cada comando.</span>
                 </div>
                 <label class="switch"><input type="checkbox" id="check-hide-console"><span class="switch-slider"></span></label>
+              </div>
+              <div class="config-group">
+                <label for="input-mcp">Servidores MCP</label>
+                <textarea id="input-mcp" class="prompt-textarea mcp-textarea" spellcheck="false" placeholder='{ "mcpServers": { "arquivos": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/projetos"] } } }'></textarea>
+                <span class="cfg-hint">Cole o JSON do README do servidor — o mesmo formato do Claude Desktop, Cursor e Cline. Local: <code>command</code>, <code>args</code> e <code>env</code>; remoto: <code>url</code> e <code>headers</code>; <code>"disabled": true</code> desliga sem apagar. As ferramentas de cada servidor vão ao modelo em toda mensagem: deixe ligados só os que você usa.</span>
+                <div id="mcp-status" class="mcp-status"></div>
               </div>
               <div class="config-group">
                 <label for="input-cmdtimeout">Timeout de comando (segundos)</label>

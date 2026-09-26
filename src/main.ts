@@ -4,7 +4,7 @@
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage } from 'electron';
-import { dirname, join } from 'path';
+import { dirname, join, relative } from 'path';
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawn } from 'child_process';
@@ -17,6 +17,9 @@ import { fileWindow } from './tool-results.js';
 import { editDiagnostics } from './edit-diagnostics.js';
 import { applyEdits } from './edit-match.js';
 import { globToRegex, suggestPaths } from './tool-output.js';
+import { extraiDefinicoes, suportaEstrutura } from './outline.js';
+import { McpServidor, textoDoResultado, type McpConfig } from './mcp.js';
+import { reparaIconeDoAtalho } from './atalho-windows.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -111,6 +114,13 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+
+  // Antes da primeira notificação: ela também puxa o ícone pelo atalho (ver atalho-windows.ts).
+  if (isWindows && app.isPackaged) {
+    const menus = [app.getPath('appData'), process.env.ProgramData || 'C:\\ProgramData'].map(base => join(base, 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${packageJson.productName}.lnk`));
+    if (menus.some(lnk => reparaIconeDoAtalho(shell, lnk, process.execPath) === 'reparado'))
+      spawn('ie4uinit.exe', ['-show'], { windowsHide: true }).on('error', () => { /* o ícone novo aparece no próximo login */ });
+  }
 
   void checkForUpdates().then(result => {
     if (!result.success || !result.maior || !Notification.isSupported()) return;
@@ -758,6 +768,42 @@ function arvoreDoProjeto(rootPath) {
 }
 ipcMain.handle('list-tree', async (event, rootPath) => arvoreDoProjeto(rootPath));
 
+// list_definitions: a estrutura (funções, classes, métodos, tipos) de um arquivo ou de uma
+// pasta, sem os corpos. Arquivo acima de 2 MiB quase sempre é gerado/minificado, e a
+// estrutura dele não orienta nada.
+const OUTLINE_MAX_FILES = 200;
+const OUTLINE_MAX_BYTES = 2 * 1024 * 1024;
+ipcMain.handle('outline', async (event, target, opts: any = {}) => {
+  let st;
+  try { st = statSync(target); } catch (e) {
+    const suggestions = opts.workspace ? suggestPaths(target, arvoreDoProjeto(opts.workspace).files) : [];
+    return { success: false, error: `Path not found: ${target}`, ...(suggestions.length ? { did_you_mean: suggestions } : {}) };
+  }
+  const pasta = st.isDirectory();
+  if (!pasta && !suportaEstrutura(target))
+    return { success: false, error: `list_definitions does not support this file type: ${target}. Use read_file (with query to jump to a term).` };
+  const nameRe = opts.pattern ? globToRegex(String(opts.pattern)) : null;
+  const fontes = pasta
+    ? arvoreDoProjeto(target).files.filter(f => suportaEstrutura(f) && (!nameRe || nameRe.test(f) || nameRe.test(f.slice(f.lastIndexOf('/') + 1)))).map(f => join(target, f))
+    : [target];
+  const base = opts.workspace || (pasta ? target : dirname(target));
+  const files = [], notes = [];
+  let grandes = 0;
+  for (const full of fontes.slice(0, OUTLINE_MAX_FILES)) {
+    let buf;
+    try {
+      if (statSync(full).size > OUTLINE_MAX_BYTES) { grandes++; continue; }
+      buf = readFileSync(full);
+    } catch (e) { continue; }
+    if (looksBinary(buf)) continue;
+    const file = relative(base, full).replace(/\\/g, '/') || full;
+    files.push({ file, ...extraiDefinicoes(buf.toString('utf-8'), full) });
+  }
+  if (grandes) notes.push(`[${grandes} file(s) over 2 MiB skipped (likely generated or minified).]`);
+  if (fontes.length > OUTLINE_MAX_FILES) notes.push(`[${fontes.length - OUTLINE_MAX_FILES} more source files not scanned; narrow path or pattern.]`);
+  return { success: true, files, notes };
+});
+
 // ==========================================================================
 //  Execução de comandos com gerenciamento inteligente de processos
 // ==========================================================================
@@ -1028,6 +1074,43 @@ ipcMain.handle('clear-finished-processes', async () => {
 // Ao fechar o app, encerra tudo que ficou rodando em segundo plano
 app.on('before-quit', () => {
   for (const [pid] of procs) killTree(pid, { force: true });
+  for (const { srv } of mcp.values()) srv.fechar();
+});
+
+// ==========================================================================
+//  MCP — servidores configurados pelo usuário (ver src/mcp.ts)
+// ==========================================================================
+// Por nome, com a config serializada: sincronizar mantém conectado o que não mudou —
+// reconectar um servidor via npx custa segundos — e reinicia só o que mudou ou saiu.
+const mcp = new Map<string, { cfg: string; srv: McpServidor }>();
+function estadoMcp() {
+  return [...mcp.values()].map(({ srv }) => ({ name: srv.nome, status: srv.estado, error: srv.erro || undefined, tools: srv.ferramentas }));
+}
+ipcMain.handle('mcp-sync', async (event, servers: Record<string, McpConfig> = {}) => {
+  const novos = servers && typeof servers === 'object' ? servers : {};
+  for (const [nome, { cfg, srv }] of mcp) {
+    if (JSON.stringify(novos[nome] ?? null) !== cfg) { srv.fechar(); mcp.delete(nome); }
+  }
+  const conexoes = [];
+  for (const [nome, cfg] of Object.entries(novos)) {
+    if (mcp.has(nome)) continue;
+    const srv = new McpServidor(nome, cfg, app.getVersion(), (pid) => killTree(pid, { force: true }));
+    mcp.set(nome, { cfg: JSON.stringify(cfg), srv });
+    conexoes.push(srv.conectar());
+  }
+  await Promise.all(conexoes);
+  return estadoMcp();
+});
+ipcMain.handle('mcp-status', async () => estadoMcp());
+ipcMain.handle('mcp-call', async (event, server, tool, args) => {
+  const e = mcp.get(server);
+  if (!e) return { success: false, error: `Unknown MCP server: ${server}` };
+  try {
+    const r = await e.srv.chamar(tool, args);
+    return { success: !r?.isError, isError: !!r?.isError, text: textoDoResultado(r) };
+  } catch (err) {
+    return { success: false, error: String(err && err.message || err) };
+  }
 });
 
 // Persistência local (chats e configurações) no diretório de dados do usuário

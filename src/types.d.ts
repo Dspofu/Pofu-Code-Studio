@@ -99,6 +99,17 @@ interface Settings {
   promptMode: PromptMode;
   /** Skills importadas. As ativas entram no prompt de sistema. */
   skills: Skill[];
+  /** JSON dos servidores MCP como o usuário escreveu ({ "mcpServers": {…} }). Texto, não
+   *  objeto: preserva a formatação e os comentários de quem colou do README. */
+  mcpConfig?: string;
+}
+
+/** Estado de um servidor MCP no processo main. */
+interface McpEstado {
+  name: string;
+  status: 'conectando' | 'ok' | 'erro' | 'desligado';
+  error?: string;
+  tools: Array<{ name: string; description?: string; inputSchema?: any; annotations?: any }>;
 }
 
 /** Anexo de arquivo preso à mensagem do usuário. */
@@ -265,6 +276,10 @@ interface ElectronAPI {
   selectFolder(): Promise<string | null>;
   listFiles(dirPath: string): Promise<any>;
   listTree(rootPath: string): Promise<any>;
+  outline(target: string, opts?: any): Promise<any>;
+  mcpSync(servers: Record<string, any>): Promise<McpEstado[]>;
+  mcpStatus(): Promise<McpEstado[]>;
+  mcpCall(server: string, tool: string, args: any): Promise<{ success: boolean; isError?: boolean; text?: string; error?: string }>;
   readFile(filePath: string, opts?: any): Promise<any>;
   writeFile(filePath: string, content: string, opts?: any): Promise<any>;
   editFile(filePath: string, oldText: string, newText: string, replaceAll?: boolean, opts?: any): Promise<any>;
