@@ -85,6 +85,15 @@ async function main() {
     await until(() => js(`import('./out/renderer.js').then(m=>m.studioRemoteSnapshot().consumption?.period==='7d')`), 'atualização do período');
     await site(`document.getElementById('consumption-close').click()`);
   });
+  await check('raciocínio pelo painel do compositor sincroniza com o Studio', async () => {
+    await site(`document.getElementById('quick-thinking').click();document.querySelector('#think-scale [data-level="alto"]').click()`);
+    await until(() => js(`import('./out/renderer.js').then(m=>m.studioRemoteSnapshot().thinkLevel==='alto')`), 'raciocínio alto no desktop');
+    await until(() => site(`document.getElementById('thinking-label').textContent==='Alto' && !document.getElementById('think-slider').disabled`), 'nível confirmado no site');
+    assert.equal(await site(`document.getElementById('controls-modal').hidden`), true);
+    await site(`(()=>{const input=document.getElementById('think-slider');input.value=String([...document.querySelectorAll('#think-scale button')].findIndex(b=>b.dataset.level==='padrao'));input.dispatchEvent(new Event('input'));input.dispatchEvent(new Event('change'))})()`);
+    await until(() => js(`import('./out/renderer.js').then(m=>m.studioRemoteSnapshot().thinkLevel==='padrao')`), 'barra voltou ao padrão no desktop');
+    await site(`document.getElementById('think-slider').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+  });
   async function send(text) {
     await until(() => site(`!document.getElementById('send').disabled && document.getElementById('task-status').textContent==='Pronto para conversar'`), 'envio habilitado');
     await site(`document.getElementById('message').value=${JSON.stringify(text)};document.getElementById('composer').requestSubmit()`);
@@ -129,9 +138,12 @@ async function main() {
       assert.equal(await site(`document.documentElement.scrollWidth<=innerWidth+1`), true);
       assert.equal(await site(`getComputedStyle(document.getElementById('devices')).display !== 'none' && document.getElementById('devices').getBoundingClientRect().width > 0`), true);
       await site(`document.getElementById('quick-thinking').click()`);
-      assert.equal(await site(`document.getElementById('controls-modal').hidden`), false);
-      assert.equal(await site(`document.activeElement.id`), 'thinking');
-      await site(`document.getElementById('controls-close').click()`);
+      assert.equal(await site(`document.getElementById('think-menu').hidden`), false);
+      assert.equal(await site(`document.getElementById('controls-modal').hidden`), true);
+      assert.equal(await site(`document.activeElement.id`), 'think-slider');
+      assert.equal(await site(`(()=>{const r=document.getElementById('think-menu').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1})()`), true);
+      await site(`document.getElementById('think-slider').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+      assert.equal(await site(`document.getElementById('think-menu').hidden`), true);
       if (width === 390) assert.ok(await site(`document.getElementById('send').getBoundingClientRect().bottom<=innerHeight+1`), 'Compositor precisa aparecer na primeira tela do celular');
       writeFileSync(join(capture, name + '.png'), (await web.webContents.capturePage()).toPNG()); web.hide();
       await site(`document.getElementById('controls-open').click()`);
