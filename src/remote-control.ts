@@ -87,7 +87,7 @@ export class RemoteControl {
       if (generation !== this.generation) return;
       if (response.status === 401 || response.status === 403) { link.enabled = false; this.save(); this.announce('error', 'Conexão revogada ou acesso indisponível. Confira a conta e faça o pareamento novamente.'); return; }
       if (!response.ok || !/json/i.test(response.headers.get('content-type') || '')) throw new Error('sync unavailable');
-      const raw = await response.text(); if (raw.length > 400000) throw new Error('response too large');
+      const raw = await response.text(); if (raw.length > 6500000) throw new Error('response too large');
       const data = JSON.parse(raw);
       if (generation !== this.generation) return;
       this.sent = data.needsSnapshot ? '' : encoded; this.results = this.results.filter(r => !results.includes(r)); this.delay = 1000;

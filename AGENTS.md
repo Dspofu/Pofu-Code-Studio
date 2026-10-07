@@ -25,6 +25,7 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `src/main.ts` | Processo main: janela, menu, **todos os 25 handlers IPC** (fs, processos, HTTP, captura, busca, store) |
 | `src/preload.cts` | Ponte `contextBridge` → `window.electronAPI` (`.cts` porque o preload é CommonJS → `preload.cjs`) |
 | `src/renderer.ts` | Cérebro: estado, loop do agente, `tools`, streaming, cards de ferramenta, diff, menções `@`, anexos, workspace |
+| `src/remote-history.ts` | Referências efêmeras de mensagens e revisão para recusar alterações sobre histórico remoto antigo |
 | `src/edit-diagnostics.ts` | Diagnóstico de edições sem correspondência; sugestões nunca escrevem no arquivo |
 | `src/edit-match.ts` | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e lote `edits` atômico |
 | `src/tool-output.ts` | Formato compacto ao modelo: busca agrupada, listagens, terminal limpo, glob e sugestão de caminho |

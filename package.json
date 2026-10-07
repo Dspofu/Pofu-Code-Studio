@@ -17,7 +17,7 @@
     "dist:win": "electron-builder --win nsis",
     "predist": "npm run build",
     "dist": "electron-builder --linux deb --win nsis",
-    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs scripts/consumption.test.mjs scripts/remote-control.test.mjs",
+    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs scripts/consumption.test.mjs scripts/remote-control.test.mjs scripts/remote-history.test.mjs",
     "test:consumption": "npm run build && node scripts/run-consumption-tests.cjs",
     "test:integration": "npm run build && node scripts/run-electron-tests.cjs",
     "test:startup": "npm run build && node scripts/run-startup-tests.cjs",

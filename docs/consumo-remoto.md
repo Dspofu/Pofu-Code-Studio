@@ -31,7 +31,11 @@ Pelo site, converse com o agente, acompanhe resposta/ferramentas, envie à fila,
 
 Consumo aparece na mesma área Code: consulta ao conectar, a cada minuto e no botão Atualizar. Chaves comuns/administrativas e endpoint não vão ao site. Desligar no desktop pausa; desconectar no site revoga. Aplicativo retoma a conexão pareada ao abrir até desligar/revogar.
 
-Espelho mostra texto dos últimos 80 blocos/60 mil caracteres. Imagens, anexos e envio de arquivos pelo site ainda não fazem parte desta versão. Histórico completo e recursos locais permanecem no desktop. Sem conexão, comandos novos são recusados; consumo pode estar desatualizado (data acompanha relatório). Comando expirado/reinício não é reproduzido automaticamente.
+Revisão de código de 07/10: o site edita/apaga/regenera mensagens, duplica/limpa/exporta trecho de chats e oferece comandos `/`, processos e compactação. Apagar remove também as mensagens seguintes para preservar sequência das ferramentas. Editar preserva anexos; reenviar/regenerar descarta o ramo com confirmação. Diff/desfazer usa snapshots da conversa e restaura sobre o estado atual do arquivo, com confirmação. Projetos/provedores novos seguem cadastrados no desktop.
+
+Até três PNG/JPEG/WebP podem ser escolhidas/coladas/arrastadas, normalizadas e salvas pelo IPC existente. Modelo com visão obrigatório; pixels vão à inferência e espelho devolve só nomes/miniaturas. Texto segue limitado aos últimos 80 blocos/60 mil caracteres; exportação baixa esse trecho. Sem conexão, comandos novos são recusados; consumo pode estar desatualizado (data acompanha relatório). Comando expirado/reinício não é reproduzido automaticamente. Imagens/processos/desfazer e computadores são gerenciados por plano no servidor.
+
+Necessários API/site compatíveis e reabrir Studio atualizado. Não há novo instalador/release desta revisão. Passaram 90 testes Studio, 15 backend e 22 de integração site/IPC/agente em perfil, workspace e inferência sintéticos; nenhum processo de produção controlado.
 
 ## Desenvolvimento
 

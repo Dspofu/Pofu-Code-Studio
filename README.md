@@ -119,7 +119,9 @@ Pelo site você pode conversar, enviar mensagens à fila, interromper a geraçã
 
 Chaves das APIs não são enviadas ao site. A credencial de pareamento é protegida pelo cofre do sistema. **Desligar** no desktop pausa a ponte; **Desconectar** no site revoga a conexão.
 
-O espelho remoto inclui texto dos últimos 80 blocos/60 mil caracteres. Imagens, anexos e envio de arquivos pelo site ainda não fazem parte dessa versão; o histórico completo permanece no desktop. Consumo e comandos remotos dependem de API/site compatíveis e do acesso Code habilitado na conta.
+Na revisão de código atual, o site também edita/apaga/regenera mensagens, duplica/limpa conversas, recebe imagens e mostra diferenças/desfaz alterações por snapshots. O menu `/` inclui processos e compactação. Até três PNG/JPEG/WebP chegam ao modelo com visão e permanecem anexadas no desktop. Ações respeitam execução, histórico atual e permissões do plano; editar/regenerar não desfaz ferramentas anteriores.
+
+O espelho inclui os últimos 80 blocos/60 mil caracteres, nomes e miniaturas; o histórico completo permanece no desktop. Exportação baixa somente esse trecho. Arquivos gerais e abertura de pastas novas continuam no PC. API/site precisam estar atualizados e o Studio reaberto para as novas capacidades. Esta revisão ainda não tem novo instalador publicado.
 
 ## Comandos com `/`
 

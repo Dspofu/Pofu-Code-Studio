@@ -3,6 +3,7 @@ import { mountMentionHighlight, paintMentions } from './mention-highlight.js';
 import { activateProvider, migrateProviders, rememberProvider, validateProvider, type ProviderConfig } from './providers.js';
 import { consumptionKind, consumptionNames, type ConsumptionPeriod, type ConsumptionReport } from './consumption.js';
 import { mountSlashCommands } from './slash-commands.js';
+import { RemoteHistory } from './remote-history.js';
 import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
 import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
 import { LoopGuard, chaveDaChamada, temEfeito } from './loop-guard.js';
@@ -1491,6 +1492,7 @@ function renderUserMessage(text, attachments, index) {
 // Barra de ações da mensagem (aparece no hover): editar (usuário) / regenerar (agente)
 function attachMsgAction(msgDiv, kind, index) {
   if (index == null) return;
+  msgDiv.dataset.messageIndex = String(index);
   const bar = document.createElement('div');
   bar.className = 'msg-actions';
   const btn = document.createElement('button');
@@ -2105,6 +2107,8 @@ function fillToolResult(card, name, resultStr, extras: ToolExtras = {}) {
 // Mostra o que mudou e dá o botão de reverter. O diff carrega sob demanda: num chat
 // recarregado só existe o snapshotId, e o antes/depois vem do instantâneo em disco.
 function attachDiff(card, alteracao, diffPronto) {
+  card.dataset.snapshotId = alteracao.snapshotId;
+  card.dataset.changedFile = alteracao.arquivo;
   if (card.querySelector('.diff-box')) return;
 
   const box = document.createElement('div');
@@ -5473,8 +5477,11 @@ async function checkForUpdate() {
 //  Inicialização
 // --------------------------------------------------------------------------
 let remoteEnabled = false;
+const remoteHistory = new RemoteHistory();
+let remoteProcesses: any[] = [], remoteProcessOutput = '';
+let remoteDiff: { snapshotId: string; file: string; text: string } = null;
 function remoteChatMessages() {
-  const messages: { role: string; text: string }[] = [];
+  const messages: { role: string; text: string; id?: string; sourceText?: string; editable?: boolean; change?: { snapshotId: string; file: string }; images?: { name: string; thumb: string }[] }[] = [];
   let budget = 60000;
   for (const node of [...el('chat-box').children].reverse()) {
     const item = node as HTMLElement;
@@ -5483,10 +5490,14 @@ function remoteChatMessages() {
     const body = role === 'user' ? q<HTMLElement>('.user-message-text', item) : role === 'assistant' ? q<HTMLElement>('.md-body', item) : item;
     let text = body?.innerText || '';
     if (role === 'assistant') { const reason = q<HTMLElement>('.reasoning-body', item); if (reason?.textContent) text = 'Raciocínio\n' + reason.textContent + '\n\n' + text; }
+    if (!text.trim() && role === 'user' && item.dataset.messageIndex !== undefined) text = (activeChat()?.messages[Number(item.dataset.messageIndex)]?.attachments || []).filter(a => a.imagemPath).map(a => 'Imagem: ' + a.name).join('\n');
     if (!text.trim()) continue;
-    const limit = Math.min(budget, 12000), notice = '[Trecho final; mensagem completa no desktop.]\n';
+    const stored = activeChat()?.messages[Number(item.dataset.messageIndex)], hasReference = item.dataset.messageIndex !== undefined && stored?.role === role;
+    const sourceText = hasReference && typeof stored.content === 'string' && stored.content.length <= 12000 ? stored.content : '';
+    const editable = hasReference && ['user', 'assistant'].includes(role) && !!sourceText && budget > sourceText.length;
+    const limit = Math.min(budget - (editable ? sourceText.length : 0), 12000), notice = '[Trecho final; mensagem completa no desktop.]\n';
     if (text.length > limit) { if (limit <= notice.length) break; text = notice + text.slice(-(limit - notice.length)); }
-    messages.unshift({ role, text }); budget -= text.length;
+    messages.unshift({ role, text, ...(hasReference ? { id: remoteHistory.reference(stored) } : {}), ...(editable ? { sourceText, editable: true } : {}), ...(role === 'tool' && item.dataset.snapshotId ? { change: { snapshotId: item.dataset.snapshotId, file: item.dataset.changedFile } } : {}), ...(role === 'user' && stored?.attachments ? { images: stored.attachments.filter(a => a.imagemPath).map(a => ({ name: a.name, thumb: typeof a.thumb === 'string' && a.thumb.length <= 16000 ? a.thumb : '' })).slice(0, 3) } : {}) }); budget -= text.length + (editable ? sourceText.length : 0);
     if (budget <= 0 || messages.length >= 80) break;
   }
   return messages;
@@ -5495,6 +5506,7 @@ function studioRemoteSnapshot() {
   const chats = Object.values(state.chats), providers = state.settings.providers || [];
   const snapshot = {
     activeChatId: state.activeChatId, running: isRunning, queued: filaMensagens.length,
+    capabilities: ['history-v1', 'processes-v1', 'compact-v1', 'diff-v1', 'images-v1'], historyRevision: activeChat() ? remoteHistory.revision(activeChat()) : '', processes: remoteProcesses, processOutput: remoteProcessOutput, diff: remoteDiff, vision: visionEnabled(),
     chats: [activeChat(), ...chats.filter(c => c.id !== state.activeChatId)].filter(Boolean).slice(0, 100).map(c => ({ id: c.id, name: c.name.slice(0, 200), path: c.path.slice(0, 500) })),
     messages: remoteChatMessages(),
     providers: [...providers.filter(p => p.id === state.settings.activeProviderId), ...providers.filter(p => p.id !== state.settings.activeProviderId)].slice(0, 50).map(p => ({ id: p.id.slice(0, 200), name: p.name.slice(0, 200), model: p.model.slice(0, 200) })),
@@ -5507,29 +5519,64 @@ function studioRemoteSnapshot() {
     limited: false,
   };
   const oversized = () => new TextEncoder().encode(JSON.stringify(snapshot)).length > 200000;
-  for (const group of [snapshot.chats, snapshot.providers, snapshot.workspaces]) while (group.length > 1 && oversized()) { group.pop(); snapshot.limited = true; }
+  for (const group of [snapshot.chats, snapshot.providers, snapshot.workspaces, snapshot.processes]) while (group.length > 1 && oversized()) { group.pop(); snapshot.limited = true; }
   while (snapshot.messages.length > 1 && oversized()) { snapshot.messages.shift(); snapshot.limited = true; }
+  while (oversized() && (snapshot.processOutput.length > 100 || (snapshot.diff?.text.length || 0) > 100)) { if (snapshot.processOutput.length > 100) snapshot.processOutput = snapshot.processOutput.slice(0, Math.floor(snapshot.processOutput.length / 2)); if ((snapshot.diff?.text.length || 0) > 100) snapshot.diff = { ...snapshot.diff, text: snapshot.diff.text.slice(0, Math.floor(snapshot.diff.text.length / 2)) + '\n[Diff abreviado; conteúdo completo no Studio.]' }; snapshot.limited = true; }
   return snapshot;
 }
 async function executeRemoteCommand(c: any) {
-  const idleOnly = !['send', 'stop', 'approve', 'answer', 'consumption-refresh'].includes(c.type);
+  const idleOnly = !['send', 'stop', 'approve', 'answer', 'consumption-refresh', 'processes-refresh', 'process-output', 'stop-process'].includes(c.type);
   if (idleOnly && isRunning) throw new Error('Aguarde a tarefa terminar ou interrompa-a antes de trocar a sessão.');
   const chat = () => { const found = state.chats[c.chatId]; if (!found) throw new Error('Chat não encontrado.'); return found; };
+  const editableChat = () => { const found = chat(); if (c.chatId !== state.activeChatId) throw new Error('Selecione novamente esta conversa antes de alterar mensagens.'); remoteHistory.check(found, c.revision); return found; };
   switch (c.type) {
     case 'send':
       chat();
-      if (typeof c.text !== 'string' || !c.text.trim() || c.text.length > 20000) throw new Error('Mensagem inválida.');
+      if (typeof c.text !== 'string' || (!c.text.trim() && !c.images?.length) || c.text.length > 20000) throw new Error('Mensagem inválida.');
       if (isRunning && c.chatId !== state.activeChatId) throw new Error('Outra conversa está em execução.');
       if (!isRunning && c.chatId !== state.activeChatId) { switchChat(c.chatId); await renderActiveChat(); }
       if (!activeChat().path || !state.settings.model) throw new Error('Escolha o projeto e o modelo no Studio.');
-      if (isRunning) { if (filaMensagens.length >= 20) throw new Error('Aguarde as mensagens na fila.'); enfileiraMensagem(c.text, []); }
-      else void submitUserMessage(c.text, []).catch(e => logSystem(String(e.message || 'Falha ao enviar mensagem remota.')));
+      { const attachments: Attachment[] = []; if (c.images?.length) { if (!Array.isArray(c.images) || c.images.length > 3 || !visionEnabled() || c.images.reduce((bytes, image) => bytes + String(image?.dataUrl || '').length, 0) > 2000000) throw new Error('Selecione um modelo com visão ou reduza as imagens.'); for (const image of c.images) { if (typeof image?.dataUrl !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.dataUrl)) throw new Error('Imagem inválida.'); const saved = await window.electronAPI.saveAttachmentImage(image.dataUrl, String(image.name || 'imagem').slice(0, 100)); if (!saved?.success) throw new Error('Não foi possível salvar a imagem no Studio.'); guardaNoCacheDeImagens(saved.path, saved.dataUrl); attachments.push({ name: String(image.name || 'imagem').slice(0, 100), content: '', binary: true, imagemPath: saved.path, thumb: typeof image.thumb === 'string' && image.thumb.length <= 16000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.thumb) ? image.thumb : undefined }); } }
+        if (isRunning) { if (filaMensagens.length >= 20) throw new Error('Aguarde as mensagens na fila.'); enfileiraMensagem(c.text, attachments); }
+        else void submitUserMessage(c.text, attachments).catch(e => logSystem(String(e.message || 'Falha ao enviar mensagem remota.'))); }
       break;
     case 'stop': stopAgent(); break;
     case 'select-chat': chat(); switchChat(c.chatId); break;
     case 'new-chat': { const path = activeChat()?.path || ''; createChat('Novo chat'); activeChat().path = path; renderChatList(); renderActiveChat(); await persist(); break; }
     case 'delete-chat': chat(); deleteChat(c.chatId); break;
     case 'rename-chat': chat().name = String(c.name).slice(0, 200); renderChatList(); renderActiveChat(); await persist(); break;
+    case 'duplicate-chat': { const original = chat(), copy = structuredClone(original), id = createChat(original.name + ' (cópia)'); copy.id = id; copy.name = original.name + ' (cópia)'; state.chats[id] = copy; switchChat(id); await renderActiveChat(); await persist(); break; }
+    case 'clear-chat': { const found = editableChat(); truncaHistorico(found, 0); filaMensagens = []; renderFila(); await renderActiveChat(); await persist(); break; }
+    case 'edit-message': case 'delete-message': case 'regenerate-message': {
+      const found = editableChat(), { index, message } = remoteHistory.locate(found, c.messageId, c.revision);
+      if (c.type === 'edit-message') {
+        if (typeof c.text !== 'string' || !c.text.trim() || c.text.length > 20000) throw new Error('Mensagem inválida.');
+        if (c.regenerate && message.role !== 'user') throw new Error('Só uma mensagem sua pode ser reenviada.');
+        if (c.regenerate && (!found.path || !state.settings.model)) throw new Error('Escolha o projeto e o modelo no Studio.');
+        message.content = c.text;
+        if (c.regenerate) truncaHistorico(found, index + 1);
+        await renderActiveChat(); await persist(); if (c.regenerate) void runAgent();
+      } else if (c.type === 'delete-message') { truncaHistorico(found, index); await renderActiveChat(); await persist(); }
+      else { if (message.role !== 'assistant' || !found.path || !state.settings.model) throw new Error('Não é possível regenerar esta mensagem.'); await regenerateFromAssistant(index); }
+      break;
+    }
+    case 'compact-chat': editableChat(); compactarAgora(); await persist(); break;
+    case 'get-diff': case 'undo-change': {
+      const found = chat(); if (found.id !== state.activeChatId) throw new Error('Selecione novamente esta conversa.');
+      const message = found.messages.find(m => m.alteracao?.snapshotId === c.snapshotId);
+      if (!message || !/^[a-zA-Z0-9_-]{1,100}$/.test(c.snapshotId)) throw new Error('Alteração não encontrada nesta conversa.');
+      if (c.type === 'get-diff') { const diff = await window.electronAPI.getDiff(c.snapshotId); remoteDiff = { snapshotId: c.snapshotId, file: message.alteracao.arquivo, text: diff?.indisponivel ? 'O ponto de restauração não existe mais.' : (diff?.linhas || []).slice(0, 1000).map(line => line.tipo === 'pulo' ? '... ' + line.quantas + ' linhas de contexto omitidas ...' : (line.tipo === 'adicao' || line.tipo === 'add' ? '+ ' : line.tipo === 'remocao' || line.tipo === 'del' ? '− ' : '  ') + line.texto).join('\n').slice(0, 24000) }; }
+      else { const result = await window.electronAPI.undoChange(c.snapshotId); if (!result?.success) throw new Error(result?.error || 'Não foi possível desfazer.'); message.alteracao.snapshotId = result.refazerId; remoteDiff = null; await renderActiveChat(); await persist(); logSystem('Alteração revertida em ' + message.alteracao.arquivo + '. Avise ao agente antes de continuar.'); }
+      break;
+    }
+    case 'processes-refresh': { const result = await window.electronAPI.listProcesses(); remoteProcesses = (Array.isArray(result) ? result : result?.processes || []).slice(0, 50).map(p => ({ pid: p.pid, command: String(p.command || '').slice(0, 500), running: p.status === 'running', exitCode: p.exitCode ?? null })); break; }
+    case 'process-output': case 'stop-process': {
+      const result = await window.electronAPI.listProcesses(), processes = Array.isArray(result) ? result : result?.processes || [];
+      if (!Number.isSafeInteger(c.pid) || !processes.some(p => p.pid === c.pid)) throw new Error('Processo não encontrado no Studio.');
+      if (c.type === 'stop-process') { await window.electronAPI.stopProcess(c.pid); await executeRemoteCommand({ type: 'processes-refresh' }); }
+      else { const output = await window.electronAPI.readProcessOutput(c.pid); remoteProcessOutput = ('PID ' + c.pid + '\n' + (output?.success ? [output.stdout, output.stderr].filter(Boolean).join('\n') || '(sem saída ainda)' : output?.error || 'Saída indisponível')).slice(-16000); }
+      break;
+    }
     case 'set-workspace': if (!studioRemoteSnapshot().workspaces.includes(c.path)) throw new Error('Abra primeiro esta pasta no Studio.'); defineWorkspace(c.path); break;
     case 'set-provider': if (!state.settings.providers.some(p => p.id === c.providerId)) throw new Error('Provedor não encontrado.'); switchProvider(c.providerId); break;
     case 'set-thinking': if (!THINK_LEVELS[c.level]) throw new Error('Nível de raciocínio inválido.'); state.settings.thinkLevel = c.level; state.settings.noThink = c.level === 'desligado'; updateThinkUI(); await persist(); break;
@@ -5561,12 +5608,13 @@ function showRemoteStatus(status: any) {
 }
 async function initRemoteControl() {
   window.electronAPI.onRemoteStatus(showRemoteStatus);
-  window.electronAPI.onRemoteCommand(async c => {
+  let commands = Promise.resolve();
+  window.electronAPI.onRemoteCommand(c => { commands = commands.then(async () => {
     let ok = false;
     try { if (!remoteEnabled || c.expiresAt < Date.now()) throw new Error('Comando expirado.'); await executeRemoteCommand(c); ok = true; }
     catch (e) { logSystem(`Controle remoto: ${e.message || 'comando não executado'}`); }
     finally { window.electronAPI.remoteResult(c.id, ok); if (remoteEnabled) window.electronAPI.remotePublish(studioRemoteSnapshot()); }
-  });
+  }); });
   el('btn-remote-pair').addEventListener('click', async () => {
     const btn = el<HTMLButtonElement>('btn-remote-pair'); btn.disabled = true; el('remote-status').textContent = 'Pareando…';
     try { const r = await window.electronAPI.remotePair(el('remote-server').value, el('remote-code').value, el('remote-name').value); if (!r.success) throw new Error(r.error); el('remote-code').value = ''; showRemoteStatus(r.status); }
