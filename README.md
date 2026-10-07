@@ -3,425 +3,215 @@
 
 # Pofu Code Studio
 
-**Agente de código em desktop** (Electron) que se conecta a **qualquer API REST compatível com OpenAI** — [llama.cpp](https://github.com/ggml-org/llama.cpp), [Ollama](https://ollama.com/), [vLLM](https://github.com/vllm-project/vllm) — e trabalha direto nos arquivos do seu projeto: lê, edita, busca, roda comandos, chama APIs e **tira print das páginas que constrói**.
+Um agente de código no desktop, com a identidade Pofu e o modelo que você escolher. Converse sobre o projeto, peça alterações e acompanhe a leitura dos arquivos, a execução dos comandos e os diffs no mesmo lugar.
 
-Seu espaço de desenvolvimento, com a identidade Pofu e o modelo que você escolher.
+O Studio conecta-se a **APIs compatíveis com OpenAI**, incluindo servidores locais como llama.cpp, Ollama e vLLM. O modelo precisa oferecer chamadas de ferramenta (*function calling*); recursos visuais também exigem um modelo multimodal.
 
-**Consumo e Code remoto:** acompanhe uso por provedor em *botão de consumo no cabeçalho do chat, ao lado do contexto (ou `/usage`)* e conecte o Studio à área **Code** do site em *Controle remoto*. Pelo site, converse, acompanhe ferramentas, pare tarefas, responda perguntas/aprovações e consulte o mesmo consumo. Chaves permanecem no desktop. [Como conectar e quais relatórios cada API oferece](docs/consumo-remoto.md).
+[Baixar instaladores](https://github.com/Dspofu/Pofu-Code-Studio/releases/latest) · [Novidades da 1.6.0](docs/releases/v1.6.0.md) · [Guia de consumo e controle remoto](docs/consumo-remoto.md)
 
-![Tela inicial do Pofu Code Studio](docs/img/studio-desktop.png)
+![Tela atual do Pofu Code Studio, com projeto e modelo de demonstração](docs/img/studio-desktop.png)
 
----
+## O que você pode fazer
 
-## Demonstração
-
-O pedido foi: *"os números da roleta estão tortos, conserte e confirme visualmente"*. Sem sair do chat, o agente:
-
-1. **Leu** o arquivo e localizou o cálculo do posicionamento;
-2. **Recortou o print** só na roleta (`crop_selector`), porque defeito de alinhamento some quando a imagem da página inteira é reduzida;
-3. **Viu** que cada número girava junto com o setor — a segunda rotação estava no mesmo sentido da primeira;
-4. **Editou uma linha** com `edit_file`, preservando o resto do arquivo;
-5. **Capturou de novo** e comparou antes/depois.
-
-Toda alteração vira um **diff revisável com botão de desfazer**:
-
-![Diff e desfazer](docs/img/diff.png)
-
----
-
-## Funcionalidades
-
-### Ferramentas do agente
-
-| Ferramenta | O que faz |
+| Recurso | No seu trabalho |
 |---|---|
-| `list_files` | Lista arquivos e pastas; `recursive: true` lista o projeto agrupado por pasta, `pattern` filtra por glob |
-| `read_file` | Lê inteiro quando cabe; `query` localiza um trecho diretamente, `char_offset` continua a leitura. Arquivo inexistente vem com sugestões de caminho |
-| `read_tool_result` | Consulta saídas grandes por cursor ou termo, sem repetir comandos ou requisições |
-| `write_file` | Cria um arquivo, ou sobrescreve um que já foi lido — e que não mudou em disco desde a leitura |
-| `edit_file` | **Troca um trecho exato** — a forma padrão de alterar arquivo existente. `edits` faz várias trocas numa chamada, tudo ou nada |
-| `search_files` | Busca por texto/regex com glob, paginação e linhas vizinhas, agrupada por arquivo; `output_mode` `files`/`count` só conta |
-| `list_definitions` | **Estrutura do código** de um arquivo ou pasta — funções, classes, métodos e tipos com a linha, sem os corpos |
-| `ask_user` | **Faz uma pergunta e espera a resposta**, em card com opções clicáveis |
-| `create_directory` / `delete_file` | Cria pasta / apaga arquivo |
-| `execute_command` | Roda comando no workspace; servidores vão para segundo plano |
-| `wait_for_process` | **Espera** um processo demorado terminar e devolve o exit code |
-| `read_process_output` / `list_processes` / `stop_process` | Acompanha e encerra processos |
-| `http_request` | Chama uma API e devolve status, cabeçalhos e corpo separados |
-| `capture_page` | Abre a URL num navegador oculto, tira print e reporta erros de console e de rede |
-| `web_search` / `fetch_url` | Busca na web e leitura de páginas (opcional, em *Ajustes → Ferramentas*) |
-| `mcp__servidor__ferramenta` | Ferramentas dos **servidores MCP** que você configurar (ver abaixo) |
-
-### Servidores MCP
-
-O Pofu é cliente de [MCP (Model Context Protocol)](https://modelcontextprotocol.io): as ferramentas de qualquer servidor MCP viram ferramentas do agente. Em *Ajustes → Ferramentas → Servidores MCP*, cole o JSON que vem no README do servidor — o mesmo formato do Claude Desktop, Cursor e Cline:
-
-```json
-{
-  "mcpServers": {
-    "arquivos": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/projetos"] },
-    "remoto":   { "url": "https://exemplo.com/mcp", "headers": { "Authorization": "Bearer …" } },
-    "pausado":  { "command": "uvx", "args": ["algum-servidor"], "disabled": true }
-  }
-}
-```
-
-- **Local** (`command`, `args`, `env`, `cwd`) roda como processo e conversa por stdio; **remoto** (`url`, `headers`) usa Streamable HTTP.
-- Abaixo do campo aparece o estado de cada servidor e **quantos tokens as ferramentas dele custam por mensagem**, porque elas vão ao modelo em toda requisição. Deixe ligados só os servidores que você usa; `"disabled": true` desliga sem apagar.
-- No modo manual, ferramenta MCP pede confirmação, exceto as que o próprio servidor declara somente-leitura (`readOnlyHint`).
-- Os servidores sobem em segundo plano quando o app abre e são encerrados quando ele fecha.
-
-### Leitura sem cortes perdidos
-
-O teto fixo de linhas foi removido. O arquivo volta inteiro quando cabe no contexto;
-para arquivos maiores, o cursor `char_offset` recupera o ponto exato, inclusive dentro
- de uma linha minificada. O orçamento reserva espaço para a resposta e respeita o teto
- de histórico configurado. A proteção de tamanho de arquivo continua em 25 MiB.
-
-Saídas grandes de terminal, busca e HTTP são preservadas no histórico local e consultadas por
-`read_tool_result`, sem criar rascunhos no projeto nem repetir uma ação com efeitos
-colaterais. O cache em memória guarda até 32 resultados e 8 Mi caracteres; ao expirar,
-recupera a saída salva na conversa, inclusive após reiniciar. Cada saída deve caber nos
-8 Mi caracteres. O conteúdo completo fica fora do payload da API até ser consultado. Logs de processos
-retêm os últimos 2 Mi caracteres por stream e informam quantos caracteres antigos saíram.
-
-O histórico compactado também recebe uma referência recuperável. As leituras mais novas
-são preservadas primeiro. Conversas anteriores a essa mudança podem conter apenas a janela
-original: não é possível recuperar retroativamente uma saída que não foi salva.
-
-Para evitar percorrer páginas sem relação com a tarefa, use, por exemplo,
-`read_file({filename: "src/main.ts", query: "ipcMain.handle"})` ou
-`search_files({query: "runTool", context_lines: 4})`. Caminhos absolutos dentro do projeto
-também são aceitos pelas ferramentas de arquivo.
-
-### Menos tokens por ferramenta
-
-Parte do custo de uma sessão não aparece na tela: as definições das ferramentas e o prompt de
-sistema vão ao servidor em **toda** requisição, e o que cada ferramenta devolve fica no
-histórico e é reenviado a cada turno. As ferramentas foram revistas com o
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) como referência, e cada mudança
-abaixo foi medida neste próprio repositório:
-
-| O quê | Antes | Depois |
-|---|---|---|
-| Definições das ferramentas + prompt de sistema, por requisição | 21,3 mil caracteres | 17,2 mil (−19%) |
-| `search_files` com 10 a 14 achados e contexto | 6,5 a 8,7 mil | 2,5 a 3,5 mil (−51% a −61%) |
-| Mesma busca com `output_mode: "files"` | 6,5 mil | 64 (−99%) |
-| `list_files` da raiz | 989 | 277 (−72%) |
-| Reler um arquivo que não mudou | o arquivo inteiro | aviso de ~330 caracteres (−97%) |
-| Saída de comando com barra de progresso | todos os redesenhos | só o último (−97%) |
-
-- **Busca e listagem em texto**, não em JSON: a busca sai agrupada por arquivo no formato do
-  `rg` (`12:` linha que casou, `11-` contexto) e contexto sobreposto entre achados vizinhos sai
-  uma vez só; a listagem recursiva escreve o caminho da pasta uma vez, com os arquivos embaixo.
-- **Releitura sem mudança** devolve um aviso apontando a leitura anterior, que continua na
-  conversa. Se ela já foi compactada, o conteúdo volta completo.
-- **Terminal limpo**: cor ANSI, redesenho de barra de progresso, CRLF e linhas repetidas em
-  sequência saem antes de o resultado ir ao modelo. O eco do comando também sai.
-- **Várias edições numa chamada** (`edits`): cada chamada a menos é um reenvio a menos do
-  contexto inteiro. E quando o `write_file` reescreve um arquivo com a maior parte das linhas
-  iguais, o resultado sugere o `edit_file` para a próxima vez.
-- **Arquivo não encontrado** vem com o caminho provável (mesmo nome em outra pasta, outra
-  extensão, erro de digitação), sem precisar de um `list_files` na volta.
-
-### Desempenho com modelo local
-
-Ideias de outros agentes de código, medidas aqui:
-
-- **Estrutura antes do conteúdo** (como o `list_code_definition_names` do Cline e o *repo map* do Aider): `list_definitions` mostra funções, classes e métodos com a linha de cada um. Num arquivo de 246 mil caracteres, a estrutura tem 9,5 mil (**−96%**); a pasta `src/` inteira cai de 386 mil para 15 mil.
-- **Arquivo de código grande não é despejado** (como o Read do Claude Code): `read_file` sem trecho definido num arquivo de código a partir de 60 mil caracteres devolve a estrutura e a orientação de ler só a parte necessária; `full: true` traz o arquivo inteiro. Medido com o Qwen 27B local, perguntando por uma função num arquivo de 230 mil caracteres: de **182 s e 122 mil tokens** para **12,8 s e 13 mil**, com a mesma resposta certa.
-- **Trava de looping** (como o *doom loop* do opencode, mas pelo resultado): quando a mesma chamada volta com o mesmo resultado duas vezes seguidas, sem nada com efeito colateral no meio, a terceira não é executada e o agente é orientado a mudar de abordagem. Pega também repetição alternada e entre turnos, que o critério "3 chamadas iguais seguidas" deixa passar.
-- **Estouro de contexto não mata o turno** (como no Roo Code): se o servidor recusa por excesso de tokens, o app compacta mais e reenvia, até duas vezes.
-- **Tokens contados pelo servidor**: a estimativa de caracteres por token é calibrada com o que o servidor devolve em `usage`, por modelo — a fixa errava para menos em conversas de código. A reserva de contexto agora inclui as definições das ferramentas e limita a da resposta a metade da janela (um `maxTokens` enorme não espreme mais o histórico).
-- **Acerto de cache na tela**: com llama.cpp, abaixo de cada resposta aparece quanto do prompt veio do cache e a velocidade de leitura — o número que mostra se a conversa está reaproveitando o prefixo.
-
-### Menções de arquivo
-
-Digite `@` para procurar arquivos e selecione com Enter. As menções aparecem em azul
-no compositor, nos anexos e na mensagem enviada. Caminhos com espaços usam aspas,
-como `@"docs/meu arquivo.md"`; o preenchimento automático adiciona essas aspas.
-
-### Diff e desfazer
-Cada escrita, edição ou remoção mostra **o que exatamente mudou** — colorido, numerado nas duas versões e com o contexto em volta — e um botão **Desfazer** que reverte o arquivo no disco. O desfazer também pode ser desfeito.
-
-### Imagem colada, o modelo vê
-Arraste ou cole uma imagem no chat: quando o modelo é multimodal, os pixels vão junto com a mensagem e ele responde olhando. Antes só o nome do arquivo chegava — e o agente, sem enxergar, contornava: num teste medido ele instalou o Pillow, escreveu scripts Python para medir cor de pixel e improvisou um OCR, gastando 32 requisições para responder o que agora sai em 1. Se o modelo não aceitar imagem (ou se *Enviar prints para o modelo* estiver desligado), o chip do anexo avisa em vez de deixar você descobrir pela resposta errada.
-
-### O agente enxerga o que constrói
-`capture_page` renderiza a página num navegador oculto e devolve o print. Com um modelo **multimodal**, a imagem volta para o modelo: ele descreve o que apareceu e compara com o esperado, em vez de deduzir pelo código. Use `full_page` para a página inteira e `crop_selector` para conferir detalhe em tamanho cheio.
-
-### Validação de verdade
-O prompt exige evidência: teste executado, exit code lido, resposta HTTP conferida ou print observado. "Escrevi o arquivo" não conta como validação, e o que não pôde ser verificado é declarado como não verificado. As instruções e as descrições das ferramentas são escritas **em inglês** — é a língua em que os modelos foram treinados a seguir instrução e a chamar ferramenta —, e o agente responde **na língua em que você escrever**.
-
-### Contexto que não estoura
-O histórico é compactado automaticamente quando se aproxima do limite do modelo: resultados antigos de ferramenta passam a ir encurtados **no envio**, e continuam completos na tela. O botão **Compactar**, ao lado do campo de texto, libera contexto na hora.
-
-A compactação encurta **do mais antigo para o mais novo**, desce de uma vez com folga (em vez de raspar o mínimo que cabe) e **lembra** o que já encurtou. Isso não é detalhe: toda requisição reenvia a conversa, e servidor e API reaproveitam o começo do que já viram — um corte que anda a cada turno faz esse reaproveitamento ser perdido toda vez. Medido sobre conversas reais deste app, num chat de 270 requisições: 5 requisições com prefixo alterado, em vez de 160.
-
-### Teto de histórico, para API paga
-Em servidor local o contexto grande é de graça; em API paga, não. Como cada requisição reenvia o histórico, um chat longo com modelo de 262k de contexto chega a mandar **mais de 100 mil tokens por mensagem**. Em *Ajustes → Geração*, **Teto de histórico por requisição** limita isso independentemente do contexto do modelo: acima do teto, resultados antigos vão encurtados (o agente consulta a referência preservada se precisar). Vazio (padrão) = comportamento de sempre.
-
-Medido numa sessão de verdade (8 arquivos de ~10k tokens cada, ler e resumir um a um, mesma tarefa e mesma temperatura): sem teto, 26 requisições e 1,43 milhão de tokens de prompt; com teto de 64k, 29 requisições e 1,16 milhão — **19% mais barato**, mesmo resultado final. A economia cresce com o tamanho da conversa.
-
-**Um teto baixo demais sai mais caro, não mais barato.** Se ele for menor que uma leitura, o arquivo é encurtado logo depois de lido e o agente relê sem parar: na mesma tarefa, um teto de 8k custou 4x mais que não ter teto. Por isso a janela do `read_file` passou a acompanhar o teto — com isso o mesmo caso caiu de 503 mil para 262 mil tokens —, mas o conselho continua: abaixo de ~32k, não vale.
-
-### Processos sem travar o chat
-Servidores e watchers são detectados (por padrão de log ou ociosidade) e vão para segundo plano com PID. Tarefas demoradas são aguardadas com `wait_for_process`, numa chamada só.
-
-### Falar com o agente no meio da resposta
-O campo de texto continua **liberado enquanto o agente trabalha**. O que você escrever entra numa fila, aparece como chip acima do compositor e é entregue ao modelo na **próxima virada de turno** — logo depois da ferramenta em execução terminar, sem abortar nada. Dá para corrigir o rumo (*"na verdade usa outra pasta"*) sem esperar o fim nem perder o que já foi feito.
-
-Com o campo vazio o botão volta a ser **parar**; com algo escrito ele manda para a fila. Um chip pode ser retirado da fila enquanto não foi entregue, e uma mensagem nova reinicia a trava de iterações — o limite existe para barrar o agente em looping sozinho, não a conversa que você está conduzindo.
-
-### Progresso enquanto o arquivo é escrito
-Escrever um arquivo grande é a parte mais demorada de um turno, e é justamente quando **nada** chegava à tela: o texto da resposta já tinha acabado, o resultado da ferramenta ainda não existia. Dezenas de segundos parados, indistinguíveis de um travamento.
-
-Agora o card da ferramenta aparece assim que o modelo começa a ditar a chamada e mostra o andamento — arquivo de destino, linhas e bytes já recebidos, e as últimas linhas do que está sendo escrito. O título da janela acompanha (*"escrever arquivo: src/x.ts"*), e o mesmo card vira o card definitivo quando a chamada termina.
-
-### Erros que dizem o que fazer
-Falha de conexão, chave inválida, modelo inexistente e erro do servidor viram mensagens com causa e passos — não uma exceção crua. Só falha transitória é repetida.
-
-O mesmo vale para o que uma ferramenta devolve. O agente recebe o erro em inglês com a instrução do próximo passo ("call read_file and try again"), porque é ele quem vai agir; o card na tela mostra **uma linha em português** dizendo o que aconteceu. E há dois tons: quando o erro é uma trava que o próprio agente resolve na chamada seguinte — arquivo ainda não lido, trecho ambíguo no `edit_file` — o card fica discreto (`↷`), em vez de pintar de vermelho um passo normal do trabalho. Vermelho (`⚠`) fica para falha de verdade.
-
-![Configurações](docs/img/config.png)
-
-### Pasta segura com troca rápida
-Cada chat trabalha dentro de **uma pasta** — o agente não enxerga nada fora dela. O botão de pasta no cabeçalho abre um menu com a **pasta atual**, as **usadas recentemente** e a opção de escolher outra: alternar entre projetos é um clique, sem passar pelo diálogo do sistema toda vez.
-
-![Troca da pasta segura](docs/img/pasta-segura.png)
-
-### O agente pergunta quando trava de verdade
-
-Quando o pedido tem duas leituras que levam a trabalhos diferentes, o agente para e **pergunta**, em vez de escolher no escuro e refazer depois:
-
-![Card de pergunta do agente](docs/img/pergunta.png)
-
-O card mostra as opções que o modelo propôs; dá para marcar uma (ou várias, quando ele pede), escrever uma resposta própria no campo de texto, ou **Pular**. Pular é uma resposta válida: o agente decide sozinho e diz qual suposição adotou, em vez de ficar preso. O turno fica parado até você responder, e o **Parar** fecha o card junto com o resto.
-
-A ferramenta é `ask_user`, e as instruções pedem que ela seja usada com parcimônia — só quando a resposta muda o trabalho, nunca para o que dá para descobrir lendo o projeto, e sempre depois de já ter feito tudo que não dependia da resposta.
-
-### Instruções suas e skills
-
-Em *Ajustes → Instruções do agente* há um campo de **system prompt**: o que você escrever ali entra no prompt em toda mensagem, valendo para regras do projeto (*"aqui é pnpm, não npm"*) e preferências de trabalho. Por padrão o texto é **somado** às instruções de fábrica; o interruptor *Substituir o prompt padrão* descarta as de fábrica e deixa só o seu texto — inclusive as regras de ler antes de sobrescrever e de validar antes de dizer que terminou, então é escolha para quem vai reescrever esse comportamento.
-
-Logo abaixo ficam as **skills**: arquivos de instrução (o `SKILL.md` do Claude Code e parecidos) que você importa e liga por chave.
-
-![Skills importadas](docs/img/skills.png)
-
-O `name` e o `description` saem do frontmatter YAML quando existe; sem frontmatter, o app usa o título `#` do arquivo e a primeira linha de texto. Reimportar o mesmo arquivo **atualiza** a skill em vez de duplicar, que é o fluxo de quem está escrevendo uma. Cada linha mostra o custo em tokens **por mensagem**, porque é isso que uma skill ativa é: conteúdo somado ao prompt em toda requisição — não um anexo que se lê uma vez. Skill desligada não entra no prompt.
-
-### Nível de raciocínio no próprio compositor
-O seletor **Raciocínio** fica no compositor. Um clique abre uma barra horizontal:
-arraste o controle, use as setas do teclado ou escolha um nível na faixa com rolagem
-lateral. A escolha é guardada por provedor. **Muito alto** envia exatamente `xhigh`;
-é uma opção diferente de **Máximo**, que envia `max`.
-
-O controle usa trilho verde preenchido e puxador quadrado com sombra; o preenchimento
-acompanha a seleção por arraste, teclado, botão de nível e troca de provedor. Um brilho
-animado percorre o preenchimento e respeita a preferência por movimento reduzido.
-
-Ao iniciar, o app verifica atualizações e só envia uma notificação se houver uma versão
-mais recente publicada. Sem conexão ou sem novidades, não há aviso. O botão **Verificar**
-continua disponível nas configurações; consultas feitas em até um minuto são reaproveitadas.
-
-![Seletor horizontal de raciocínio](docs/img/studio-thinking.png)
-
-| Nível | O que é enviado | Aparece quando |
-|---|---|---|
-| Padrão do modelo | nada — funciona em qualquer servidor | sempre |
-| Desligado | `enable_thinking: false` + `/no_think` no prompt | o servidor anuncia raciocínio ligável |
-| Baixo / Médio / Alto / Muito alto / Máximo | `reasoning_effort: low \| medium \| high \| xhigh \| max` | o servidor anuncia `reasoning_effort`, ou não informa suas capacidades |
-
-O padrão não acrescenta campo nenhum à requisição de propósito: `reasoning_effort` é extensão recente e servidor antigo recusa o que não conhece.
-
-**A lista sai do servidor, não de um palpite.** Ao escolher o modelo, o app pergunta ao endpoint o que ele aceita — as `capabilities` do `/v1/models`, o `chat_template` do `/props` (llama.cpp) e o `/api/show` (Ollama) — e só mostra os níveis confirmados; o rodapé do menu diz de onde veio a informação. Um modelo sem modo de raciocínio fica só com *Padrão*, e um nível salvo que o servidor novo não aceita volta para *Padrão* sozinho, em vez de derrubar a primeira mensagem com um HTTP 400. Endpoint que não responde nada disso (vLLM, OpenAI, gateways) continua mostrando todos os níveis — silêncio não é prova de que não suporta.
-
-**Se o servidor recusar o nível**, o app avisa e tenta o nível aceito mais próximo quando
-o erro lista as opções. Sem alternativa, ou se ela também falhar, reenvia sem o ajuste.
-O teste de integração confere o payload real dessa adaptação.
-
-### Vários provedores
-
-Em **Configurações → Ajustes → Meus provedores**, adicione conexões com nome, endpoint,
-chave e modelo próprios. **Recarregar** consulta `/models`; **ID manual** permite informar
-modelos mesmo quando essa rota não existe. Salve para aplicar. A configuração antiga é
-migrada automaticamente para o primeiro perfil.
-
-Troque pelo seletor abaixo do compositor. Cada provedor recupera seu modelo e thinking,
-sem misturar chaves. A troca de conexão fica bloqueada durante a geração. Adições,
-edições e remoções no formulário só são aplicadas em **Salvar e Fechar**.
-
-### A espera de reabrir um chat longo é explicada
-Reabrir o app e mandar a primeira mensagem num chat grande demora — o servidor não tem mais nada em cache e precisa reprocessar a conversa inteira antes de escrever a primeira palavra (medido: **177 segundos** num chat de 123 mil tokens). Em vez dos três pontinhos de sempre, aparece o que está acontecendo, o tamanho aproximado do contexto e um cronômetro; a barra de tarefas mostra *"lendo o contexto…"*. Da segunda mensagem em diante o indicador volta ao normal, porque aí o servidor já tem o histórico em cache. Montar a conversa na tela também avisa (~4s em 1.700 mensagens) em vez de deixar a área do chat vazia.
-
-### Sem janela de console piscando
-No Windows, cada comando do agente abria um terminal por cima do app — e uma tarefa longa dispara dezenas deles. Em *Ajustes → Ferramentas*, **Ocultar o console dos comandos** vem **ligado** e a janela não aparece mais. Desligue só para acompanhar ao vivo o que está sendo executado.
-
-### Offline
-As bibliotecas de front-end (Markdown, sanitização, realce de sintaxe, estilos) são vendorizadas em `vendor/` — a interface não depende de CDN.
-
----
-
-## Requisitos
-
-- **[Node.js](https://nodejs.org/)** 18+ com `npm`
-- Um **servidor de modelo compatível com OpenAI** rodando (ex.: llama.cpp)
-- Linux (Ubuntu/Debian com `.deb`, Fedora com `.rpm`), Windows ou macOS
-
-Modelos com **function calling** são necessários (o agente depende disso). Para modelos de raciocínio (ex.: Qwen3), mantenha o **Nível de raciocínio** diferente de *Desligado* — sem pensar, eles costumam parar de chamar ferramentas. Um modelo **multimodal** habilita o retorno visual dos prints.
+| Conversas por projeto | Alterne entre chats e pastas recentes, mantendo o histórico de cada conversa. |
+| Edição de código | Leia e pesquise arquivos, consulte funções e classes, aplique alterações e revise o diff com opção de desfazer. |
+| Terminal e processos | Execute testes, acompanhe servidores e watchers e consulte a saída de tarefas demoradas. |
+| Pesquisa e páginas web | Busque informações, leia páginas e capture a interface para conferir o resultado. |
+| Imagens e arquivos | Cole ou arraste anexos; use `@` para mencionar arquivos do projeto. |
+| Provedores e raciocínio | Salve conexões independentes e ajuste o modelo e o raciocínio pelo compositor. |
+| Consumo | Veja tokens e, quando a API informa, cota ou saldo ao lado do uso de contexto. |
+| Controle remoto | Continue a conversa e controle tarefas pela área Code do site, com as ferramentas executando no computador. |
+| MCP e skills | Acrescente ferramentas de servidores MCP e instruções próprias para o agente. |
 
 ## Instalação
+
+### Usar um instalador
+
+Abra a página de [releases](https://github.com/Dspofu/Pofu-Code-Studio/releases/latest) e escolha o arquivo do seu sistema. Os instaladores incluem o runtime do aplicativo; não é necessário instalar Node.js separadamente.
+
+| Sistema | Arquivo | Instalação |
+|---|---|---|
+| Windows | `.exe` | Execute o instalador e escolha a pasta de destino. |
+| Ubuntu / Debian | `.deb` | `sudo apt install ./NOME_DO_ARQUIVO.deb` |
+| Fedora | `.rpm` | `sudo dnf install ./NOME_DO_ARQUIVO.rpm` |
+
+Nos comandos Linux, substitua `NOME_DO_ARQUIVO` pelo nome do pacote baixado. O pipeline publica esses três formatos; não há instalador macOS nesse fluxo.
+
+### Executar a partir do código
+
+Use Node.js 22 ou superior e npm. O CI usa Node.js 22; a versão 1.6.0 também foi validada localmente com Node.js 24.
 
 ```bash
 git clone https://github.com/Dspofu/Pofu-Code-Studio.git
 cd Pofu-Code-Studio
-npm install
+npm ci
+```
+
+No Linux:
+
+```bash
 npm start
 ```
 
-> `npm start` compila o TypeScript (via `prestart`) e abre o app. Ele usa `--no-sandbox --ozone-platform=x11` (Linux); em Windows/macOS, rode `npm run build` e depois `npx electron .`.
->
-> **Instaladores prontos:** os releases do GitHub publicam `.deb` (Ubuntu/Debian), `.rpm` (Fedora) e `.exe` (Windows), gerados automaticamente a cada tag `vX.Y.Z`.
->
-> ```bash
-> sudo apt install ./pofu-code-studio_1.4.1_amd64.deb   # Ubuntu/Debian
-> sudo dnf install ./pofu-code-studio-1.4.1.x86_64.rpm  # Fedora
-> ```
-
-### Servidor de exemplo com llama.cpp
+No Windows:
 
 ```bash
-llama-server -m /caminho/para/seu-modelo.gguf --port 8080 --jinja
+npm run build
+npx electron .
 ```
 
-## Configuração
+Execute os comandos dentro da pasta `Pofu-Code-Studio`, onde está o `package.json`. O script `npm start` compila antes de abrir o aplicativo e inclui opções específicas do Linux.
 
-Engrenagem → aba **Ajustes**:
+## Começar a usar
 
-1. **Endpoint** — padrão `http://localhost:8080/v1`
-2. **Modelo** — *Recarregar* lista o que o endpoint expõe
-3. **API Key** — opcional (vazio para servidores locais)
-4. **Enviar prints para o modelo** — usado quando o endpoint anuncia um modelo multimodal
-5. **Ocultar o console dos comandos** — ligado por padrão (veja acima)
-6. **Busca na web**, temperatura, top-p, máximo de tokens e timeout de comando
-7. **Instruções (system prompt)** e **skills** — veja a seção acima
+1. Abra **Configurações → Ajustes → Meus provedores** e informe o endereço da sua API, a chave se necessária e o modelo.
+2. Clique em **Recarregar** para consultar os modelos. Se a API não oferecer essa listagem, use **ID manual**.
+3. Clique em **Salvar e Fechar**. Cada perfil mantém sua conexão e seu modelo; o seletor abaixo do compositor alterna entre eles.
+4. Clique em **Abrir projeto** e escolha a pasta em que o agente vai trabalhar.
+5. Envie um pedido, por exemplo: “Revise esta API, corrija o erro de autenticação e execute os testes relevantes”.
 
-O **nível de raciocínio** não fica aqui: ele mora no rodapé do compositor, ao lado do campo de mensagem.
+O endereço é o endpoint compatível com OpenAI, geralmente terminado em `/v1`. Use o endereço e a porta do seu servidor. **Recarregar** já testa os valores digitados, mas as alterações só são gravadas em **Salvar e Fechar**.
 
-Nada é gravado antes do **Salvar e Fechar** — mas *Recarregar* já usa o endpoint e a chave que estão **digitados**, para testar o que você acabou de escrever em vez do que está salvo. Para os dois não se confundirem, o campo alterado fica realçado e o rodapé diz quantas alterações ainda não foram salvas; fechar no ✕ com algo pendente avisa no chat que o formulário foi descartado.
+<details>
+<summary>Ver as configurações de provedor</summary>
 
-O que está salvo é lido **na abertura do app**, não só quando você entra nas configurações: o endpoint salvo é consultado assim que a janela sobe, e daí saem a lista de modelos, o tamanho de contexto, o suporte a imagem e os níveis de raciocínio. Um valor estragado no arquivo de configuração (endpoint vazio, temperatura fora de faixa, nível que não existe mais) volta ao padrão em vez de falhar na primeira mensagem.
+![Configurações atuais com um segundo provedor de teste e alterações ainda não salvas](docs/img/studio-providers.png)
+
+</details>
+
+### Durante a conversa
+
+- Acompanhe os cards das ferramentas, os resultados e os diffs. **Desfazer** reverte a alteração no arquivo.
+- Digite enquanto o agente trabalha: a mensagem entra na fila e é entregue na próxima etapa, após a ferramenta em execução terminar.
+- Use **Parar** para interromper a geração. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
+- Digite `@` para mencionar um arquivo; caminhos com espaços são preenchidos com aspas. O clipe, arrastar e colar adicionam anexos.
+- Ajuste **Auto/Manual** e **Raciocínio** junto ao compositor. A troca de provedor fica bloqueada durante a geração.
+
+O nível de raciocínio usa as capacidades anunciadas pelo servidor. Quando elas não estão disponíveis, o menu oferece os níveis para você escolher; se a API recusar um ajuste, o Studio tenta uma alternativa indicada pelo erro ou reenvia sem esse ajuste.
+
+## Consumo ao lado do contexto
+
+Clique na **cota no cabeçalho**, ao lado do uso de contexto, ou digite `/consumo`, `/usage` ou `/cost`. O resumo segue o provedor ativo, sem exigir outro endereço de API ou uma aba de consumo nas configurações.
+
+![Resumo atual de consumo, com saldo e tokens sintéticos de demonstração](docs/img/consumo-desktop.png)
+
+O Studio identifica relatórios compatíveis pelo endpoint. A integração inclui Pofu Server, OpenRouter, DeepSeek, OpenAI, Anthropic e APIs próprias com o contrato `ai-usage/v1`. Cada provedor informa dados diferentes: saldo, limite da chave, ciclo ou custos. Relatórios de organização de OpenAI e Anthropic exigem credenciais administrativas específicas.
+
+Quando não há relatório remoto acessível, fica disponível o **registro local** das chamadas do agente que retornam `usage`. Ele separa perfil, endpoint e chave; não inclui chamadas de outros aplicativos nem equivale à fatura inteira. Valores indisponíveis não são apresentados como saldo ou custo confirmado.
+
+[Veja os relatórios, as credenciais aceitas e os limites de cada integração](docs/consumo-remoto.md).
+
+## Controle remoto pelo site
+
+Continue a conversa pela área **Code** do site, inclusive no celular. O Studio permanece aberto no computador, onde o projeto e as ferramentas continuam executando.
+
+1. No site, entre na sua conta e abra **Code → Conectar computador**. O código aparece automaticamente.
+2. No desktop, abra **Configurações → Controle remoto** e informe a origem HTTPS do site e o código.
+3. Conecte e mantenha o Studio aberto. O código é de uso único e vence em cinco minutos.
+
+**O pareamento conecta uma instalação do Studio à sua conta, não uma API.** Um computador pode ter vários perfis de provedor e usar a mesma conexão remota. Outro computador precisa de seu próprio pareamento.
+
+![Área Code com o layout atual, conversa e computador sintéticos de teste](docs/img/code-remoto.png)
+
+Pelo site você pode conversar, enviar mensagens à fila, interromper a geração, responder perguntas, aprovar ou recusar ferramentas e consultar consumo. Com o agente parado, pode gerenciar chats e trocar projeto conhecido, provedor, raciocínio e modo de execução.
+
+Chaves das APIs não são enviadas ao site. A credencial de pareamento é protegida pelo cofre do sistema. **Desligar** no desktop pausa a ponte; **Desconectar** no site revoga a conexão.
+
+O espelho remoto inclui texto dos últimos 80 blocos/60 mil caracteres. Imagens, anexos e envio de arquivos pelo site ainda não fazem parte dessa versão; o histórico completo permanece no desktop. Consumo e comandos remotos dependem de API/site compatíveis e do acesso Code habilitado na conta.
 
 ## Comandos com `/`
 
-Digite `/` no início do campo ou clique no botão `/` do compositor. Use ↑/↓ para
-escolher, **Enter** para executar, **Tab** para completar e **Esc** para fechar.
-**Shift+Enter** continua inserindo uma nova linha.
+Digite `/` no início da mensagem ou clique no botão `/` do compositor. Use ↑/↓ para escolher, **Enter** para executar, **Tab** para completar e **Esc** para fechar. **Shift+Enter** insere uma nova linha.
 
 | Comando | Ação |
 |---|---|
-| `/ajuda` | Mostra todos os comandos |
-| `/novo` | Cria uma conversa no mesmo projeto, preservando a conversa anterior |
-| `/projeto` | Abre o seletor de pastas e projetos recentes |
-| `/config` / `/modelo` | Abre configurações / seleção de modelo |
-| `/compactar` | Libera contexto sem apagar o histórico |
-| `/processos` / `/parar` | Mostra processos / interrompe a geração |
-| `/planejar`, `/revisar`, `/testar`, `/explicar` | Prepara um pedido para revisar antes de enviar |
+| `/ajuda` | Mostra os comandos disponíveis. |
+| `/novo` | Cria uma conversa no mesmo projeto. |
+| `/projeto` | Abre a seleção de pastas e projetos recentes. |
+| `/config` / `/modelo` | Abre configurações ou seleção de modelo. |
+| `/consumo` / `/usage` / `/cost` | Consulta o consumo do provedor ativo. |
+| `/compactar` | Libera contexto sem apagar o histórico. |
+| `/processos` / `/parar` | Acompanha processos ou interrompe a geração. |
+| `/planejar`, `/revisar`, `/testar`, `/explicar` | Prepara um pedido no campo, para revisar antes de enviar. |
 
-Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo no campo de mensagem.
-Esses pedidos só vão à IA quando você enviar o texto preparado. Os comandos locais
-não consomem uma geração. Aliases em inglês, como `/help`, `/new`, `/model`, `/review`
-e `/test`, também funcionam. Comandos locais ficam disponíveis sem uma pasta escolhida;
-para enviar pedidos à IA, selecione um projeto. Durante uma geração, use `/parar` antes
-de trocar o projeto, criar uma conversa ou compactar.
+Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos locais não geram uma chamada ao modelo; pedidos preparados só são enviados quando você confirma a mensagem. Aliases em inglês, como `/help`, `/new` e `/review`, também funcionam.
 
-## Como usar
+## Ferramentas do agente
 
-1. Crie um chat e **escolha a pasta segura** (ícone de pasta no cabeçalho — o menu também lista as pastas recentes)
-2. Peça o que precisa — ex.: *"crie uma API Express com testes e valide os endpoints"*
-3. Acompanhe os cards de ferramenta, os diffs e os prints em tempo real — inclusive o progresso de um arquivo sendo escrito
-4. Precisou corrigir o rumo? Escreva sem parar a geração: a mensagem entra na fila e é lida na próxima etapa
-5. Use **Auto/Manual** para decidir se comandos pedem confirmação, e **Raciocínio** para regular quanto o modelo pensa antes de agir
-6. `@` menciona um arquivo; o clipe (ou arrastar) anexa arquivos
+| Ferramenta | Função |
+|---|---|
+| `list_files` | Lista arquivos e pastas, com filtro glob e opção recursiva. |
+| `read_file` | Lê o arquivo ou um trecho; aceita consulta direta e cursor de continuação. |
+| `read_tool_result` | Recupera saídas grandes por cursor ou termo, sem repetir a operação. |
+| `search_files` | Busca texto ou regex com paginação, filtros e linhas de contexto. |
+| `list_definitions` | Mostra funções, classes, métodos e tipos com suas linhas. |
+| `write_file` / `edit_file` | Cria arquivos ou aplica alterações; edições em lote são atômicas. |
+| `create_directory` / `delete_file` | Cria pastas ou remove arquivos. |
+| `execute_command` | Executa comandos no projeto e acompanha o início de processos. |
+| `wait_for_process` / `read_process_output` | Aguarda tarefas demoradas e consulta sua saída. |
+| `list_processes` / `stop_process` | Lista ou encerra processos acompanhados pelo Studio. |
+| `http_request` | Consulta APIs com status, cabeçalhos e corpo separados. |
+| `capture_page` | Renderiza uma página, captura a imagem e informa erros de console/rede. |
+| `web_search` / `fetch_url` | Pesquisa na web e extrai o conteúdo de páginas. |
+| `ask_user` | Pede uma escolha ou esclarecimento e aguarda sua resposta. |
+| `mcp__servidor__ferramenta` | Executa ferramentas dos servidores MCP configurados. |
 
----
+### MCP, instruções e skills
 
-## Estrutura do projeto
+Em **Configurações → Ajustes → Ferramentas → Servidores MCP**, cole a configuração do servidor. São aceitos processos locais por stdio e servidores remotos por Streamable HTTP:
 
-O código-fonte é **TypeScript**, todo em `src/`. O `tsc` emite a saída em **`out/`** (separada da fonte, ignorada pelo git): `src/main.ts → out/main.js`, `src/preload.cts → out/preload.cjs` etc. O Electron carrega `out/main.js` (ver `main` do package.json) e o `index.html` carrega `out/renderer.js` — sem empacotador no caminho:
-
-```
-├── index.html        # Interface (carrega out/renderer.js)
-├── assets/studio.css # Identidade visual Pofu
-├── scripts/          # Build, testes de regressão e smoke opcional da API
-├── tsconfig.json     # Único config do build (rootDir: src, outDir: out)
-├── src/
-│   ├── main.ts       # Processo main: IPC de arquivos, processos, HTTP, captura e busca
-│   ├── preload.cts   # Ponte contextBridge (.cts porque o preload é CommonJS → preload.cjs)
-│   ├── renderer.ts   # Loop do agente, ferramentas, streaming, diff, render das mensagens
-│   ├── tool-results.ts # Cursores de leitura e resultados recuperáveis
-│   ├── tool-output.ts  # Formato compacto de busca, listagem e saída de terminal
-│   ├── edit-match.ts   # Casamento do edit_file (exato → tolerante a espaço) e lote atômico
-│   ├── edit-diagnostics.ts # Diagnóstico quando o trecho do edit_file não é encontrado
-│   ├── constants.ts  # system_prompt, padrões e limites
-│   ├── types.d.ts    # Tipos compartilhados (Settings, Chat, ElectronAPI…)
-│   ├── websearch.js  # Busca web (arquivo gerado noutro repositório — veja o cabeçalho)
-│   └── websearch.d.ts# Tipos do módulo acima
-├── out/              # Saída do build (gerada, não versionada)
-├── docs/img/         # Imagens do README
-└── vendor/           # Bibliotecas de front-end (offline)
+```json
+{
+  "mcpServers": {
+    "arquivos": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/projetos"]
+    },
+    "remoto": { "url": "https://exemplo.com/mcp" }
+  }
+}
 ```
 
-O `out/` é gerado e ignorado pelo git: `npm start` e `npm run dist` já rodam o build antes. Para compilar sozinho, `npm run build`; para só checar tipos, `npm run typecheck`.
+O estado e o custo estimado das definições de ferramentas aparecem na configuração. `"disabled": true` desliga um servidor sem removê-lo; processos locais precisam ter seu comando disponível no sistema.
 
----
+Em **Instruções do agente**, acrescente regras próprias ao prompt ou importe arquivos de skills. Skills ativas são enviadas em cada requisição, com o custo estimado mostrado na lista. Substituir o prompt padrão também substitui as orientações de fábrica.
 
-## Créditos e licença
+## Contexto, execução e dados
 
-Licenciado sob a **[Apache License 2.0](LICENSE)** — veja também o [NOTICE](NOTICE).
+Arquivos e resultados grandes usam leitura por trecho e referências recuperáveis. A compactação encurta resultados antigos **no envio ao modelo**, preservando o histórico local. **Teto de histórico por requisição** permite limitar o contexto reenviado em APIs pagas. Um teto menor que o necessário pode provocar releituras.
 
-Você pode usar, modificar, redistribuir e criar derivados, inclusive comercialmente. Em troca, a licença pede que você **mantenha o aviso de copyright e o arquivo NOTICE**, e **sinalize os arquivos que alterou**. Se este projeto te ajudou, um link de volta para o repositório é muito bem-vindo.
+O agente consulta a estrutura de arquivos de código grandes antes de ler tudo, evita releituras sem mudanças e interrompe chamadas repetidas com o mesmo resultado. Busca, listagem e saída de terminal usam formatos compactos. As medições dependem do projeto, do modelo e do servidor: em uma sessão documentada, o teto de 64 mil tokens reduziu o uso de prompt em 19%; isso não é uma previsão de economia para qualquer tarefa.
 
-- Ícone do aplicativo gerado com ChatGPT (OpenAI)
-- Bibliotecas de terceiros e suas licenças estão listadas no [NOTICE](NOTICE)
-- Referencia de icones: https://feathericons.com
+No modo **Manual**, comandos, exclusões, requisições HTTP com alteração e ferramentas MCP que não declaram somente leitura pedem aprovação. Ferramentas de arquivo verificam os caminhos do projeto, e sobrescrever um arquivo exige leitura prévia sem mudança posterior no disco. Terminal e servidores MCP executam com as permissões do sistema; a pasta do projeto não é um sandbox para esses processos.
 
-## Notas
+Histórico e configurações ficam em `app-store.json`, no diretório de dados do Electron. Consumo local fica em `consumo.json`; prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`. Bibliotecas da interface são incluídas em `vendor/`, sem depender de CDN; chamadas à IA e serviços externos dependem da conexão configurada.
 
-- Histórico e configurações ficam no diretório de dados do Electron (`app-store.json`)
-- Prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`, no mesmo diretório
-- Desenvolvido e testado principalmente no **Linux (Ubuntu 26.04) / Windows (11 PRO 25H2)**, contra um **llama.cpp** local
-## Testes
+## Desenvolvimento
 
-- `npm test`: build e regressões de leitura completa, linhas longas, Unicode, cache, comandos e menções.
-- `npm run typecheck`: valida os tipos sem emitir arquivos.
-- `npm run test:integration`: abre o Electron com perfil isolado e testa ferramentas,
-  proteções de edição, busca, processos, HTTP, captura, perguntas e layout. Recompõe
-  arquivos de 5 MiB (Unicode/CRLF) e 20 MiB (linha única), conferindo conteúdo e SHA-256.
-- `npm run test:api`: smoke opcional com chamadas reais. Defina `POFU_TEST_API_URL` e
-  `POFU_TEST_API_KEY` no ambiente; `POFU_TEST_MODEL` pode escolher o modelo. Só são
-  enviados dados sintéticos, incluindo consultas a trechos distantes em 5 e 20 MiB.
-  O terminal é oferecido para medir a escolha da ferramenta; se o modelo o escolher,
-  o teste falha sem executar o comando. Não coloque chaves em scripts ou arquivos versionados.
-- `npm run test:agent`: ponta a ponta com modelo real DENTRO do app — loop do agente, poda,
-  trava de looping, métricas e MCP como para o usuário. Mesmas variáveis do `test:api`.
-  Cenários: fórmula num arquivo grande e num muito grande, ferramenta MCP (servidor falso em
-  `scripts/fixtures/`) e duas trocas num mesmo arquivo. Imprime requisições, ferramentas
-  usadas, uso de terminal, acerto de cache e velocidade de cada um.
+O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o build gera `out/`, que não é versionado. `index.html` e `assets/studio.css` compõem a interface. O mapa detalhado está em [AGENTS.md](AGENTS.md) e as convenções em [CLAUDE.md](CLAUDE.md).
 
-O teste de integração usa um servidor HTTP local; a busca web valida entrada inválida,
-sem depender de disponibilidade de buscadores. Para salvar screenshots reais do app,
-defina `POFU_QA_OUTPUT` com a pasta de destino antes do teste de integração.
+| Comando | Finalidade |
+|---|---|
+| `npm run build` | Compila e copia o módulo de pesquisa para `out/`. |
+| `npm run typecheck` | Verifica os tipos sem emitir arquivos. |
+| `npm test` | Executa os testes de unidade, incluindo consumo e controle remoto. |
+| `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
+| `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |
+| `npm run test:startup` | Verifica os avisos de atualização em diferentes cenários. |
+| `npm run dist:win` | Gera o instalador Windows. |
+| `npm run dist:linux` | Gera o pacote Ubuntu/Debian. |
+| `npm run dist:fedora` | Gera o pacote Fedora; exige `rpmbuild`. |
 
-O seletor combina três efeitos discretos: faixa de luz, textura em movimento e brilho interno pulsante. Todos são desativados com movimento reduzido.
+`npm run test:api` e `npm run test:agent` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
 
-Quando `edit_file` não encontra o trecho exato, tenta de novo ignorando só **espaço em branco** (indentação, espaço no fim da linha, aspas tipográficas): se isso achar um único lugar, a troca é feita, o texto novo herda a indentação do arquivo e o resultado avisa (`matched_ignoring_whitespace`). Se nem assim houver casamento, volta um diagnóstico do conteúdo atual em disco: trecho candidato, primeira diferença e indicação de que o texto novo já aparece no arquivo. Casamento por **semelhança** nunca grava — serve só a esse diagnóstico. Trechos extensos indicam o recorte e os parâmetros para continuar a leitura.
+O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`. A versão 1.6.0 mantém a pesquisa estável anterior; o protótipo de pesquisa web em revisão não integra esse release.
 
-Para comandos com aspas ou expressões regulares, `execute_command` aceita `command: "node"` e `args: ["-e", "console.log(1)"]`. Os argumentos são enviados diretamente ao programa, sem interpretação do shell e sem criar scripts temporários. Falhas de processo distinguem saída não zero de erros de inicialização; PIDs desconhecidos orientam consultar `list_processes`.
+As imagens deste README foram capturadas no aplicativo e no site reais, com contas, projetos e respostas sintéticos em ambientes isolados.
 
-`delete_file` informa quando o arquivo já está ausente, sem repetir a exclusão nem criar um registro de alteração. Falhas de permissão ou tentativa de apagar diretório retornam erro estruturado; arquivos existentes continuam protegidos pela exigência de leitura.
+## Licença e créditos
 
-Os resultados distinguem operação concluída, processo ainda ativo e falha. `list_processes` separa processos em execução dos encerrados; capturas preservam resultados JSON do script como objetos e indicam falha do script separadamente do sucesso da captura. Essas informações ajudam a verificar o resultado antes de declarar sucesso.
+[Apache License 2.0](LICENSE). Consulte também o [NOTICE](NOTICE), com avisos e bibliotecas de terceiros. Ao redistribuir, preserve os avisos exigidos pela licença e sinalize os arquivos alterados.
 
-
-O endereço da API é único. Consumo usa o provedor ativo automaticamente, sem aba nas configurações e sem URL extra. O botão no cabeçalho, ao lado do contexto, abre um resumo compacto; `/usage`, `/cost` e `/consumo` abrem o mesmo resumo. Detalhes por modelo ficam recolhidos. APIs sem relatório remoto mostram somente o registro local, sem cartão de saldo desconhecido.
+Criado por **Dspofu**. Ícone do aplicativo gerado com ChatGPT; referências de ícones: [Feather](https://feathericons.com).
