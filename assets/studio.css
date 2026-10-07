@@ -244,3 +244,24 @@ input[type="range"] { accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .generator-input { animation: none !important; }
 }
+
+.usage-indicators { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#btn-consumption { background: #20271c; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+#btn-consumption.warn { color: #f59e0b; }
+#btn-consumption.danger { color: #ef4444; }
+@media (max-width: 1050px) { .header-actions { flex-wrap: wrap; gap: 8px; justify-content: flex-end; } .usage-indicators #ctx-pill { display: flex; } .usage-indicators { gap: 6px; } }
+#btn-consumption:hover, #btn-consumption:focus-visible { color: var(--accent); }
+#consumption-modal .consumption-content { width: 540px; min-width: 0; height: auto; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); }
+#consumption-body { padding: 20px 24px; overflow-y: auto; min-height: 0; }
+.consumption-toolbar { display: flex; align-items: center; gap: 12px; }
+#consumption-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+#consumption-period { width: auto; max-width: 160px; font-size: 12px; padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; }
+#consumption-body .info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+#consumption-body .info-card { min-width: 0; padding: 10px 12px; }
+.consumption-local { display: flex; gap: 24px; padding: 16px 0 6px; border-top: 1px solid var(--border); margin-top: 16px; }
+.consumption-local div { flex: 1; min-width: 0; }
+.consumption-local strong { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+.consumption-local span { font-size: 11px; color: var(--muted); }
+#consumption-details { margin-top: 16px; font-size: 12px; }
+#consumption-details summary { cursor: pointer; color: var(--muted); }
+#consumption-body .cfg-hint { line-height: 1.5; }

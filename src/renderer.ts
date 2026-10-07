@@ -1,6 +1,7 @@
 import { workspacePath } from './workspace-path.js';
 import { mountMentionHighlight, paintMentions } from './mention-highlight.js';
 import { activateProvider, migrateProviders, rememberProvider, validateProvider, type ProviderConfig } from './providers.js';
+import { consumptionKind, consumptionNames, type ConsumptionPeriod, type ConsumptionReport } from './consumption.js';
 import { mountSlashCommands } from './slash-commands.js';
 import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
 import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
@@ -143,7 +144,7 @@ async function maybeConfirmTool(name, args) {
 
 function askExecConfirm(name, args) {
   return new Promise((resolve) => {
-    pendingConfirm = { resolve };
+    pendingConfirm = { resolve, remoteId: crypto.randomUUID(), remoteTool: name, remoteDescription: JSON.stringify(args, null, 2).slice(0, 12000) };
     showConfirmModal(name, args);
   });
 }
@@ -341,7 +342,7 @@ const MAX_OPCOES_PERGUNTA = 6;   // acima disso vira formulário, e a pergunta p
 
 function askUserQuestion(args) {
   return new Promise((resolve) => {
-    pendingQuestion = { resolve };
+    pendingQuestion = { resolve, remoteId: crypto.randomUUID(), remoteArgs: args };
     showQuestionModal(args);
   });
 }
@@ -982,12 +983,13 @@ let settingsSalvas: Partial<Settings> = {};
 
 async function persist() {
   rememberProvider(state.settings);
-  await window.electronAPI.saveStore({
+  const saved = await window.electronAPI.saveStore({
     chats: state.chats,
     activeChatId: state.activeChatId,
     settings: state.settings,
     recentPaths: state.recentPaths
   });
+  if (!saved.success) throw new Error(saved.error || 'Não foi possível salvar as configurações.');
   settingsSalvas = { ...state.settings };
   atualizaEstadoSalvamento();
 }
@@ -4537,6 +4539,121 @@ function trackUsage(usage) {
   state.usage.history.push(usage.completion_tokens || 0);
   if (state.usage.history.length > 12) state.usage.history.shift();
   renderUsage();
+  const provider = state.settings.providers?.find(p => p.id === state.settings.activeProviderId);
+  if (provider) void window.electronAPI.recordUsage({ ...provider, apiUrl: state.settings.apiUrl, apiKey: state.settings.apiKey, model: state.settings.model }, usage)
+    .then(result => { if (!result.success) logSystem(result.error); else { refreshActiveConsumption(); } }).catch(() => logSystem('Não foi possível salvar o consumo local.'));
+}
+
+let consumptionRequest = 0;
+let consumptionRefreshing = false;
+let remoteConsumption: { providerId: string; period: string; updatedAt: string; summary: string } | null = null;
+const consumptionNumber = (n: number | null | undefined) => n === null || n === undefined ? '—' : n.toLocaleString('pt-BR', { maximumFractionDigits: 6 });
+function consumptionCard(container: HTMLElement, label: string, value: string) {
+  const card = document.createElement('div'); card.className = 'info-card';
+  const caption = document.createElement('div'); caption.className = 'info-label'; caption.textContent = label;
+  const detail = document.createElement('div'); detail.className = 'info-value'; detail.textContent = value;
+  card.append(caption, detail); container.appendChild(card);
+}
+function consumptionProfiles() {
+  const select = el<HTMLSelectElement>('consumption-provider');
+  const selected = (state.settings.providers || []).some(p => p.id === select.value) ? select.value : state.settings.activeProviderId;
+  renderProviderOptions(select, state.settings.providers || [], selected);
+}
+function refreshActiveConsumption() {
+  consumptionProfiles();
+  if (!el('consumption-modal').classList.contains('active')) {
+    el('consumption-provider').value = state.settings.activeProviderId;
+    el('consumption-period').value = 'month';
+  }
+  void refreshConsumption();
+}
+function openConsumption() {
+  consumptionProfiles();
+  el('consumption-provider').value = state.settings.activeProviderId;
+  el<HTMLDetailsElement>('consumption-details').open = false;
+  el('consumption-modal').classList.add('active');
+  el('btn-close-consumption').focus();
+  void refreshConsumption();
+}
+async function refreshConsumption() {
+  const request = ++consumptionRequest;
+  const provider = state.settings.providers?.find(p => p.id === el('consumption-provider').value);
+  if (!provider) return;
+  consumptionRefreshing = true;
+  el('consumption-name').textContent = provider.name;
+  el('consumption-provider-report').hidden = true;
+  const connection = { ...provider }, snapshot = JSON.stringify(connection);
+  const period = el('consumption-period').value as ConsumptionPeriod;
+  const kind = consumptionKind(connection.apiUrl);
+  el('consumption-status').textContent = `${consumptionNames[kind]} · consultando consumo…`;
+  el('consumption-remote').replaceChildren(); el('consumption-models').replaceChildren();
+  el('consumption-remote-note').textContent = ''; el('consumption-local-note').textContent = '';
+  el('consumption-cycle').hidden = true;
+  for (const name of ['input', 'output', 'requests']) el('consumption-local-' + name).textContent = '—';
+  try {
+    const result = await window.electronAPI.providerConsumption(connection, period);
+    if (request !== consumptionRequest || snapshot !== JSON.stringify(state.settings.providers?.find(p => p.id === connection.id))) return;
+    if (!result.success) throw new Error(result.error);
+    const remote: ConsumptionReport = result.remote, local = result.local;
+    el('consumption-status').textContent = `${remote.label} · ${remote.status === 'ok' ? 'consulta concluída' : remote.status === 'partial' ? 'relatório parcial' : remote.status === 'needs-key' ? 'chave administrativa necessária' : remote.status === 'unsupported' ? 'registro local disponível' : 'consulta indisponível'} · ${new Date(remote.updatedAt).toLocaleString('pt-BR')}`;
+    el('consumption-remote-note').textContent = remote.message;
+    const cards = el('consumption-remote');
+    const scopes = { account: 'Conta inteira', organization: 'Organização inteira', key: 'Chave configurada', unknown: 'Não identificado' };
+    if (remote.scope !== 'unknown') consumptionCard(cards, 'Abrangência', scopes[remote.scope]);
+    el('consumption-provider-report').hidden = remote.status !== 'ok' && remote.status !== 'partial';
+    if (remote.plan) consumptionCard(cards, 'Plano', remote.plan);
+    for (const balance of remote.balances || []) {
+      const unit = balance.unit === 'credits' ? 'créditos' : balance.unit;
+      if (balance.remaining !== null) consumptionCard(cards, remote.scope === 'key' ? `Limite restante (${unit})` : `Saldo disponível (${unit})`, consumptionNumber(balance.remaining));
+      if (balance.used !== null) consumptionCard(cards, `Consumo acumulado (${unit})`, consumptionNumber(balance.used));
+    }
+    if (remote.costs) consumptionCard(cards, `Custo (${remote.costs.currency}) · ${remote.costPeriod || 'período selecionado'}`, consumptionNumber(remote.costs.amount));
+    if (remote.tokens) {
+      consumptionCard(cards, 'Tokens de entrada', consumptionNumber(remote.tokens.input));
+      consumptionCard(cards, 'Tokens de saída', consumptionNumber(remote.tokens.output));
+      consumptionCard(cards, 'Tokens lidos do cache', consumptionNumber(remote.tokens.cached));
+      consumptionCard(cards, 'Tokens escritos no cache', consumptionNumber(remote.tokens.cacheWrite));
+      if (remote.tokens.requests !== null) consumptionCard(cards, 'Requisições no provedor', consumptionNumber(remote.tokens.requests));
+    }
+    if (remote.cycle) {
+      const pct = remote.cycle.limit > 0 ? Math.min(100, Math.round(remote.cycle.used / remote.cycle.limit * 100)) : 0;
+      el('consumption-cycle').hidden = false;
+      el('consumption-cycle-label').textContent = `${consumptionNumber(remote.cycle.used)} / ${consumptionNumber(remote.cycle.limit)} créditos usados no ciclo`;
+      el('consumption-cycle-percent').textContent = `${pct}%`; el('consumption-cycle-fill').style.width = pct + '%';
+      if (remote.cycle.renewsAt !== null) consumptionCard(cards, 'Próxima renovação', new Date(remote.cycle.renewsAt).toLocaleString('pt-BR'));
+    }
+    el('consumption-local-input').textContent = consumptionNumber(local.tokens.input);
+    el('consumption-local-output').textContent = consumptionNumber(local.tokens.output);
+    el('consumption-local-requests').textContent = consumptionNumber(local.tokens.requests);
+    if (connection.id === state.settings.activeProviderId) {
+      const badge = el('btn-consumption'), cycle = remote.cycle;
+      const balance = remote.balances?.find(b => b.remaining !== null);
+      const limit = cycle?.limit ?? balance?.limit;
+      const used = cycle?.used ?? (balance?.limit != null && balance.remaining != null ? Math.max(0, balance.limit - balance.remaining) : null);
+      const pct = limit > 0 && used !== null ? Math.round(used / limit * 100) : null;
+      badge.classList.toggle('warn', pct !== null && pct >= 70 && pct < 90);
+      badge.classList.toggle('danger', pct !== null && pct >= 90);
+      if (pct !== null) {
+        badge.textContent = `Cota: ${pct}%`;
+        badge.title = `${consumptionNumber(used)} / ${consumptionNumber(limit)} ${cycle || balance.unit === 'credits' ? 'créditos' : balance.unit} usados · atualizado ${new Date(remote.updatedAt).toLocaleTimeString('pt-BR')} · clique para detalhes`;
+      } else if (balance) {
+        badge.textContent = `${remote.scope === 'key' ? 'Limite' : 'Saldo'}: ${consumptionNumber(balance.remaining)} ${balance.unit === 'credits' ? 'créditos' : balance.unit}`;
+        badge.title = 'Disponível na API ativa · clique para detalhes';
+      } else {
+        badge.textContent = 'Cota: —';
+        badge.title = 'A API não informa cota. Clique para ver os tokens registrados no Studio.';
+      }
+    }
+    el('consumption-local-note').textContent = local.message;
+    for (const row of local.models) consumptionCard(el('consumption-models'), row.model || 'Modelo não informado', `${consumptionNumber(row.input + row.output)} tokens · ${consumptionNumber(row.requests)} requisições`);
+    remoteConsumption = { providerId: connection.id, period, updatedAt: new Date().toISOString(), summary: [
+      provider.name, el('consumption-status').textContent, `Registro local: ${{ month: 'mês atual (UTC)', '7d': 'últimos 7 dias (UTC)', '30d': 'últimos 30 dias (UTC)' }[period]}`, 'Informado pelo provedor', [...el('consumption-remote').children].map(card => `${q('.info-label', card).textContent}: ${q('.info-value', card).textContent}`).join('\n'),
+      ...(remote.cycle ? [el('consumption-cycle-label').textContent] : []), el('consumption-remote-note').textContent,
+      'Registrado neste Studio', `Entrada: ${consumptionNumber(local.tokens.input)} · Saída: ${consumptionNumber(local.tokens.output)} · Requisições: ${consumptionNumber(local.tokens.requests)}`,
+      local.message, [...el('consumption-models').children].map(card => `${q('.info-label', card).textContent}: ${q('.info-value', card).textContent}`).join('\n'),
+    ].filter(Boolean).join('\n\n').slice(0, 20000) };
+  } catch (err) { if (request === consumptionRequest) { el('consumption-status').textContent = err.message || 'Não foi possível consultar o consumo.'; remoteConsumption = { providerId: connection.id, period, updatedAt: new Date().toISOString(), summary: `${provider.name}\n${el('consumption-status').textContent}` }; } }
+  finally { if (request === consumptionRequest) consumptionRefreshing = false; }
 }
 
 function renderUsage() {
@@ -4609,6 +4726,9 @@ async function switchProvider(id: string) {
   if (isRunning) { renderActiveProvider(); logSystem('Pare a geração antes de trocar de provedor.'); return; }
   rememberProvider(state.settings); activateProvider(state.settings, id);
   resetProviderCapabilities(); renderActiveProvider(); applySettingsToForm();
+  el('consumption-provider').value = id; el('btn-consumption').textContent = 'Cota: —';
+  refreshActiveConsumption();
+  consumptionProfiles();
   await persist(); await refreshModelContext();
 }
 
@@ -4806,6 +4926,8 @@ function readSettingsFromForm() {
   state.settings.providers = providerDrafts.map(p => ({ ...p }));
   activateProvider(state.settings, draftProviderId);
   resetProviderCapabilities(); renderActiveProvider();
+  el('btn-consumption').textContent = 'Cota: —';
+  refreshActiveConsumption();
 }
 
 // O formulário só vai para o disco no "Salvar e Fechar", enquanto o "Recarregar" da
@@ -4962,6 +5084,7 @@ async function executeSlashCommand(command, args) {
     }
     case 'projeto': el('btn-select-folder').click(); break;
     case 'config': el('btn-open-settings').click(); break;
+    case 'consumo': openConsumption(); break;
     case 'modelo':
       el('btn-open-settings').click();
       q<HTMLButtonElement>('.nav-tab-btn[data-tab="tab-personalizacao"]').click();
@@ -5139,6 +5262,7 @@ function wireEvents() {
     modal.classList.add('active');
     applySettingsToForm();
     fetchModels();
+    consumptionProfiles();
   });
   modal.addEventListener('input', atualizaEstadoSalvamento);
   modal.addEventListener('change', atualizaEstadoSalvamento);
@@ -5163,6 +5287,23 @@ function wireEvents() {
 
   // Recarregar modelos manualmente
   el('btn-refresh-models').addEventListener('click', fetchModels);
+  el('btn-consumption').addEventListener('click', openConsumption);
+  const consumptionModal = el('consumption-modal');
+  const closeConsumption = () => { consumptionModal.classList.remove('active'); el('btn-consumption').focus(); };
+  el('btn-close-consumption').addEventListener('click', closeConsumption);
+  consumptionModal.addEventListener('click', e => { if (e.target === consumptionModal) closeConsumption(); });
+  consumptionModal.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeConsumption(); }
+    if (e.key === 'Tab') {
+      const targets = [...consumptionModal.querySelectorAll<HTMLElement>('button, select:not([hidden]), summary')].filter(x => !x.hidden);
+      const first = targets[0], last = targets[targets.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  el('btn-refresh-consumption').addEventListener('click', refreshConsumption);
+  el('consumption-provider').addEventListener('change', refreshConsumption);
+  el('consumption-period').addEventListener('change', refreshConsumption);
 
   // Atualiza a info do modelo ao trocar a seleção
   el('model-name').addEventListener('change', (e) => {
@@ -5331,6 +5472,113 @@ async function checkForUpdate() {
 // --------------------------------------------------------------------------
 //  Inicialização
 // --------------------------------------------------------------------------
+let remoteEnabled = false;
+function remoteChatMessages() {
+  const messages: { role: string; text: string }[] = [];
+  let budget = 60000;
+  for (const node of [...el('chat-box').children].reverse()) {
+    const item = node as HTMLElement;
+    if (!item.matches('.message,.tool-card,.tool-log,.system-log,.error-msg,.error-card')) continue;
+    const role = item.classList.contains('user') ? 'user' : item.classList.contains('agent') ? 'assistant' : item.classList.contains('tool-card') ? 'tool' : 'system';
+    const body = role === 'user' ? q<HTMLElement>('.user-message-text', item) : role === 'assistant' ? q<HTMLElement>('.md-body', item) : item;
+    let text = body?.innerText || '';
+    if (role === 'assistant') { const reason = q<HTMLElement>('.reasoning-body', item); if (reason?.textContent) text = 'Raciocínio\n' + reason.textContent + '\n\n' + text; }
+    if (!text.trim()) continue;
+    const limit = Math.min(budget, 12000), notice = '[Trecho final; mensagem completa no desktop.]\n';
+    if (text.length > limit) { if (limit <= notice.length) break; text = notice + text.slice(-(limit - notice.length)); }
+    messages.unshift({ role, text }); budget -= text.length;
+    if (budget <= 0 || messages.length >= 80) break;
+  }
+  return messages;
+}
+function studioRemoteSnapshot() {
+  const chats = Object.values(state.chats), providers = state.settings.providers || [];
+  const snapshot = {
+    activeChatId: state.activeChatId, running: isRunning, queued: filaMensagens.length,
+    chats: [activeChat(), ...chats.filter(c => c.id !== state.activeChatId)].filter(Boolean).slice(0, 100).map(c => ({ id: c.id, name: c.name.slice(0, 200), path: c.path.slice(0, 500) })),
+    messages: remoteChatMessages(),
+    providers: [...providers.filter(p => p.id === state.settings.activeProviderId), ...providers.filter(p => p.id !== state.settings.activeProviderId)].slice(0, 50).map(p => ({ id: p.id.slice(0, 200), name: p.name.slice(0, 200), model: p.model.slice(0, 200) })),
+    providerId: state.settings.activeProviderId, thinkLevel: state.settings.thinkLevel, thinkLevels: Object.keys(THINK_LEVELS), execMode: state.settings.execMode,
+    workspaces: [...new Set([activeChat()?.path, ...state.recentPaths].filter(Boolean))].slice(0, 40).map(p => p.slice(0, 1000)),
+    approval: pendingConfirm ? { id: pendingConfirm.remoteId, tool: pendingConfirm.remoteTool, description: pendingConfirm.remoteDescription } : null,
+    question: pendingQuestion ? { id: pendingQuestion.remoteId, question: String(pendingQuestion.remoteArgs.question || ''), multi: !!pendingQuestion.remoteArgs.multi_select,
+      options: normalizaOpcoes(pendingQuestion.remoteArgs.options) } : null,
+    consumption: remoteConsumption,
+    limited: false,
+  };
+  const oversized = () => new TextEncoder().encode(JSON.stringify(snapshot)).length > 200000;
+  for (const group of [snapshot.chats, snapshot.providers, snapshot.workspaces]) while (group.length > 1 && oversized()) { group.pop(); snapshot.limited = true; }
+  while (snapshot.messages.length > 1 && oversized()) { snapshot.messages.shift(); snapshot.limited = true; }
+  return snapshot;
+}
+async function executeRemoteCommand(c: any) {
+  const idleOnly = !['send', 'stop', 'approve', 'answer', 'consumption-refresh'].includes(c.type);
+  if (idleOnly && isRunning) throw new Error('Aguarde a tarefa terminar ou interrompa-a antes de trocar a sessão.');
+  const chat = () => { const found = state.chats[c.chatId]; if (!found) throw new Error('Chat não encontrado.'); return found; };
+  switch (c.type) {
+    case 'send':
+      chat();
+      if (typeof c.text !== 'string' || !c.text.trim() || c.text.length > 20000) throw new Error('Mensagem inválida.');
+      if (isRunning && c.chatId !== state.activeChatId) throw new Error('Outra conversa está em execução.');
+      if (!isRunning && c.chatId !== state.activeChatId) { switchChat(c.chatId); await renderActiveChat(); }
+      if (!activeChat().path || !state.settings.model) throw new Error('Escolha o projeto e o modelo no Studio.');
+      if (isRunning) { if (filaMensagens.length >= 20) throw new Error('Aguarde as mensagens na fila.'); enfileiraMensagem(c.text, []); }
+      else void submitUserMessage(c.text, []).catch(e => logSystem(String(e.message || 'Falha ao enviar mensagem remota.')));
+      break;
+    case 'stop': stopAgent(); break;
+    case 'select-chat': chat(); switchChat(c.chatId); break;
+    case 'new-chat': { const path = activeChat()?.path || ''; createChat('Novo chat'); activeChat().path = path; renderChatList(); renderActiveChat(); await persist(); break; }
+    case 'delete-chat': chat(); deleteChat(c.chatId); break;
+    case 'rename-chat': chat().name = String(c.name).slice(0, 200); renderChatList(); renderActiveChat(); await persist(); break;
+    case 'set-workspace': if (!studioRemoteSnapshot().workspaces.includes(c.path)) throw new Error('Abra primeiro esta pasta no Studio.'); defineWorkspace(c.path); break;
+    case 'set-provider': if (!state.settings.providers.some(p => p.id === c.providerId)) throw new Error('Provedor não encontrado.'); switchProvider(c.providerId); break;
+    case 'set-thinking': if (!THINK_LEVELS[c.level]) throw new Error('Nível de raciocínio inválido.'); state.settings.thinkLevel = c.level; state.settings.noThink = c.level === 'desligado'; updateThinkUI(); await persist(); break;
+    case 'set-exec-mode': if (!['manual', 'auto'].includes(c.mode)) throw new Error('Modo inválido.'); state.settings.execMode = c.mode; updateExecModeUI(); await persist(); break;
+    case 'approve': if (!pendingConfirm || pendingConfirm.remoteId !== c.requestId || !['approve', 'reject'].includes(c.decision)) throw new Error('A aprovação já foi encerrada.'); resolveConfirm(c.decision); break;
+    case 'answer': {
+      if (!pendingQuestion || pendingQuestion.remoteId !== c.requestId) throw new Error('A pergunta já foi encerrada.');
+      const options = normalizaOpcoes(pendingQuestion.remoteArgs.options).map(o => o.label);
+      const selected = Array.isArray(c.selected) ? c.selected.filter(s => options.includes(s)) : [];
+      if (!pendingQuestion.remoteArgs.multi_select && selected.length > 1) throw new Error('Selecione somente uma opção.');
+      const notes = String(c.notes || '').slice(0, 10000);
+      pendingQuestion.coletar = () => ({ answered: true, selected, notes }); resolveQuestion(c.skip === true); break;
+    }
+    case 'consumption-refresh':
+      consumptionProfiles();
+      if (!state.settings.providers.some(p => p.id === c.providerId) || !['month', '7d', '30d'].includes(c.period)) throw new Error('Consulta inválida.');
+      el('consumption-provider').value = c.providerId; el('consumption-period').value = c.period; await refreshConsumption(); break;
+    default: throw new Error('Comando remoto desconhecido.');
+  }
+}
+function showRemoteStatus(status: any) {
+  const first = !remoteEnabled && status.enabled;
+  remoteEnabled = status.enabled === true;
+  el('remote-status').textContent = status.message;
+  el('remote-server').value = status.server; if (status.name) el('remote-name').value = status.name;
+  el('btn-remote-toggle').hidden = !status.deviceId; el('btn-remote-forget').hidden = !status.deviceId;
+  el('btn-remote-toggle').textContent = remoteEnabled ? 'Desligar' : 'Ligar';
+  if (first && !remoteConsumption) { consumptionProfiles(); void refreshConsumption(); }
+}
+async function initRemoteControl() {
+  window.electronAPI.onRemoteStatus(showRemoteStatus);
+  window.electronAPI.onRemoteCommand(async c => {
+    let ok = false;
+    try { if (!remoteEnabled || c.expiresAt < Date.now()) throw new Error('Comando expirado.'); await executeRemoteCommand(c); ok = true; }
+    catch (e) { logSystem(`Controle remoto: ${e.message || 'comando não executado'}`); }
+    finally { window.electronAPI.remoteResult(c.id, ok); if (remoteEnabled) window.electronAPI.remotePublish(studioRemoteSnapshot()); }
+  });
+  el('btn-remote-pair').addEventListener('click', async () => {
+    const btn = el<HTMLButtonElement>('btn-remote-pair'); btn.disabled = true; el('remote-status').textContent = 'Pareando…';
+    try { const r = await window.electronAPI.remotePair(el('remote-server').value, el('remote-code').value, el('remote-name').value); if (!r.success) throw new Error(r.error); el('remote-code').value = ''; showRemoteStatus(r.status); }
+    catch (e) { el('remote-status').textContent = e.message; } finally { btn.disabled = false; }
+  });
+  const toggle = async (forget = false) => { const r = await window.electronAPI.remoteEnable(!remoteEnabled && !forget, forget); if (r.success) showRemoteStatus(r.status); else el('remote-status').textContent = r.error; };
+  el('btn-remote-toggle').addEventListener('click', () => toggle());
+  el('btn-remote-forget').addEventListener('click', () => toggle(true));
+  showRemoteStatus(await window.electronAPI.remoteStatus());
+  setInterval(() => { if (remoteEnabled) window.electronAPI.remotePublish(studioRemoteSnapshot()); }, 750);
+  setInterval(() => { if (!consumptionRefreshing) refreshActiveConsumption(); }, 60000);
+}
 async function init() {
   await loadPersisted();
   wireEvents();
@@ -5348,6 +5596,8 @@ async function init() {
   applySettingsToForm();
   buildThinkMenu();     // monta o menu a partir de THINK_LEVELS
   updateThinkUI();      // reflete o nível de raciocínio salvo
+  refreshActiveConsumption();
+  void initRemoteControl();
   refreshProcesses();   // popula o badge de processos
   void sincronizaMcp();  // em segundo plano: a janela não espera servidor MCP nenhum
   void loadAppInfo().then(checkForUpdate);
@@ -5357,4 +5607,4 @@ async function init() {
 
 init();
 
-export { runTool, tools, activeTools, compactToolResults, retainToolOutput, toApiMessages, activeChat, truncaHistorico };
+export { runTool, tools, activeTools, compactToolResults, retainToolOutput, toApiMessages, activeChat, truncaHistorico, studioRemoteSnapshot, executeRemoteCommand };

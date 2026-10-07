@@ -5,6 +5,8 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   thinkLevel: ThinkLevel;
+  usageAdminKey?: string;
+  usageUrl?: string;
 }
 
 export function validateProvider(provider: ProviderConfig) {
@@ -13,6 +15,12 @@ export function validateProvider(provider: ProviderConfig) {
   try { url = new URL(provider.apiUrl); } catch { throw new Error('Informe um endpoint HTTP ou HTTPS válido.'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash)
     throw new Error('Use um endpoint HTTP ou HTTPS sem credenciais na URL.');
+  if (provider.usageUrl?.trim()) {
+    let usage: URL;
+    try { usage = new URL(provider.usageUrl, provider.apiUrl.replace(/\/+$/, '') + '/'); } catch { throw new Error('Informe um endpoint de consumo válido.'); }
+    if (usage.origin !== url.origin || usage.username || usage.password || usage.hash)
+      throw new Error('O endpoint de consumo deve ter a mesma origem da API e não pode conter credenciais.');
+  }
 }
 
 export function rememberProvider(settings: Settings) {
@@ -36,6 +44,7 @@ export function migrateProviders(settings: Settings) {
     .filter(p => p && typeof p.id === 'string' && !seen.has(p.id) && seen.add(p.id))
     .map(p => ({ id: p.id, name: String(p.name || 'Provedor'), apiUrl: String(p.apiUrl || '').trim().replace(/\/+$/, ''),
       apiKey: String(p.apiKey || ''), model: String(p.model || ''),
+      usageAdminKey: String(p.usageAdminKey || ''), usageUrl: String(p.usageUrl || '').trim(),
       thinkLevel: ['padrao', 'desligado', 'baixo', 'medio', 'alto', 'muito_alto', 'maximo'].includes(p.thinkLevel) ? p.thinkLevel : 'padrao' }));
   if (!settings.providers.length) settings.providers.push({ id: 'provider-initial', name: 'Meu provedor',
     apiUrl: settings.apiUrl, apiKey: settings.apiKey, model: settings.model, thinkLevel: settings.thinkLevel });

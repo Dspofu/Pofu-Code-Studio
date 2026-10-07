@@ -244,6 +244,8 @@ Revisão com o Hermes Agent como referência (detalhes e medições em CLAUDE.md
 
 ## Provedores e thinking
 
+Consumo/remote control: [docs/consumo-remoto.md](docs/consumo-remoto.md). `consumption.ts` normaliza relatórios, `consumption-store.ts` persiste por perfil/endpoint/chave, `consumption-vault.ts` protege chave administrativa. `remote-control.ts` mantém HTTPS no main com credencial no cofre; preload/renderer enviam somente espelho limitado. Preserve identidade de aprovação/pergunta, idempotência, expiração e ferramentas locais existentes. Regressões: `consumption.test.mjs`, `remote-control.test.mjs`, `test-consumption-electron.cjs` e `Saas/bench/bench-remote-code.ts --desktop`.
+
 `Settings.providers` guarda endpoint, chave, modelo e thinking por perfil; os campos
 antigos continuam como espelho do perfil ativo. `rememberProvider` sincroniza esse
 espelho antes de persistir. O modal edita cópias e só aplica em Salvar. Preserve a
@@ -251,3 +253,5 @@ proteção contra respostas atrasadas da descoberta e bloqueie trocas durante ge
 `muito_alto` envia `xhigh`; `maximo` envia `max`. O seletor é horizontal e deriva de
 `THINK_LEVELS`. Ao adaptar um nível recusado, confira o payload enviado na tentativa
 seguinte, não apenas o aviso. Regressões em `providers.test.mjs` e `test-electron.cjs`.
+
+Consumo fica no cabeçalho do chat, ao lado do contexto e em `/usage` (`openConsumption`), fora das abas de configuração. `consumption-provider` é interno, mantém compatibilidade com os comandos remotos; abrir o resumo usa sempre o provedor ativo.

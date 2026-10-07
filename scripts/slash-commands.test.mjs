@@ -10,7 +10,7 @@ test('comandos e aliases resolvem para a mesma ação', () => {
 });
 
 test('filtra sugestões sem tratar caminhos e texto comum como comandos', () => {
-  assert.equal(matchingCommands('/').length, 12);
+  assert.equal(matchingCommands('/').length, 13);
   assert.equal(matchingCommands('/rev')[0].name, 'revisar');
   for (const text of ['olhe /config', '/src/app.ts', 'https://example.com', '/file.txt']) assert.equal(parseSlash(text), null);
   assert.equal(matchingCommands('/revisar src').length, 0);

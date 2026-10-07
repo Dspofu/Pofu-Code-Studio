@@ -300,6 +300,15 @@ interface ElectronAPI {
   clearFinishedProcesses(): Promise<any>;
   getAppInfo(): Promise<{ githubUrl: string; version: string; name: string; author: string; license: string }>;
   checkUpdate(): Promise<any>;
+  providerConsumption(connection: import('./consumption.js').ConsumptionConnection, period?: import('./consumption.js').ConsumptionPeriod): Promise<any>;
+  recordUsage(connection: import('./consumption.js').ConsumptionConnection, usage: unknown): Promise<{ success: boolean; error?: string }>;
+  remoteStatus(): Promise<any>;
+  remotePair(server: string, code: string, name: string): Promise<any>;
+  remoteEnable(enabled: boolean, forget?: boolean): Promise<any>;
+  remotePublish(snapshot: unknown): void;
+  remoteResult(id: string, ok: boolean): void;
+  onRemoteCommand(fn: (command: any) => void): () => void;
+  onRemoteStatus(fn: (status: any) => void): () => void;
   webSearch(query: string, maxResults?: number): Promise<any>;
   fetchUrl(url: string, maxChars?: number): Promise<any>;
   loadStore(): Promise<PersistedStore>;

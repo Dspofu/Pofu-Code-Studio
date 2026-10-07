@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage, safeStorage } from 'electron';
 import { dirname, join, relative } from 'path';
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from 'fs';
 import { tmpdir } from 'os';
@@ -20,6 +20,10 @@ import { globToRegex, suggestPaths } from './tool-output.js';
 import { extraiDefinicoes, suportaEstrutura } from './outline.js';
 import { McpServidor, textoDoResultado, type McpConfig } from './mcp.js';
 import { reparaIconeDoAtalho } from './atalho-windows.js';
+import { ConsumptionStore } from './consumption-store.js';
+import { queryConsumption, type ConsumptionConnection, type ConsumptionPeriod } from './consumption.js';
+import { protectConsumptionKeys, restoreConsumptionKeys } from './consumption-vault.js';
+import { RemoteControl } from './remote-control.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -71,6 +75,7 @@ function createWindow() {
   // main.js roda de out/ (ver tsconfig.json); o index.html fica na RAIZ do app —
   // sem o join, o loadFile procuraria index.html dentro de out/ e a janela abriria em branco.
   mainWindow.loadFile(join(__dirname, '..', 'index.html'));
+  mainWindow.webContents.on('did-start-loading', () => remoteControl?.stop());
   // mainWindow.webContents.openDevTools()
 
   // Links (ex: markdown gerado pela IA, target="_blank" ou window.open) nunca abrem
@@ -1115,12 +1120,56 @@ ipcMain.handle('mcp-call', async (event, server, tool, args) => {
 
 // Persistência local (chats e configurações) no diretório de dados do usuário
 const storePath = () => join(app.getPath('userData'), 'app-store.json');
+const consumptionCipher = {
+  available: () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+  encrypt: (text: string) => safeStorage.encryptString(text).toString('base64'),
+  decrypt: (text: string) => safeStorage.decryptString(Buffer.from(text, 'base64')),
+};
+let consumptionStore: ConsumptionStore;
+const getConsumptionStore = () => consumptionStore ||= new ConsumptionStore(join(app.getPath('userData'), 'consumo.json'));
+let remoteControl: RemoteControl;
+const getRemoteControl = () => remoteControl ||= new RemoteControl(join(app.getPath('userData'), 'remote-control.json'), consumptionCipher,
+  command => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote-command', command); },
+  status => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote-status', status); });
+ipcMain.handle('remote-status', () => { const remote = getRemoteControl(); remote.resume(); return remote.status(); });
+ipcMain.handle('remote-pair', async (_, server, code, name) => {
+  try { return { success: true, status: await getRemoteControl().pair(String(server), String(code).trim(), String(name || 'Meu PC')) }; }
+  catch { return { success: false, error: 'Não foi possível parear. Confira o endereço, o código, o plano e o armazenamento seguro do sistema.' }; }
+});
+ipcMain.handle('remote-enable', (_, enabled, forget = false) => {
+  try { return { success: true, status: getRemoteControl().enable(enabled === true, forget === true) }; }
+  catch { return { success: false, error: 'Não foi possível salvar a conexão remota.' }; }
+});
+ipcMain.on('remote-snapshot', (_, snapshot) => { try { getRemoteControl().publish(snapshot); } catch { /* Próxima captura tenta novamente. */ } });
+ipcMain.on('remote-result', (_, id, ok) => { if (typeof id === 'string') getRemoteControl().complete(id, ok === true); });
+app.on('before-quit', () => remoteControl?.stop());
+
+function usageConnection(raw: ConsumptionConnection): ConsumptionConnection {
+  if (!raw || typeof raw.id !== 'string' || raw.id.length > 200 || typeof raw.apiUrl !== 'string' || raw.apiUrl.length > 2000 || typeof raw.apiKey !== 'string') throw new Error('Configuração de consumo inválida.');
+  const url = new URL(raw.apiUrl);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw new Error('Endpoint de consumo inválido.');
+  return { id: raw.id, apiUrl: raw.apiUrl.replace(/\/+$/, ''), apiKey: raw.apiKey, model: String(raw.model || ''),
+    usageAdminKey: String(raw.usageAdminKey || ''), usageUrl: String(raw.usageUrl || '') };
+}
+ipcMain.handle('provider-consumption', async (_, raw, selected = 'month') => {
+  try {
+    const connection = usageConnection(raw);
+    const period: ConsumptionPeriod = ['month', '7d', '30d'].includes(selected) ? selected : 'month';
+    const local = getConsumptionStore().summary(connection, period);
+    const remote = await queryConsumption(connection, period);
+    return { success: true, local, remote };
+  } catch { return { success: false, error: 'Não foi possível consultar o registro de consumo.' }; }
+});
+ipcMain.handle('record-usage', async (_, raw, usage) => {
+  try { getConsumptionStore().record(usageConnection(raw), usage); return { success: true }; }
+  catch { return { success: false, error: 'Não foi possível salvar o consumo local.' }; }
+});
 
 ipcMain.handle('load-store', async () => {
   try {
     const file = storePath();
     if (!existsSync(file)) return null;
-    return JSON.parse(readFileSync(file, 'utf-8'));
+    return restoreConsumptionKeys(JSON.parse(readFileSync(file, 'utf-8')), consumptionCipher);
   } catch (err) {
     return null;
   }
@@ -1128,7 +1177,7 @@ ipcMain.handle('load-store', async () => {
 
 ipcMain.handle('save-store', async (event, data) => {
   try {
-    writeFileSync(storePath(), JSON.stringify(data, null, 2), 'utf-8');
+    writeFileSync(storePath(), JSON.stringify(protectConsumptionKeys(data, consumptionCipher), null, 2), 'utf-8');
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };

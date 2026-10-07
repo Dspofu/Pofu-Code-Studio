@@ -7,6 +7,8 @@
 
 Seu espaço de desenvolvimento, com a identidade Pofu e o modelo que você escolher.
 
+**Consumo e Code remoto:** acompanhe uso por provedor em *botão de consumo no cabeçalho do chat, ao lado do contexto (ou `/usage`)* e conecte o Studio à área **Code** do site em *Controle remoto*. Pelo site, converse, acompanhe ferramentas, pare tarefas, responda perguntas/aprovações e consulte o mesmo consumo. Chaves permanecem no desktop. [Como conectar e quais relatórios cada API oferece](docs/consumo-remoto.md).
+
 ![Tela inicial do Pofu Code Studio](docs/img/studio-desktop.png)
 
 ---
@@ -420,3 +422,6 @@ Para comandos com aspas ou expressões regulares, `execute_command` aceita `comm
 `delete_file` informa quando o arquivo já está ausente, sem repetir a exclusão nem criar um registro de alteração. Falhas de permissão ou tentativa de apagar diretório retornam erro estruturado; arquivos existentes continuam protegidos pela exigência de leitura.
 
 Os resultados distinguem operação concluída, processo ainda ativo e falha. `list_processes` separa processos em execução dos encerrados; capturas preservam resultados JSON do script como objetos e indicam falha do script separadamente do sucesso da captura. Essas informações ajudam a verificar o resultado antes de declarar sucesso.
+
+
+O endereço da API é único. Consumo usa o provedor ativo automaticamente, sem aba nas configurações e sem URL extra. O botão no cabeçalho, ao lado do contexto, abre um resumo compacto; `/usage`, `/cost` e `/consumo` abrem o mesmo resumo. Detalhes por modelo ficam recolhidos. APIs sem relatório remoto mostram somente o registro local, sem cartão de saldo desconhecido.

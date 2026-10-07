@@ -2,6 +2,7 @@ export const slashCommands = [
   { name: 'ajuda', aliases: ['help'], description: 'Ver todos os comandos', action: 'local' },
   { name: 'novo', aliases: ['new'], description: 'Nova conversa no mesmo projeto', action: 'local' },
   { name: 'projeto', aliases: ['project'], description: 'Escolher a pasta de trabalho', action: 'local' },
+  { name: 'consumo', aliases: ['usage', 'cost'], description: 'Ver tokens, saldo e consumo da API ativa', action: 'local' },
   { name: 'config', aliases: ['settings'], description: 'Abrir configurações', action: 'local' },
   { name: 'modelo', aliases: ['model'], description: 'Escolher o modelo de IA', action: 'local' },
   { name: 'compactar', aliases: ['compact'], description: 'Liberar contexto sem apagar a conversa', action: 'local' },

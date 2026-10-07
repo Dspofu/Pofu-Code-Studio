@@ -134,7 +134,7 @@ async function main() {
   const pressSlash = key => js(`document.getElementById('user-input').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true})); new Promise(r=>setTimeout(r,30))`);
   await check('comandos /: menu, filtro, setas, Tab e Escape', async () => {
     await typeSlash('/');
-    assert.equal(await js(`document.querySelectorAll('.slash-option').length`), 12);
+    assert.equal(await js(`document.querySelectorAll('.slash-option').length`), 13);
     if (captures) await capture('studio-slash.png');
     await typeSlash('/pro');
     await pressSlash('ArrowDown'); await pressSlash('Tab');

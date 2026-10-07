@@ -891,6 +891,7 @@
       color: #a1a1aa;
     }
 
+    .config-group input[type="url"],
     .config-group input[type="text"],
     .config-group input[type="password"] {
       padding: 10px 12px;
@@ -2390,10 +2391,13 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             <span class="proc-badge" id="proc-badge" style="display:none;">0</span>
           </button>
+          <div class="usage-indicators">
           <div class="ctx-pill" id="ctx-pill" title="Contexto usado na última requisição / comprimento total do modelo">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
             <span id="hdr-ctx-text">— / — tkn</span>
             <span class="ctx-pill-bar"><span class="ctx-pill-fill" id="hdr-ctx-fill"></span></span>
+          </div>
+          <button id="btn-consumption" type="button" class="quota-pill" title="Ver cota e consumo (/usage)" aria-haspopup="dialog">Cota: —</button>
           </div>
           <div class="folder-picker">
             <span id="selected-path" title="Pasta segura deste chat: o agente só enxerga daqui para dentro">Selecionar ambiente</span>
@@ -2449,7 +2453,7 @@
             <div class="composer-hint">Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar</div>
           </div>
         </div>
-        <div class="studio-status"><select id="active-provider" aria-label="Provedor ativo" title="Trocar provedor"></select><span id="studio-model">Configure seu modelo</span><span>Seu projeto, sua IA.</span></div>
+        <div class="studio-status"><select id="active-provider" aria-label="Provedor ativo" title="Trocar provedor"></select><span id="studio-model">Configure seu modelo</span></div>
       </div>
 
       <input type="file" id="file-input" multiple hidden>
@@ -2464,6 +2468,22 @@
 
   </div>
 
+  <div id="consumption-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="consumption-title">
+    <div class="modal-content consumption-content">
+      <div class="modal-header"><h3 id="consumption-title">Consumo</h3><button id="btn-close-consumption" type="button" class="btn-icon" aria-label="Fechar consumo">×</button></div>
+      <div id="consumption-body">
+        <select id="consumption-provider" hidden aria-label="Provedor do relatório"></select>
+        <div class="consumption-toolbar"><span id="consumption-name"></span><select id="consumption-period" aria-label="Período"><option value="month">Este mês</option><option value="7d">Últimos 7 dias</option><option value="30d">Últimos 30 dias</option></select><button id="btn-refresh-consumption" type="button" class="btn-icon" title="Atualizar consumo" aria-label="Atualizar consumo">↻</button></div>
+        <p id="consumption-status" class="cfg-hint" role="status" aria-live="polite">Consultando…</p>
+        <section id="consumption-provider-report"><div id="consumption-remote" class="info-grid"></div><div id="consumption-cycle" class="credit-box" hidden><div class="credit-header"><span id="consumption-cycle-label"></span><span id="consumption-cycle-percent"></span></div><div class="progress-bar-bg"><div id="consumption-cycle-fill" class="progress-bar-fill" style="width:0%"></div></div></div></section>
+        <p id="consumption-remote-note" class="cfg-hint"></p>
+        <div class="consumption-local"><div><strong id="consumption-local-input">—</strong><span>Entrada</span></div><div><strong id="consumption-local-output">—</strong><span>Saída</span></div><div><strong id="consumption-local-requests">—</strong><span>Requisições</span></div></div>
+        <p class="cfg-hint">Tokens registrados neste Studio · período em UTC</p>
+        <details id="consumption-details"><summary>Detalhes por modelo</summary><p id="consumption-local-note" class="cfg-hint"></p><div id="consumption-models" class="info-grid"></div></details>
+      </div>
+    </div>
+  </div>
+
   <div id="settings-modal" class="modal-overlay">
     <div class="modal-content">
       <div class="modal-header">
@@ -2476,6 +2496,7 @@
       <div class="modal-container-tabs">
         <div class="modal-nav-sidebar">
           <button class="nav-tab-btn active" data-tab="tab-geral">Visão geral</button>
+          <button class="nav-tab-btn" data-tab="tab-remoto">Controle remoto</button>
           <button class="nav-tab-btn" data-tab="tab-personalizacao">Ajustes</button>
         </div>
 
@@ -2537,6 +2558,17 @@
             </div>
           </div>
 
+          <div id="tab-remoto" class="tab-panel">
+            <div class="cfg-section">
+              <div class="cfg-section-title">Conectar ao Code do site</div>
+              <p class="cfg-hint">Abra a área Code no site, gere um código e digite aqui. Você poderá conversar, controlar tarefas, aprovar ferramentas e consultar o consumo pelo celular. O Studio precisa permanecer aberto; as ferramentas executam neste PC.</p>
+              <div class="config-group"><label for="remote-server">Endereço do site</label><input id="remote-server" type="url" value="https://ai.pofuserver.com" autocomplete="off"></div>
+              <div class="config-group"><label for="remote-name">Nome deste computador</label><input id="remote-name" type="text" value="Meu PC" maxlength="100"></div>
+              <div class="config-group"><label for="remote-code">Código de pareamento</label><input id="remote-code" type="text" maxlength="10" autocomplete="off" spellcheck="false" placeholder="10 caracteres do site"></div>
+              <div class="provider-actions"><button id="btn-remote-pair" type="button">Conectar</button><button id="btn-remote-toggle" type="button" hidden>Desligar</button><button id="btn-remote-forget" type="button" hidden>Esquecer conexão</button></div>
+              <p id="remote-status" class="cfg-hint" role="status" aria-live="polite">Não conectado.</p>
+            </div>
+          </div>
           <div id="tab-personalizacao" class="tab-panel">
             <div class="cfg-section">
               <div class="cfg-section-title">Conexão</div>
