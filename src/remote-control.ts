@@ -18,13 +18,14 @@ export class RemoteControl {
   private results: { id: string; ok: boolean }[] = [];
   private seen = new Set<string>();
   private delay = 1000;
+  private retryAt: number | null = null;
   private state = 'disconnected';
   private message = 'Não conectado.';
   private generation = 0;
   private resumed = false;
   private paused = false;
   constructor(private file: string, private cipher: Cipher, private command: (c: any) => void, private changed: (s: any) => void) {}
-  status() { return { server: this.link?.server || 'https://ai.pofuserver.com', deviceId: this.link?.deviceId || '', name: this.link?.name || '', enabled: !!this.link?.enabled, state: this.state, message: this.message }; }
+  status() { return { server: this.link?.server || 'https://ai.pofuserver.com', deviceId: this.link?.deviceId || '', name: this.link?.name || '', enabled: !!this.link?.enabled, state: this.state, message: this.message, retryAt: this.retryAt }; }
   private announce(state: string, message: string) { const changed = this.state !== state || this.message !== message; this.state = state; this.message = message; if (changed) this.changed(this.status()); }
   private save() {
     if (!this.link) { if (existsSync(this.file)) unlinkSync(this.file); return; }
@@ -74,11 +75,12 @@ export class RemoteControl {
     this.snapshot = snapshot;
   }
   complete(id: string, ok: boolean) { if (this.seen.has(id) && !this.results.some(r => r.id === id)) this.results.push({ id, ok: ok === true }); }
-  stop() { this.generation++; this.paused = true; if (this.timer) clearTimeout(this.timer); this.timer = null; this.controller?.abort(); }
+  stop() { this.retryAt = null; this.generation++; this.paused = true; if (this.timer) clearTimeout(this.timer); this.timer = null; this.controller?.abort(); }
   private schedule(ms: number) { this.paused = false; this.timer = setTimeout(() => { this.timer = null; void this.tick(); }, ms); this.timer.unref(); }
   private async tick() {
     if (!this.link?.enabled) return;
     const generation = this.generation, link = this.link;
+    if (this.retryAt !== null) { this.retryAt = null; this.announce('connecting', 'Reconectando…'); }
     const encoded = JSON.stringify(this.snapshot), results = this.results.slice(0, 20);
     this.controller = new AbortController(); const controller = this.controller, timeout = setTimeout(() => controller.abort(), 10000);
     try {
@@ -90,14 +92,14 @@ export class RemoteControl {
       const raw = await response.text(); if (raw.length > 6500000) throw new Error('response too large');
       const data = JSON.parse(raw);
       if (generation !== this.generation) return;
-      this.sent = data.needsSnapshot ? '' : encoded; this.results = this.results.filter(r => !results.includes(r)); this.delay = 1000;
-      this.announce('online', 'Conectado. Chat e consumo disponíveis na área Code do site.');
+      this.sent = data.needsSnapshot ? '' : encoded; this.results = this.results.filter(r => !results.includes(r)); this.delay = 1000; this.retryAt = null;
+      this.announce('online', 'Conectado ao Code.');
       for (const c of Array.isArray(data.commands) ? data.commands.slice(0, 20) : []) {
         if (typeof c?.id !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(c.id) || this.seen.has(c.id)) continue;
         this.seen.add(c.id); if (this.seen.size > 500) this.seen.delete(this.seen.values().next().value);
         if (typeof c.expiresAt !== 'number' || c.expiresAt < Date.now()) this.complete(c.id, false); else this.command(c);
       }
-    } catch { if (generation === this.generation) { this.sent = ''; this.delay = Math.min(10000, this.delay * 2); this.announce('connecting', 'Site indisponível. Tentando reconectar…'); } }
+    } catch { if (generation === this.generation) { this.sent = ''; this.delay = 10000; this.retryAt = Date.now() + this.delay; this.announce('connecting', 'Site indisponível. Reconectando em 10s…'); } }
     finally { clearTimeout(timeout); if (generation === this.generation && this.link?.enabled) this.schedule(this.delay); }
   }
 }

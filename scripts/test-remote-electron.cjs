@@ -80,6 +80,13 @@ async function main() {
     assert.equal(await site(`document.getElementById('chat-title').textContent`), 'Projeto remoto');
     assert.ok(!JSON.stringify(await js(`import('./out/renderer.js').then(m=>m.studioRemoteSnapshot())`)).includes('synthetic-key-not-for-site'));
   });
+  await check('medidores e status ativo atravessam a ponte sem credenciais', async () => {
+    await until(() => site(`document.getElementById('quota-percent').textContent==='17%'`), 'cota no site');
+    assert.equal(await js(`document.getElementById('sidebar-remote-status').textContent`), 'Conectado');
+    assert.equal(await js(`document.getElementById('remote-dot').classList.contains('online')`), true);
+    await site(`document.getElementById('quota-open').click()`); assert.equal(await site(`document.getElementById('consumption-modal').hidden`), false); await site(`document.getElementById('consumption-close').click()`);
+    await js(`document.getElementById('btn-open-settings').click();document.querySelector('[data-tab="tab-remoto"]').click()`); assert.equal(await js(`document.getElementById('tab-remoto').classList.contains('active')`), true); await js(`document.getElementById('btn-close-modal').click()`);
+  });
   await check('consumo no Code e atualização a partir do Studio', async () => {
     assert.equal(await site(`document.getElementById('consumption-modal').hidden`), true);
     await site(`document.getElementById('consumption-open').click()`);

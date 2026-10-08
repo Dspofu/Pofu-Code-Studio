@@ -16,6 +16,9 @@ if (!response.ok) {
 const models = await response.json();
 const model = process.env.POFU_TEST_MODEL || models.data?.[0]?.id;
 assert.ok(model);
+// O raciocínio compartilha o teto com a resposta; 2048 cortou a conclusão após ler o cursor corretamente.
+const maxTokens = Number(process.env.POFU_TEST_MAX_TOKENS || 8192);
+assert.ok(Number.isInteger(maxTokens) && maxTokens >= 256 && maxTokens <= 32768);
 const store = new ToolResultStore();
 const retained = JSON.parse(store.encode({ stdout: 'a'.repeat(20000) + 'PROVA_CENTRAL=POFU-VERDE-42' + 'z'.repeat(20000), exitCode: 0 }, 3000, 'smoke'));
 const basicCases = [
@@ -52,16 +55,19 @@ for (const fixture of cases) {
   const messages = [{ role: 'system', content: system_prompt('/fixture', false, false) }, { role: 'user', content: fixture.prompt }];
   const calls = [];
   const requests = [];
+  const generations = [];
   let answer = '';
   for (let turn = 0; turn < 5; turn++) {
     const response = await fetch(endpoint.replace(/\/$/, '') + '/chat/completions', {
-      method: 'POST', headers, signal: AbortSignal.timeout(60000),
-      body: JSON.stringify({ model, messages, tools: [readFileTool, readResultTool, listTool, terminalTool], temperature: 0, max_tokens: 2048, stream: false })
+      method: 'POST', headers, signal: AbortSignal.timeout(240000),
+      body: JSON.stringify({ model, messages, tools: [readFileTool, readResultTool, listTool, terminalTool], temperature: 0, max_tokens: maxTokens, stream: false })
     });
     if (!response.ok) throw new Error(`API returned HTTP ${response.status}`);
     const json = await response.json();
     const msg = json.choices?.[0]?.message;
     assert.ok(msg);
+    generations.push({ finishReason: json.choices?.[0]?.finish_reason, completionTokens: json.usage?.completion_tokens,
+      reasoningChars: String(msg.reasoning_content || '').length, contentChars: String(msg.content || '').length });
     messages.push(msg);
     if (!msg.tool_calls?.length) { answer = msg.content || ''; break; }
     for (const tc of msg.tool_calls) {
@@ -84,6 +90,11 @@ for (const fixture of cases) {
       }
       messages.push({ role: 'tool', tool_call_id: tc.id, content });
     }
+  }
+  if (fixture.expect.some(value => !answer.includes(value))) {
+    const failure = { test: fixture.name, passed: false, calls, requests, generations, answer: answer.slice(0, 1000) };
+    if (process.env.POFU_TEST_REPORT) writeFileSync(process.env.POFU_TEST_REPORT, JSON.stringify([...report, failure], null, 2));
+    console.log(JSON.stringify(failure));
   }
   for (const value of fixture.expect) assert.ok(answer.includes(value), `Missing expected value for ${fixture.name}`);
   const reads = calls.filter(x => x === 'read_file').length;

@@ -22,7 +22,7 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 
 | Arquivo | Papel |
 |---|---|
-| `src/main.ts` | Processo main: janela, menu, **todos os 25 handlers IPC** (fs, processos, HTTP, captura, busca, store) |
+| `src/main.ts` | Processo main: janela, menu, **todos os handlers IPC** (fs, processos, HTTP, captura, busca, store) |
 | `src/preload.cts` | Ponte `contextBridge` → `window.electronAPI` (`.cts` porque o preload é CommonJS → `preload.cjs`) |
 | `src/renderer.ts` | Cérebro: estado, loop do agente, `tools`, streaming, cards de ferramenta, diff, menções `@`, anexos, workspace |
 | `src/remote-history.ts` | Referências efêmeras de mensagens e revisão para recusar alterações sobre histórico remoto antigo |
@@ -31,6 +31,8 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `src/tool-output.ts` | Formato compacto ao modelo: busca agrupada, listagens, terminal limpo, glob e sugestão de caminho |
 | `src/outline.ts` | `list_definitions`: definições por linguagem (regex) com a linha, sem os corpos |
 | `src/loop-guard.ts` | Trava de looping pelo resultado (mesma chamada, mesmo resultado, 2x sem efeito colateral no meio) |
+| `src/computer.ts`, `src/computer-windows.ts`, `src/computer-tools.ts` | Captura de monitores, entrada nativa no Windows e schemas das ferramentas visuais. |
+| `src/model-vision.ts` | Detecção de visão por modelo selecionado, incluindo modalidades do llama.cpp. |
 | `src/mcp.ts` | Cliente MCP no main: stdio e Streamable HTTP; config `mcpServers` no formato do Claude Desktop |
 | `src/atalho-windows.ts` | Ao abrir (instalado, Windows): repara o ícone do atalho do Menu Iniciar que aponta para um `.exe` que sumiu |
 | `src/tool-results.ts` | Recorte de arquivos, schemas de leitura e cache recuperável de resultados |
@@ -97,7 +99,9 @@ Cada um tem correspondente 1:1 em `src/preload.cts` e assinatura em `ElectronAPI
 | `web-search` | Instância ÚNICA de `WebSearch` (cache/cooldown entre buscas) |
 | `http-request` | Status + cabeçalhos + corpo separados |
 | `capture-page` | BrowserWindow **offscreen** + `loadURL` contra timeout; PNG em `userData/screenshots` |
-| `read-image` | Base64 de um PNG (para reenviar prints ao modelo) |
+| `read-image` | Base64 de uma imagem salva (para reenviar prints ao modelo) |
+| `view-image` | Abre imagem dentro do workspace e salva snapshot PNG. |
+| `capture-screen` / `computer-action` / `cancel-computer` | Captura monitores, envia input nativo no Windows e cancela operações pendentes; exige permissão. |
 | `fetch-url` | Baixa página → texto (turndown/linkedom/readability) |
 
 Outros pontos do main.ts: `app.setAppUserModelId` (deve bater com `build.appId`),
@@ -121,7 +125,7 @@ no macOS). A consulta é compartilhada com o card de configurações e reaprovei
 - Menções/anexos: `ensureMentionFiles` · `mentionScore` · `updateMentionMenu` · `renderMentionMenu` · `handleMentionKeydown` · `acceptMention` · `addMentionAttachment` · `readFileAsText` · `handleFiles` · `renderAttachments`
 - Uso/config/workspace: `maybeRenameChat` · `trackUsage` · `renderUsage` · `fetchModels` (popula dropdown **e** cards da aba Visão geral via `updateModelInfo`; usa endpoint/chave DO FORMULÁRIO) · `pendenciaDaConexao` · `refreshModelContext` · `applySettingsToForm` · `updateVisionStatus` · `CAMPO_DA_SETTING`/`leSettingsDoFormulario`/`readSettingsFromForm` · `atualizaEstadoSalvamento` (selo de alteração pendente, comparando com `settingsSalvas`) · `encurtaCaminho` · `mostraCaminhoAtivo` · `registraPastaRecente` · `defineWorkspace` · `abreMenuPastas` (inclui lixeira dos recentes) · `wireEvents` · `loadAppInfo` (GitHub + versão + cards de produto) · `init`
 
-### Ferramentas do agente (18)
+### Ferramentas do agente
 
 | Tool | IPC no main |
 |---|---|
@@ -130,6 +134,7 @@ no macOS). A consulta é compartilhada com o card de configurações e reaprovei
 | ask_user | **nenhum** — pergunta é UI pura (card com opções); o turno para até a resposta ou "Pular" |
 | execute_command / read_process_output / wait_for_process / list_processes / stop_process | execute-command / read-process-output / wait-for-process / list-processes / stop-process |
 | http_request / capture_page / web_search / fetch_url | http-request / capture-page / web-search / fetch-url |
+| view_image / capture_screen / computer_action | view-image / capture-screen / computer-action (visão; desktop requer computerUse) |
 
 Para adicionar uma: **quatro pontos** (main → preload+types.d.ts → `tools` → `runTool`+`TOOL_META`+
 resumos+`CONFIRM_TOOLS` se destrutiva). Detalhes em CLAUDE.md.
@@ -256,3 +261,21 @@ proteção contra respostas atrasadas da descoberta e bloqueie trocas durante ge
 seguinte, não apenas o aviso. Regressões em `providers.test.mjs` e `test-electron.cjs`.
 
 Consumo fica no cabeçalho do chat, ao lado do contexto e em `/usage` (`openConsumption`), fora das abas de configuração. `consumption-provider` é interno, mantém compatibilidade com os comandos remotos; abrir o resumo usa sempre o provedor ativo.
+
+## Ferramentas visuais: outubro de 2026
+
+`view_image` lê imagens dentro do workspace por IPC `view-image`, valida o caminho real e salva um snapshot PNG em `screenshots`. `capture_screen` e `computer_action` só entram em `activeTools` com `computerUse === true` e `visionEnabled()`. A permissão também é conferida no main; não basta ocultar o schema. Ações no Windows usam entrada nativa, coordenadas do PNG entregue, captura recente e confirmação no modo Manual. Depois da ação, o renderer captura o monitor novamente e envia os pixels pelo fluxo `shotCache`/`hydrateShots`; base64 nunca entra no texto do resultado nem no histórico persistido.
+
+`model-vision.ts` aceita `capabilities` e modalidades explícitas (`architecture.input_modalities`); suporte de outro modelo nunca habilita imagens para o selecionado. `loop-guard.ts` preserva PID e ID de resultado nos argumentos: somente resultados ignoram campos voláteis. MCP HTTP lê SSE incrementalmente e retorna ao receber a resposta do ID solicitado, mesmo se o stream continuar aberto.
+
+Regressões em `model-vision.test.mjs`, `computer.test.mjs`, `test-computer-electron.cjs`, `loop-guard.test.mjs` e `mcp.test.mjs`. `npm run test:computer` roda IPC, aprovação e imagens com adaptador falso; `npm run test:vision` usa a API real com imagem sintética. Não envie inputs ao desktop real durante a suíte. Ctrl+Alt+Esc cancela o helper pelo main e interrompe o turno pelo evento `computer-stopped`.
+
+## Interface, reconexão e fila: outubro de 2026
+
+Cabeçalho usa medidores de contexto/cota com percentuais, barras e estados desconhecidos. `updateQuotaMeter` mantém os elementos internos, não substitua o texto do botão inteiro. A lateral tem somente `btn-sidebar-remote-toggle`, com ação Ligar/Desligar e status real da ponte. Sem dispositivo pareado, Ligar abre a aba remota. Status online fica separado dos erros do formulário. Não reintroduzir botões extras.
+
+`waitForReconnect` aguarda 10 segundos, mostra contagem regressiva e cancela pelo mesmo AbortController do botão Parar. Auth/404 continuam sem repetição automática. `RemoteControl.retryAt` é efêmero e aparece só no status local. Polling saudável continua em 1 segundo, falhas esperam 10 segundos.
+
+`runAgent` mantém o estado ocupado durante o salvamento final e consulta a fila antes de sair. Um “continue” nesse intervalo precisa iniciar o próximo turno sem outro envio. Resposta sem texto/ferramentas gera diagnóstico visível. Regressões reais: `npm run test:reconnect`.
+
+O espelho inclui `usage` opcional e `messages.kind` (`error`/`retry`). Allowlist no Saas `src/functions/remoteCode.ts`, apresentação no websaas `public/code-remote.*`. Não enviar chaves ou mudar identidade/expiração dos comandos. Validar os três projetos com `Saas/bench/bench-remote-code.ts --desktop` e `bench-code-layout.ts`.

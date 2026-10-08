@@ -1,4 +1,6 @@
 import { workspacePath } from './workspace-path.js';
+import { supportsVision } from './model-vision.js';
+import { computerTools, imageTools } from './computer-tools.js';
 import { mountMentionHighlight, paintMentions } from './mention-highlight.js';
 import { activateProvider, migrateProviders, rememberProvider, validateProvider, type ProviderConfig } from './providers.js';
 import { consumptionKind, consumptionNames, type ConsumptionPeriod, type ConsumptionReport } from './consumption.js';
@@ -106,6 +108,7 @@ function stopAgent() {
   if (pendingConfirm) resolveConfirm('reject'); // fecha o modal de confirmação, se aberto
   if (pendingQuestion) resolveQuestion(true);   // e o card de pergunta, que também segura o turno
   if (abortController) { try { abortController.abort(); } catch (e) { } }
+  window.electronAPI.cancelComputer?.().catch(() => {});
 }
 
 // ---- Confirmação de execução (modo manual) ----
@@ -115,6 +118,7 @@ let pendingConfirm = null;
 const CONFIRM_TOOLS = {
   execute_command: true,
   delete_file: true,
+  computer_action: true,
   // Sem isto, um DELETE/POST via http_request escaparia do modal que o mesmo comando
   // passando por `curl` no execute_command teria enfrentado. Leitura (GET) segue direto,
   // que é o caso comum ao validar uma API.
@@ -177,6 +181,9 @@ function showConfirmModal(name, args) {
     label.innerText = 'Enviar requisição que altera dados?';
     cmd.innerText = `${String(args.method || 'GET').toUpperCase()} ${args.url || ''}` +
       (args.body ? `\n\n${truncate(String(args.body), 400)}` : '');
+  } else if (name === 'computer_action') {
+    label.innerText = 'Controlar mouse ou teclado do computador?';
+    cmd.innerText = summarizeToolCall(name, args);
   } else if (mcpRota.has(name)) {
     label.innerText = 'Executar ferramenta de servidor MCP?';
     cmd.innerText = `🧩 ${TOOL_META[name]?.label || name}\n${JSON.stringify(args)}`;
@@ -1014,6 +1021,7 @@ function migraSettings(salvas) {
 
   // A barra no fim faria o endpoint virar ".../v1//models" e a raiz do /props sair errada.
   s.apiUrl = String(s.apiUrl || '').trim().replace(/\/+$/, '') || DEFAULT_SETTINGS.apiUrl;
+  s.computerUse = s.computerUse === true;
   s.model = String(s.model || '');
   s.apiKey = String(s.apiKey || '');
   for (const chave of Object.keys(LIMITES_SETTINGS)) {
@@ -1586,6 +1594,9 @@ const TOOL_META = {
   delete_file: { icon: '🗑️', label: 'Apagar arquivo' },
   http_request: { icon: '🔌', label: 'Requisição HTTP' },
   capture_page: { icon: '📸', label: 'Print da página' },
+  view_image: { icon: '🖼️', label: 'Ver imagem' },
+  capture_screen: { icon: '🖥️', label: 'Ver tela do computador' },
+  computer_action: { icon: '🖱️', label: 'Controlar computador' },
   execute_command: { icon: '⌘', label: 'Terminal' },
   read_process_output: { icon: '📜', label: 'Saída do processo' },
   wait_for_process: { icon: '⏳', label: 'Aguardar processo' },
@@ -1604,7 +1615,17 @@ function summarizeToolCall(name, args) {
     case 'read_file':
       return (args.filename || '') + (args.offset > 1 ? ` (a partir da linha ${args.offset})` : '');
     case 'write_file':
+    case 'view_image':
     case 'delete_file': return args.filename || '';
+    case 'capture_screen': return args.display_id ? 'Monitor ' + args.display_id : 'Monitor principal';
+    case 'computer_action': {
+      const labels = { click: 'Clique', double_click: 'Clique duplo', move: 'Mover ponteiro', scroll: 'Rolar', key: 'Atalho', type: 'Digitar' };
+      const action = labels[args.action] || args.action;
+      if (args.action === 'type') return action + ': ' + truncate(String(args.text || ''), 200);
+      if (args.action === 'key') return action + ': ' + (args.keys || []).join(' + ');
+      if (args.action === 'scroll') return action + ': ' + ({ up: 'para cima', down: 'para baixo', left: 'para a esquerda', right: 'para a direita' }[args.direction] || '') + ' · ' + (args.amount ?? 3);
+      return action + ' em (' + args.x + ', ' + args.y + ')' + (args.button && args.button !== 'left' ? ' · ' + ({ right: 'botão direito', middle: 'botão do meio' }[args.button] || args.button) : '');
+    }
     case 'edit_file': {
       // Mostra o trecho trocado, não o arquivo inteiro — é o que o usuário precisa
       // conferir para saber se a edição foi a esperada.
@@ -1655,6 +1676,15 @@ function summarizeToolCall(name, args) {
 // de verdade — é só o '⚠' que o fillToolResult pinta de vermelho.
 // O card já mostra o arquivo na linha de argumentos, então a mensagem não repete o caminho.
 const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
+  [/The user rejected this action/i, () => '↷ Ação recusada pelo usuário.'],
+  [/Malformed tool call|must be a complete JSON object/i, () => '↷ A chamada veio incompleta e precisa ser corrigida pelo agente.'],
+  [/Computer action cancelled/i, () => '↷ Ação interrompida pelo usuário.'],
+  [/Computer (?:use|access) is disabled/i, () => '↷ Ative o controle do computador nas configurações.'],
+  [/requires a vision model/i, () => '↷ Selecione um modelo com visão e ative o envio de prints.'],
+  [/screenshot.*(expired|stale|invalid|not found|already used)|capture_screen.*first/i, () => '↷ A tela precisa ser capturada novamente antes desta ação.'],
+  [/only supported on Windows|supported on Windows only/i, () => '↷ O controle de mouse e teclado está disponível no Windows.'],
+  [/outside.*workspace|outside.*project|inside the active workspace/i, () => '↷ O arquivo precisa estar dentro do projeto.'],
+  [/not a decodable image|did not decode as an image|could not be decoded as an image|Unsupported image format/i, () => '↷ O arquivo não pôde ser aberto como imagem.'],
   [/already exists and has not been read/i,
     () => '↷ O arquivo já existe e ainda não foi lido nesta conversa — o agente vai lê-lo antes de sobrescrever.'],
   [/has not been read in this conversation/i,
@@ -1802,18 +1832,25 @@ function summarizeToolResult(name, resultStr) {
     case 'capture_page': {
       if (data.error) return erroParaTela(data.error);
       const partes = [`${data.title || data.titulo || '(sem título)'} · HTTP ${data.status ?? '?'} · ${data.size || data.tamanho || ''}`];
-      if (data.seletor_encontrado === false) partes.push('⚠ seletor não apareceu');
+      if ((data.selector_found ?? data.seletor_encontrado) === false) partes.push('⚠ seletor não apareceu');
       if (data.script_error || data.erro_no_script) partes.push(`⚠ erro no script: ${data.script_error || data.erro_no_script}`);
       const scriptResult = data.script_result ?? data.resultado_do_script;
       if (scriptResult !== undefined) partes.push(`script → ${typeof scriptResult === 'object' ? JSON.stringify(scriptResult) : scriptResult}`);
-      if (data.erros_de_console && data.erros_de_console.length) {
-        partes.push('Erros de console:\n' + data.erros_de_console.map(e => '  ' + e).join('\n'));
+      const consoleErrors = data.console_errors || data.erros_de_console || [];
+      if (consoleErrors.length) {
+        partes.push('Erros de console:\n' + consoleErrors.map(e => '  ' + e).join('\n'));
       }
-      if (data.falhas_de_rede && data.falhas_de_rede.length) {
-        partes.push('Falhas de rede:\n' + data.falhas_de_rede.map(e => `  ${e.error} — ${e.url}`).join('\n'));
+      const networkFailures = data.network_failures || data.falhas_de_rede || [];
+      if (networkFailures.length) {
+        partes.push('Falhas de rede:\n' + networkFailures.map(e => `  ${e.error} — ${e.url}`).join('\n'));
       }
       return partes.join('\n');
     }
+    case 'view_image':
+    case 'capture_screen':
+      return data.success ? '✓ ' + (name === 'view_image' ? 'Imagem aberta' : 'Tela capturada') + ' · ' + data.width + ' × ' + data.height : erroParaTela(data.error || resultStr);
+    case 'computer_action':
+      return data.success ? '✓ Ação executada' + (data.observation_error ? '\n⚠ Não foi possível capturar a tela após a ação.' : '') : erroParaTela(data.error || resultStr);
     case 'create_directory': return data.success ? '✓ Pasta criada' : erroParaTela(data.error || resultStr);
     case 'delete_file': return data.success ? (data.already_absent ? '✓ Arquivo já ausente · nenhuma alteração' : '✓ Arquivo apagado') : erroParaTela(data.error || resultStr);
     case 'stop_process': return data.success ? `✓ Processo ${data.pid} encerrado` : erroParaTela(data.error || resultStr);
@@ -2285,7 +2322,8 @@ function appendError(text) {
   const chatBox = el('chat-box');
   const div = document.createElement('div');
   div.className = 'error-msg';
-  div.innerText = `⚠ ${text}`;
+  div.setAttribute('role', 'alert');
+  div.innerText = text;
   chatBox.appendChild(div);
   scrollChat();
 }
@@ -2295,6 +2333,7 @@ function appendErrorCard({ titulo, detalhe, passos }) {
   const chatBox = el('chat-box');
   const card = document.createElement('div');
   card.className = 'error-card';
+  card.setAttribute('role', 'alert');
 
   const h = document.createElement('div');
   h.className = 'error-card-title';
@@ -2305,7 +2344,10 @@ function appendErrorCard({ titulo, detalhe, passos }) {
     const d = document.createElement('div');
     d.className = 'error-card-detail';
     d.innerText = detalhe;
-    card.appendChild(d);
+    const details = document.createElement('details');
+    details.className = 'error-technical';
+    const summary = document.createElement('summary'); summary.textContent = 'Detalhes técnicos';
+    details.append(summary, d); card.appendChild(details);
   }
   if (passos && passos.length) {
     const ul = document.createElement('ul');
@@ -2319,6 +2361,30 @@ function appendErrorCard({ titulo, detalhe, passos }) {
   }
   chatBox.appendChild(card);
   scrollChat();
+  return card;
+}
+
+async function waitForReconnect(diag, attempt) {
+  hideTyping();
+  const card = appendErrorCard({ titulo: diag.titulo, detalhe: diag.detalhe, passos: [] });
+  card.classList.add('retry-card'); card.setAttribute('role', 'status');
+  const countdown = document.createElement('p'); countdown.className = 'retry-countdown';
+  const bar = document.createElement('div'); bar.className = 'retry-progress';
+  const fill = document.createElement('span'); bar.appendChild(fill);
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancelar tentativa'; cancel.addEventListener('click', stopAgent);
+  card.append(countdown, bar, cancel);
+  const deadline = Date.now() + REQUEST_RETRY_DELAY_MS;
+  const controller = new AbortController(); abortController = controller;
+  let timer;
+  const update = () => {
+    const remaining = Math.max(0, deadline - Date.now());
+    countdown.textContent = `Nova tentativa em ${Math.ceil(remaining / 1000)}s · ${attempt + 1}/${MAX_REQUEST_RETRIES}`;
+    fill.style.width = `${remaining / REQUEST_RETRY_DELAY_MS * 100}%`;
+  };
+  update(); const ticker = setInterval(update, 200);
+  try { await new Promise<void>(resolve => { timer = setTimeout(resolve, REQUEST_RETRY_DELAY_MS); controller.signal.addEventListener('abort', () => resolve(), { once: true }); if (stopRequested) resolve(); }); }
+  finally { clearTimeout(timer); clearInterval(ticker); if (abortController === controller) abortController = null; card.remove(); }
+  return !stopRequested;
 }
 
 // Espera com explicação. A primeira requisição de um chat REABERTO faz o servidor
@@ -2776,7 +2842,7 @@ async function sincronizaMcp() {
 
 // Monta a lista de ferramentas disponíveis conforme as configurações
 function activeTools() {
-  const base = state.settings.webSearch ? [...tools, ...webTools] : tools;
+  const base = [...tools, ...(state.settings.webSearch ? webTools : []), ...(visionEnabled() ? imageTools : []), ...(visionEnabled() && state.settings.computerUse === true ? computerTools : [])];
   return mcpFerramentas.length ? [...base, ...mcpFerramentas] : base;
 }
 
@@ -2842,11 +2908,7 @@ function visionEnabled() {
 }
 
 function detectVision(json, modelId) {
-  const all = [...(json.models || []), ...(json.data || [])];
-  const daMesmaId = all.filter(m => [m.id, m.name, m.model].filter(Boolean).includes(modelId));
-  const pool = daMesmaId.length ? daMesmaId : all;
-  modelSupportsVision = pool.some(m =>
-    (m.capabilities || []).some(c => /multimodal|vision|image/i.test(String(c))));
+  modelSupportsVision = supportsVision(json, modelId);
 }
 
 // Índices das mensagens cujo print ainda deve acompanhar o histórico. Prints antigos
@@ -3125,6 +3187,30 @@ async function runTool(name, args, workspace, toolCallId = '') {
       }
       return encodeToolResult(res);
     }
+    if (name === 'view_image') {
+      if (!visionEnabled()) return JSON.stringify({ success: false, error: 'view_image requires a vision model with image feedback enabled.' });
+      const res = await window.electronAPI.viewImage(workspacePath(workspace, args.filename), { workspace });
+      if (!res.success) return JSON.stringify(res);
+      return { text: JSON.stringify({ success: true, filename: args.filename, width: res.width, height: res.height, screenshot: 'The image is attached to this result. Inspect its pixels.' }),
+        image: { path: res.path, dataUrl: res.dataUrl, width: res.width, height: res.height } };
+    }
+    if (name === 'capture_screen' || name === 'computer_action') {
+      if (stopRequested) return JSON.stringify({ success: false, error: 'Computer action cancelled by the user.' });
+      if (state.settings.computerUse !== true) return JSON.stringify({ success: false, error: 'Computer use is disabled. The user can enable it in settings.' });
+      if (!visionEnabled()) return JSON.stringify({ success: false, error: 'Computer use requires a vision model with image feedback enabled.' });
+      let action = null;
+      if (name === 'computer_action') {
+        action = await window.electronAPI.computerAction(args);
+        if (!action.success) return JSON.stringify(action);
+        if (stopRequested) return JSON.stringify({ ...action, note: 'Run stopped after the action. No follow-up screenshot was taken.' });
+      }
+      const res = await window.electronAPI.captureScreen({ display_id: action?.display_id ?? args.display_id });
+      if (!res.success) return JSON.stringify(action ? { ...action, observation_error: res.error, note: 'The action ran, but its result has not been visually verified. Capture the screen before the next action.' } : res);
+      const { dataUrl, path, ...observation } = res;
+      return { text: JSON.stringify({ ...observation, ...(action ? { action: args.action, operation_status: 'completed' } : {}),
+        screenshot: 'The monitor image is attached. Coordinates use these image dimensions. Inspect it before deciding the next action.' }),
+        image: { path, dataUrl, width: res.width, height: res.height } };
+    }
     if (name === 'capture_page') {
       const res = await window.electronAPI.capturePage(args.url, {
         width: args.width, height: args.height, waitMs: args.wait_ms,
@@ -3183,9 +3269,9 @@ async function runTool(name, args, workspace, toolCallId = '') {
       if (!res.success) return JSON.stringify({ error: res.error });
       return encodeToolResult(res.text ?? '');
     }
-    return `Unknown tool: ${name}`;
+    return JSON.stringify({ error: `Unknown tool: ${name}.`, hint: 'Use one of the tools provided in this request.' });
   } catch (err) {
-    return JSON.stringify({ error: err.message });
+    return JSON.stringify({ success: false, error: err.message });
   }
 }
 
@@ -3215,6 +3301,7 @@ async function submitUserMessage(userPrompt, attachments) {
 
 // Roda o loop do agente sobre o histórico atual (usado por envio novo e por regeneração)
 async function runAgent() {
+  if (isRunning) return;
   const chat = activeChat();
   if (!state.settings.model) {
     appendError('Nenhum modelo selecionado. Abra as Configurações → Personalização e escolha um modelo.');
@@ -3238,18 +3325,19 @@ async function runAgent() {
     appendError(`Erro inesperado no agente: ${err.message}`);
     console.error(err);
   } finally {
-    // Garante que o input SEMPRE destrave, mesmo se algo estourar no meio do loop
-    isRunning = false;
-    updateInputState();
-    atualizarBotaoCompactar();
-    setAppTitle(''); // volta o título ao nome do app
-    await persist();
-    // Se o agente terminou deixando processos rodando, avisa (o usuário pode precisar encerrá-los)
-    await refreshProcesses();
-    const running = processList.filter(p => p.status === 'running').length;
-    if (running > 0) {
-      logSystem(`${running} processo(s) ainda em execução em segundo plano — veja/encerre no painel de processos (ícone no topo).`);
+    try {
+      await persist();
+      await refreshProcesses();
+      const running = processList.filter(p => p.status === 'running').length;
+      if (running > 0) logSystem(`${running} processo(s) em segundo plano. Consulte o painel no topo.`);
+    } finally {
+      isRunning = false;
+      updateInputState();
+      atualizarBotaoCompactar();
+      setAppTitle('');
     }
+    // Um envio pode chegar depois da última virada de turno, enquanto o histórico é salvo.
+    if (filaMensagens.length && !stopRequested && activeChat() === chat) await runAgent();
   }
 }
 
@@ -3652,7 +3740,7 @@ async function agentTurns(chat) {
     const proprio = String(state.settings.customPrompt || '').trim();
     let s = (state.settings.promptMode === 'replace' && proprio)
       ? proprio
-      : system_prompt(chat.path, state.settings.webSearch, visionEnabled());
+      : system_prompt(chat.path, state.settings.webSearch, visionEnabled(), state.settings.computerUse === true);
     s += blocoInstrucoes();
     if (semRaciocinio) s += ' /no_think';
     ultimoSystemChars = s.length; // entra na conta do orçamento do histórico
@@ -3805,7 +3893,7 @@ async function agentTurns(chat) {
         if (estouro.nCtx) state.modelCtx = estouro.nCtx;
         descartaParcial();
         mensagensApi = [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)];
-        logSystem(`O servidor recusou por excesso de contexto; compactando mais e reenviando (${apertos}/2).`);
+        logSystem(`Contexto excedido. Compactando e reenviando (${apertos}/2).`);
         showTyping();
         attempt--;
         continue;
@@ -3815,9 +3903,8 @@ async function agentTurns(chat) {
       const diag = classificaErroDeRequisicao(lastErr, apiUrl, model);
       if (!diag.transitorio) break;
       if (attempt < MAX_REQUEST_RETRIES) {
-        logSystem(`${diag.titulo} (tentativa ${attempt}/${MAX_REQUEST_RETRIES}). Tentando de novo…`);
         descartaParcial();
-        await new Promise(r => setTimeout(r, REQUEST_RETRY_DELAY_MS * attempt));
+        if (!await waitForReconnect(diag, attempt)) { lastErr = null; break; }
         showTyping();
       }
     }
@@ -3898,6 +3985,12 @@ async function agentTurns(chat) {
       break;
     }
 
+    if (!hasContent && !message.tool_calls?.length && !aborted) appendErrorCard({
+      titulo: 'O modelo não enviou uma resposta',
+      detalhe: result.finishReason === 'length' ? 'O orçamento de tokens terminou antes da resposta.' : 'A requisição terminou sem texto ou ferramentas.',
+      passos: [result.finishReason === 'length' ? 'Aumente o limite de tokens ou reduza o raciocínio.' : 'Tente novamente. Se repetir, confira o servidor do modelo.']
+    });
+
     // Sem chamadas de ferramenta → o agente terminou
     if (!message.tool_calls || message.tool_calls.length === 0) {
       limpaCardsVivos();
@@ -3927,7 +4020,7 @@ async function agentTurns(chat) {
       if (!name) {
         // Modelos quantizados às vezes emitem tool_calls malformados
         if (cardStream) cardStream.remove();
-        result = JSON.stringify({ error: 'tool_call malformado (sem nome de função)' });
+        result = JSON.stringify({ error: 'Malformed tool call: function name is missing.' });
         appendToolLog(`⚠ tool_call ignorado (malformado)`);
       } else {
         let args = null;
@@ -3937,12 +4030,12 @@ async function agentTurns(chat) {
           args = null;
         }
 
-        if (!args) {
+        if (!args || typeof args !== 'object' || Array.isArray(args)) {
           // Argumentos cortados ou corrompidos. Executar assim mesmo chamaria a ferramenta
           // com os campos undefined (write_file criaria um arquivo chamado "undefined"),
           // então devolve o erro ao modelo para ele refazer a chamada.
           if (cardStream) cardStream.remove();
-          result = JSON.stringify({ error: `Os argumentos de ${name} não são JSON válido — a chamada provavelmente foi cortada. Refaça a chamada com JSON completo; se o conteúdo for muito grande, divida em partes menores.` });
+          result = JSON.stringify({ error: `Arguments for ${name} must be a complete JSON object. The call may have been truncated. Resend valid JSON; split large changes into smaller edits.` });
           appendToolLog(`⚠ ${name}: argumentos inválidos, chamada não executada`);
         } else {
           const card = appendToolCall(name, args, cardStream ? cardStream.encerra() : null);
@@ -3955,7 +4048,7 @@ async function agentTurns(chat) {
             result = JSON.stringify({ error: `Loop detected: this exact ${name} call already returned the same result ${repetida} times in a row, with nothing that has side effects in between. It was not run again — the result would be identical. Use the earlier result, change the approach, or ask the user.` });
             fillToolResult(card, name, result);
           } else if (decision === 'reject') {
-            result = JSON.stringify({ rejected: true, error: 'O usuário rejeitou esta ação. Não a repita; aguarde novas instruções ou proponha uma alternativa.' });
+            result = JSON.stringify({ rejected: true, error: 'The user rejected this action. Do not repeat it; wait for new instructions or propose an alternative.' });
             fillToolResult(card, name, result);
             logSystem(`Ação rejeitada pelo usuário: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
           } else {
@@ -4638,13 +4731,13 @@ async function refreshConsumption() {
       badge.classList.toggle('warn', pct !== null && pct >= 70 && pct < 90);
       badge.classList.toggle('danger', pct !== null && pct >= 90);
       if (pct !== null) {
-        badge.textContent = `Cota: ${pct}%`;
+        updateQuotaMeter(`${consumptionNumber(used)} / ${consumptionNumber(limit)} ${cycle || balance.unit === 'credits' ? 'créditos' : balance.unit}`, pct);
         badge.title = `${consumptionNumber(used)} / ${consumptionNumber(limit)} ${cycle || balance.unit === 'credits' ? 'créditos' : balance.unit} usados · atualizado ${new Date(remote.updatedAt).toLocaleTimeString('pt-BR')} · clique para detalhes`;
       } else if (balance) {
-        badge.textContent = `${remote.scope === 'key' ? 'Limite' : 'Saldo'}: ${consumptionNumber(balance.remaining)} ${balance.unit === 'credits' ? 'créditos' : balance.unit}`;
+        updateQuotaMeter(`Saldo: ${consumptionNumber(balance.remaining)} ${balance.unit === 'credits' ? 'créditos' : balance.unit}`);
         badge.title = 'Disponível na API ativa · clique para detalhes';
       } else {
-        badge.textContent = 'Cota: —';
+        updateQuotaMeter();
         badge.title = 'A API não informa cota. Clique para ver os tokens registrados no Studio.';
       }
     }
@@ -4658,6 +4751,19 @@ async function refreshConsumption() {
     ].filter(Boolean).join('\n\n').slice(0, 20000) };
   } catch (err) { if (request === consumptionRequest) { el('consumption-status').textContent = err.message || 'Não foi possível consultar o consumo.'; remoteConsumption = { providerId: connection.id, period, updatedAt: new Date().toISOString(), summary: `${provider.name}\n${el('consumption-status').textContent}` }; } }
   finally { if (request === consumptionRequest) consumptionRefreshing = false; }
+}
+
+function updateQuotaMeter(text = 'Não informada', pct: number | null = null) {
+  el('hdr-quota-text').textContent = text;
+  el('hdr-quota-percent').textContent = pct === null ? '—' : `${pct}%`;
+  const meter = el('hdr-quota-meter');
+  if (pct === null) meter.removeAttribute('aria-valuenow'); else meter.setAttribute('aria-valuenow', String(Math.max(0, Math.min(100, pct))));
+  meter.setAttribute('aria-valuetext', pct === null ? text : `${pct}% usados. ${text}`);
+  meter.style.setProperty('--pct', String(pct === null ? 0 : Math.max(0, Math.min(100, pct))));
+  el('hdr-quota-percent').title = text;
+  const badge = el('btn-consumption');
+  badge.classList.toggle('warn', pct !== null && pct >= 70 && pct < 90);
+  badge.classList.toggle('danger', pct !== null && pct >= 90);
 }
 
 function renderUsage() {
@@ -4675,9 +4781,15 @@ function renderUsage() {
   el('ctx-fill').style.width = `${pct}%`;
 
   // Medidor de contexto sempre visível no cabeçalho
-  const ctxText = `${u.lastTotal.toLocaleString('pt-BR')} / ${ctx ? ctx.toLocaleString('pt-BR') : '?'} tkn`;
-  el('hdr-ctx-text').innerText = ctxText;
-  el('hdr-ctx-fill').style.width = `${pct}%`;
+  const ctxText = ctx ? `${u.lastTotal.toLocaleString('pt-BR')} / ${ctx.toLocaleString('pt-BR')} tkn` : 'Não informado';
+  const curto = (n: number) => n >= 1e6 ? `${(n / 1e6).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+  el('hdr-ctx-text').innerText = ctx ? `${curto(u.lastTotal)} / ${curto(ctx)}` : 'n/d';
+  el('hdr-ctx-percent').textContent = ctx > 0 ? `${pct}%` : '—';
+  const meter = el('hdr-ctx-meter');
+  meter.style.setProperty('--pct', String(pct));
+  if (ctx > 0) meter.setAttribute('aria-valuenow', String(pct)); else meter.removeAttribute('aria-valuenow');
+  meter.setAttribute('aria-valuetext', ctx > 0 ? `${pct}% usados. ${ctxText}` : 'Contexto do modelo não informado');
+  el('ctx-pill').title = `Contexto da última requisição: ${ctxText}`;
   const pill = el('ctx-pill');
   pill.classList.toggle('warn', pct >= 70 && pct < 90);
   pill.classList.toggle('danger', pct >= 90);
@@ -4730,7 +4842,7 @@ async function switchProvider(id: string) {
   if (isRunning) { renderActiveProvider(); logSystem('Pare a geração antes de trocar de provedor.'); return; }
   rememberProvider(state.settings); activateProvider(state.settings, id);
   resetProviderCapabilities(); renderActiveProvider(); applySettingsToForm();
-  el('consumption-provider').value = id; el('btn-consumption').textContent = 'Cota: —';
+  el('consumption-provider').value = id; updateQuotaMeter();
   refreshActiveConsumption();
   consumptionProfiles();
   await persist(); await refreshModelContext();
@@ -4865,6 +4977,7 @@ function applySettingsToForm() {
   el('check-safety-interactions').checked = s.safetyInteractions;
   el('check-websearch').checked = s.webSearch;
   el('check-vision').checked = s.visionFeedback;
+  el('check-computer').checked = s.computerUse === true;
   el('check-hide-console').checked = s.hideCommandConsole !== false;
   el('input-custom-prompt').value = s.customPrompt || '';
   el('input-mcp').value = s.mcpConfig || '';
@@ -4890,7 +5003,7 @@ const CAMPO_DA_SETTING = {
   temperature: 'range-temp', topP: 'range-topp', maxTokens: 'input-maxtokens',
   cmdTimeout: 'input-cmdtimeout', historyCap: 'input-historycap',
   safetyInteractions: 'check-safety-interactions',
-  webSearch: 'check-websearch', visionFeedback: 'check-vision',
+  webSearch: 'check-websearch', visionFeedback: 'check-vision', computerUse: 'check-computer',
   hideCommandConsole: 'check-hide-console', customPrompt: 'input-custom-prompt', mcpConfig: 'input-mcp',
   promptMode: 'check-prompt-replace'
 };
@@ -4914,6 +5027,7 @@ function leSettingsDoFormulario(): Partial<Settings> {
     safetyInteractions: el('check-safety-interactions').checked,
     webSearch: el('check-websearch').checked,
     visionFeedback: el('check-vision').checked,
+    computerUse: el('check-computer').checked,
     hideCommandConsole: el('check-hide-console').checked,
     customPrompt: el('input-custom-prompt').value,
     mcpConfig: el('input-mcp').value,
@@ -4930,7 +5044,7 @@ function readSettingsFromForm() {
   state.settings.providers = providerDrafts.map(p => ({ ...p }));
   activateProvider(state.settings, draftProviderId);
   resetProviderCapabilities(); renderActiveProvider();
-  el('btn-consumption').textContent = 'Cota: —';
+  updateQuotaMeter();
   refreshActiveConsumption();
 }
 
@@ -5259,6 +5373,7 @@ function wireEvents() {
   });
 
   // Abrir/fechar modal
+  window.electronAPI.onComputerStopped?.(() => { stopAgent(); logSystem('Controle do computador interrompido pelo atalho Ctrl+Alt+Esc.'); });
   const modal = el('settings-modal');
   el('btn-open-settings').addEventListener('click', () => {
     // 'active' primeiro: o applySettingsToForm recalcula o selo de alteração pendente, e
@@ -5495,9 +5610,9 @@ function remoteChatMessages() {
     const stored = activeChat()?.messages[Number(item.dataset.messageIndex)], hasReference = item.dataset.messageIndex !== undefined && stored?.role === role;
     const sourceText = hasReference && typeof stored.content === 'string' && stored.content.length <= 12000 ? stored.content : '';
     const editable = hasReference && ['user', 'assistant'].includes(role) && !!sourceText && budget > sourceText.length;
-    const limit = Math.min(budget - (editable ? sourceText.length : 0), 12000), notice = '[Trecho final; mensagem completa no desktop.]\n';
+    const limit = Math.min(budget - (editable ? sourceText.length : 0), 12000), notice = '[Trecho final. Mensagem completa no desktop.]\n';
     if (text.length > limit) { if (limit <= notice.length) break; text = notice + text.slice(-(limit - notice.length)); }
-    messages.unshift({ role, text, ...(hasReference ? { id: remoteHistory.reference(stored) } : {}), ...(editable ? { sourceText, editable: true } : {}), ...(role === 'tool' && item.dataset.snapshotId ? { change: { snapshotId: item.dataset.snapshotId, file: item.dataset.changedFile } } : {}), ...(role === 'user' && stored?.attachments ? { images: stored.attachments.filter(a => a.imagemPath).map(a => ({ name: a.name, thumb: typeof a.thumb === 'string' && a.thumb.length <= 16000 ? a.thumb : '' })).slice(0, 3) } : {}) }); budget -= text.length + (editable ? sourceText.length : 0);
+    messages.unshift({ role, text, ...(item.matches('.error-msg,.error-card') ? { kind: item.classList.contains('retry-card') ? 'retry' : 'error' } : {}), ...(hasReference ? { id: remoteHistory.reference(stored) } : {}), ...(editable ? { sourceText, editable: true } : {}), ...(role === 'tool' && item.dataset.snapshotId ? { change: { snapshotId: item.dataset.snapshotId, file: item.dataset.changedFile } } : {}), ...(role === 'user' && stored?.attachments ? { images: stored.attachments.filter(a => a.imagemPath).map(a => ({ name: a.name, thumb: typeof a.thumb === 'string' && a.thumb.length <= 16000 ? a.thumb : '' })).slice(0, 3) } : {}) }); budget -= text.length + (editable ? sourceText.length : 0);
     if (budget <= 0 || messages.length >= 80) break;
   }
   return messages;
@@ -5515,13 +5630,15 @@ function studioRemoteSnapshot() {
     approval: pendingConfirm ? { id: pendingConfirm.remoteId, tool: pendingConfirm.remoteTool, description: pendingConfirm.remoteDescription } : null,
     question: pendingQuestion ? { id: pendingQuestion.remoteId, question: String(pendingQuestion.remoteArgs.question || ''), multi: !!pendingQuestion.remoteArgs.multi_select,
       options: normalizaOpcoes(pendingQuestion.remoteArgs.options) } : null,
+    usage: { contextUsed: state.usage.lastTotal, contextLimit: state.modelCtx || null,
+      quotaPercent: el('hdr-quota-meter').hasAttribute('aria-valuenow') ? Number(el('hdr-quota-percent').textContent.replace('%', '')) : null, quotaText: el('hdr-quota-text').textContent },
     consumption: remoteConsumption,
     limited: false,
   };
   const oversized = () => new TextEncoder().encode(JSON.stringify(snapshot)).length > 200000;
   for (const group of [snapshot.chats, snapshot.providers, snapshot.workspaces, snapshot.processes]) while (group.length > 1 && oversized()) { group.pop(); snapshot.limited = true; }
   while (snapshot.messages.length > 1 && oversized()) { snapshot.messages.shift(); snapshot.limited = true; }
-  while (oversized() && (snapshot.processOutput.length > 100 || (snapshot.diff?.text.length || 0) > 100)) { if (snapshot.processOutput.length > 100) snapshot.processOutput = snapshot.processOutput.slice(0, Math.floor(snapshot.processOutput.length / 2)); if ((snapshot.diff?.text.length || 0) > 100) snapshot.diff = { ...snapshot.diff, text: snapshot.diff.text.slice(0, Math.floor(snapshot.diff.text.length / 2)) + '\n[Diff abreviado; conteúdo completo no Studio.]' }; snapshot.limited = true; }
+  while (oversized() && (snapshot.processOutput.length > 100 || (snapshot.diff?.text.length || 0) > 100)) { if (snapshot.processOutput.length > 100) snapshot.processOutput = snapshot.processOutput.slice(0, Math.floor(snapshot.processOutput.length / 2)); if ((snapshot.diff?.text.length || 0) > 100) snapshot.diff = { ...snapshot.diff, text: snapshot.diff.text.slice(0, Math.floor(snapshot.diff.text.length / 2)) + '\n[Diff abreviado. Conteúdo completo no Studio.]' }; snapshot.limited = true; }
   return snapshot;
 }
 async function executeRemoteCommand(c: any) {
@@ -5597,14 +5714,34 @@ async function executeRemoteCommand(c: any) {
     default: throw new Error('Comando remoto desconhecido.');
   }
 }
+let remoteStatusView: any = null;
+let remoteFeedbackMessage: string | null = null;
+let remoteFeedbackError = false;
+function renderRemoteConnection() {
+  const status = remoteStatusView; if (!status) return;
+  const seconds = status.retryAt ? Math.max(0, Math.ceil((status.retryAt - Date.now()) / 1000)) : 0;
+  const message = status.retryAt ? (seconds ? `Reconectando em ${seconds}s…` : 'Reconectando…') : status.message;
+  for (const id of ['remote-status', 'sidebar-remote-status']) {
+    const feedback = id === 'remote-status' && remoteFeedbackMessage !== null;
+    el(id).textContent = id === 'sidebar-remote-status' ? (status.state === 'online' ? 'Conectado' : status.retryAt ? `Reconectar em ${seconds}s` : status.enabled ? 'Conectando…' : 'Sem conexão') : feedback ? remoteFeedbackMessage : message;
+    el(id).classList.toggle('remote-error', feedback ? remoteFeedbackError : status.state === 'error');
+  }
+  el('remote-dot').className = `remote-dot ${status.state}`;
+}
 function showRemoteStatus(status: any) {
   const first = !remoteEnabled && status.enabled;
   remoteEnabled = status.enabled === true;
-  el('remote-status').textContent = status.message;
+  remoteStatusView = status; remoteFeedbackMessage = null; renderRemoteConnection();
+  el('sidebar-remote-action').textContent = remoteEnabled ? 'Desligar' : 'Ligar';
+  el('btn-sidebar-remote-toggle').setAttribute('aria-pressed', String(remoteEnabled));
+  el('btn-sidebar-remote-toggle').title = status.deviceId ? (remoteEnabled ? 'Desligar controle remoto' : 'Ligar controle remoto') : 'Ligar controle remoto: configurar pareamento';
   el('remote-server').value = status.server; if (status.name) el('remote-name').value = status.name;
   el('btn-remote-toggle').hidden = !status.deviceId; el('btn-remote-forget').hidden = !status.deviceId;
   el('btn-remote-toggle').textContent = remoteEnabled ? 'Desligar' : 'Ligar';
   if (first && !remoteConsumption) { consumptionProfiles(); void refreshConsumption(); }
+}
+function remoteFeedback(message: string, error = true) {
+  remoteFeedbackMessage = message; remoteFeedbackError = error; renderRemoteConnection();
 }
 async function initRemoteControl() {
   window.electronAPI.onRemoteStatus(showRemoteStatus);
@@ -5616,12 +5753,19 @@ async function initRemoteControl() {
     finally { window.electronAPI.remoteResult(c.id, ok); if (remoteEnabled) window.electronAPI.remotePublish(studioRemoteSnapshot()); }
   }); });
   el('btn-remote-pair').addEventListener('click', async () => {
-    const btn = el<HTMLButtonElement>('btn-remote-pair'); btn.disabled = true; el('remote-status').textContent = 'Pareando…';
+    if (!/^[A-F0-9]{10}$/i.test(el('remote-code').value.trim())) { remoteFeedback('Digite o código de 10 caracteres exibido no site.'); el('remote-code').focus(); return; }
+    const btn = el<HTMLButtonElement>('btn-remote-pair'); btn.disabled = true; remoteFeedback('Conectando…', false);
     try { const r = await window.electronAPI.remotePair(el('remote-server').value, el('remote-code').value, el('remote-name').value); if (!r.success) throw new Error(r.error); el('remote-code').value = ''; showRemoteStatus(r.status); }
-    catch (e) { el('remote-status').textContent = e.message; } finally { btn.disabled = false; }
+    catch (e) { remoteFeedback(e.message || 'Não foi possível conectar ao site.'); } finally { btn.disabled = false; }
   });
-  const toggle = async (forget = false) => { const r = await window.electronAPI.remoteEnable(!remoteEnabled && !forget, forget); if (r.success) showRemoteStatus(r.status); else el('remote-status').textContent = r.error; };
+  const toggle = async (forget = false) => { const r = await window.electronAPI.remoteEnable(!remoteEnabled && !forget, forget); if (r.success) showRemoteStatus(r.status); else remoteFeedback(r.error || 'Não foi possível alterar a conexão.'); };
   el('btn-remote-toggle').addEventListener('click', () => toggle());
+  el('btn-sidebar-remote-toggle').addEventListener('click', async () => {
+    if (!remoteStatusView?.deviceId) { el('btn-open-settings').click(); q<HTMLButtonElement>('.nav-tab-btn[data-tab="tab-remoto"]').click(); el('remote-code').focus(); return; }
+    const btn = el<HTMLButtonElement>('btn-sidebar-remote-toggle'); btn.disabled = true;
+    try { await toggle(); } finally { btn.disabled = false; }
+  });
+  setInterval(renderRemoteConnection, 250);
   el('btn-remote-forget').addEventListener('click', () => toggle(true));
   showRemoteStatus(await window.electronAPI.remoteStatus());
   setInterval(() => { if (remoteEnabled) window.electronAPI.remotePublish(studioRemoteSnapshot()); }, 750);

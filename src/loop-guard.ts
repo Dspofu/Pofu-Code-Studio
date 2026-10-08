@@ -13,11 +13,11 @@ type Registro = { chave: string; assinatura: string; efeito: boolean } | null;
 // `cat` que falham igual teriam PIDs diferentes e nunca contariam como repetição.
 const VOLATEIS = new Set(['pid', 'uptimeSec', 'ms', 'result_id', 'snapshotId', 'mtimeMs', 'startedAt', 'elapsedMs']);
 
-function ordenado(v: any): any {
-  if (Array.isArray(v)) return v.map(ordenado);
+function ordenado(v: any, ignoraVolateis = false): any {
+  if (Array.isArray(v)) return v.map(item => ordenado(item, ignoraVolateis));
   if (v && typeof v === 'object') {
     const out: Record<string, any> = {};
-    for (const k of Object.keys(v).sort()) if (!VOLATEIS.has(k)) out[k] = ordenado(v[k]);
+    for (const k of Object.keys(v).sort()) if (!ignoraVolateis || !VOLATEIS.has(k)) out[k] = ordenado(v[k], ignoraVolateis);
     return out;
   }
   return v;
@@ -37,7 +37,7 @@ function fnv(texto: string) {
 
 export function assinaturaDoResultado(resultado: string) {
   let texto = String(resultado ?? '');
-  try { texto = JSON.stringify(ordenado(JSON.parse(texto))); } catch { /* resultado em texto */ }
+  try { texto = JSON.stringify(ordenado(JSON.parse(texto), true)); } catch { /* resultado em texto */ }
   return fnv(texto.replace(/result-[\w-]+/g, 'result-*'));
 }
 
@@ -82,7 +82,7 @@ export class LoopGuard {
 
 // Efeito colateral é o que pode mudar o resultado de OUTRA chamada.
 export function temEfeito(nome: string, args: any) {
-  if (['execute_command', 'write_file', 'edit_file', 'delete_file', 'create_directory', 'stop_process'].includes(nome)) return true;
+  if (['execute_command', 'write_file', 'edit_file', 'delete_file', 'create_directory', 'stop_process', 'computer_action'].includes(nome)) return true;
   if (nome === 'http_request') return !/^(GET|HEAD|OPTIONS)$/i.test(String(args?.method || 'GET'));
   if (nome === 'capture_page') return !!args?.script;
   return false;

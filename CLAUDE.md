@@ -36,6 +36,8 @@ são da INTERFACE e continuam em pt-BR.
 | [src/atalho-windows.ts](src/atalho-windows.ts) | Repara, ao abrir, o ícone do atalho do Menu Iniciar que ficou apontando para um `.exe` que não existe (pasta movida). |
 | [src/types.d.ts](src/types.d.ts) | Tipos GLOBAIS (o arquivo não exporta nada de propósito): `Settings`, `Chat`, `ChatMessage`, `ElectronAPI`, `ProcEntry`. Main e renderer os enxergam sem importar. |
 | [src/websearch.js](src/websearch.js) | **Arquivo gerado** — não edite, e não converta para `.ts`. Saída do `tsc` sobre o módulo portátil `…/chat/src/lib/websearch.ts`, mantido em OUTRO repositório. Os tipos dele estão em [src/websearch.d.ts](src/websearch.d.ts). |
+| [src/computer.ts](src/computer.ts), [src/computer-windows.ts](src/computer-windows.ts), [src/computer-tools.ts](src/computer-tools.ts) | Captura real de monitores, mouse/teclado nativos no Windows e schemas visuais; permissão separada e capturas descartadas após uma ação. |
+| [src/model-vision.ts](src/model-vision.ts) | Visão por capabilities ou modalidades de entrada do modelo selecionado. |
 | `vendor/` | Libs offline do RENDERER (tailwind, marked, purify, highlight). Sem CDN. |
 | `build/`, `dist/` | Recursos e saída do electron-builder. |
 

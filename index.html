@@ -2367,6 +2367,13 @@
       <div class="sidebar-section-label">Conversas do projeto</div>
       <div class="chat-list" id="chat-list-container"></div>
 
+      <section class="sidebar-remote" aria-label="Controle remoto">
+        <button id="btn-sidebar-remote-toggle" type="button" aria-pressed="false">
+          <span class="remote-dot" id="remote-dot" aria-hidden="true"></span>
+          <span class="remote-button-copy"><strong>Controle remoto</strong><span id="sidebar-remote-status" role="status" aria-live="polite">Sem conexão</span></span>
+          <span id="sidebar-remote-action">Ligar</span>
+        </button>
+      </section>
       <div class="sidebar-footer">
         <div class="profile-group">
           <button id="btn-github" class="btn-icon btn-github" title="Repositório no GitHub">
@@ -2391,14 +2398,6 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             <span class="proc-badge" id="proc-badge" style="display:none;">0</span>
           </button>
-          <div class="usage-indicators">
-          <div class="ctx-pill" id="ctx-pill" title="Contexto usado na última requisição / comprimento total do modelo">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
-            <span id="hdr-ctx-text">— / — tkn</span>
-            <span class="ctx-pill-bar"><span class="ctx-pill-fill" id="hdr-ctx-fill"></span></span>
-          </div>
-          <button id="btn-consumption" type="button" class="quota-pill" title="Ver cota e consumo (/usage)" aria-haspopup="dialog">Cota: —</button>
-          </div>
           <div class="folder-picker">
             <span id="selected-path" title="Pasta segura deste chat: o agente só enxerga daqui para dentro">Selecionar ambiente</span>
             <button id="btn-select-folder" class="btn-icon" title="Trocar a pasta segura deste chat">
@@ -2453,7 +2452,20 @@
             <div class="composer-hint">Enter envia · Shift+Enter nova linha · @ menciona um arquivo · arraste para anexar</div>
           </div>
         </div>
-        <div class="studio-status"><select id="active-provider" aria-label="Provedor ativo" title="Trocar provedor"></select><span id="studio-model">Configure seu modelo</span></div>
+        <div class="studio-status"><select id="active-provider" aria-label="Provedor ativo" title="Trocar provedor"></select>
+          <div class="usage-indicators">
+            <div class="usage-meter" id="ctx-pill" title="Contexto usado na última requisição / comprimento total do modelo">
+              <span class="usage-ring" id="hdr-ctx-meter" role="meter" aria-label="Contexto usado" aria-valuemin="0" aria-valuemax="100"></span>
+              <strong id="hdr-ctx-percent">—</strong>
+              <span class="meter-caption" id="hdr-ctx-text">—</span>
+            </div>
+            <button id="btn-consumption" type="button" class="usage-meter" title="Ver cota e consumo (/usage)" aria-haspopup="dialog">
+              <span class="usage-ring" id="hdr-quota-meter" role="meter" aria-label="Cota usada" aria-valuemin="0" aria-valuemax="100"></span>
+              <span>Cota</span><strong id="hdr-quota-percent">—</strong>
+              <span class="meter-caption" id="hdr-quota-text" hidden>Não informada</span>
+            </button>
+          </div>
+          <span id="studio-model">Configure seu modelo</span></div>
       </div>
 
       <input type="file" id="file-input" multiple hidden>
@@ -2561,7 +2573,7 @@
           <div id="tab-remoto" class="tab-panel">
             <div class="cfg-section">
               <div class="cfg-section-title">Conectar ao Code do site</div>
-              <p class="cfg-hint">Abra a área Code no site, gere um código e digite aqui. Você poderá conversar, controlar tarefas, aprovar ferramentas e consultar o consumo pelo celular. O Studio precisa permanecer aberto; as ferramentas executam neste PC.</p>
+              <p class="cfg-hint">Gere um código no Code do site e cole aqui. Mantenha o Studio aberto para usar o acesso remoto.</p>
               <div class="config-group"><label for="remote-server">Endereço do site</label><input id="remote-server" type="url" value="https://ai.pofuserver.com" autocomplete="off"></div>
               <div class="config-group"><label for="remote-name">Nome deste computador</label><input id="remote-name" type="text" value="Meu PC" maxlength="100"></div>
               <div class="config-group"><label for="remote-code">Código de pareamento</label><input id="remote-code" type="text" maxlength="10" autocomplete="off" spellcheck="false" placeholder="10 caracteres do site"></div>
@@ -2630,9 +2642,9 @@
               <div class="config-group">
                 <label for="input-historycap">Teto de histórico por requisição (tokens)</label>
                 <input type="text" id="input-historycap" placeholder="vazio = usar o contexto do modelo">
-                <span class="cfg-hint">Toda requisição reenvia a conversa inteira, e o que mais pesa são os resultados de ferramenta. Sem teto, quem manda é o contexto do modelo — num servidor de contexto grande isso significa reenviar centenas de milhares de tokens por mensagem. Com teto, os resultados antigos passam a ir encurtados (o agente pode chamar a ferramenta de novo se precisar). Serve para <strong>API paga</strong>; em servidor local, deixe vazio. <strong>Não coloque um valor baixo demais</strong> (abaixo de ~32.000): o agente esquece o que acabou de ler e relê tudo de novo — em teste medido, um teto apertado custou 4x mais tokens que não ter teto nenhum.</span>
+                <span class="cfg-hint">Encurta resultados antigos para reduzir tokens em APIs pagas. Em servidor local, deixe vazio. Evite limites abaixo de <strong>32.000 tokens</strong> para não causar releituras.</span>
               </div>
-              <span class="cfg-hint">O nível de raciocínio saiu daqui: agora fica no rodapé do compositor, ao lado do modo de comandos.</span>
+              <span class="cfg-hint">Ajuste o raciocínio no compositor.</span>
             </div>
 
             <div class="cfg-section">
@@ -2682,9 +2694,16 @@
               <div class="switch-row">
                 <div class="switch-text">
                   <span class="switch-title">Enviar prints para o modelo</span>
-                  <span class="cfg-hint">O <code>capture_page</code> devolve a imagem da tela ao modelo, e não só o texto da página. Usado apenas quando o endpoint anuncia um modelo multimodal — <span id="vision-status">verificando…</span></span>
+                  <span class="cfg-hint">Envia imagens de páginas e arquivos ao modelo. Usado quando o endpoint anuncia suporte a imagens — <span id="vision-status">verificando…</span></span>
                 </div>
                 <label class="switch"><input type="checkbox" id="check-vision"><span class="switch-slider"></span></label>
+              </div>
+              <div class="switch-row">
+                <div class="switch-text">
+                  <span class="switch-title">Controle do computador</span>
+                  <span class="cfg-hint">Permite ver os monitores e controlar mouse e teclado no Windows. Requer um modelo com visão e o envio de prints. No modo Manual, você aprova cada ação. No Auto, a execução é direta. O botão Parar ou Ctrl+Alt+Esc interrompe ações pendentes.</span>
+                </div>
+                <label class="switch"><input type="checkbox" id="check-computer"><span class="switch-slider"></span></label>
               </div>
               <div class="switch-row">
                 <div class="switch-text">
@@ -2696,7 +2715,7 @@
               <div class="config-group">
                 <label for="input-mcp">Servidores MCP</label>
                 <textarea id="input-mcp" class="prompt-textarea mcp-textarea" spellcheck="false" placeholder='{ "mcpServers": { "arquivos": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/projetos"] } } }'></textarea>
-                <span class="cfg-hint">Cole o JSON do README do servidor — o mesmo formato do Claude Desktop, Cursor e Cline. Local: <code>command</code>, <code>args</code> e <code>env</code>; remoto: <code>url</code> e <code>headers</code>; <code>"disabled": true</code> desliga sem apagar. As ferramentas de cada servidor vão ao modelo em toda mensagem: deixe ligados só os que você usa.</span>
+                <span class="cfg-hint">Use o JSON do servidor no formato Claude Desktop. Local: <code>command</code>, <code>args</code> e <code>env</code>. Remoto: <code>url</code> e <code>headers</code>. Ative só os servidores que usa.</span>
                 <div id="mcp-status" class="mcp-status"></div>
               </div>
               <div class="config-group">

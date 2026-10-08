@@ -142,6 +142,42 @@ class Http implements Transporte {
     };
   }
 
+  private async respostaSse(r: Response, id: number) {
+    const reader = r.body?.getReader();
+    if (!reader) return null;
+    const decoder = new TextDecoder();
+    let buffer = '', dados: string[] = [];
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        let inicio = 0;
+        for (let i = 0; i < buffer.length; i++) {
+          if (buffer[i] !== '\n' && buffer[i] !== '\r') continue;
+          // Um CRLF pode vir em dois chunks, assim como um caractere UTF-8 no decoder.
+          if (buffer[i] === '\r' && i + 1 === buffer.length && !done) break;
+          const linha = buffer.slice(inicio, i);
+          if (buffer[i] === '\r' && buffer[i + 1] === '\n') i++;
+          inicio = i + 1;
+          if (linha === '') {
+            let msg;
+            try { msg = JSON.parse(dados.join('\n')); } catch { /* evento não-JSON */ }
+            dados = [];
+            if (msg?.id === id && !msg.method) return msg;
+          } else if (linha === 'data' || linha.startsWith('data:')) {
+            dados.push(linha.slice(5).replace(/^ /, ''));
+          }
+        }
+        buffer = buffer.slice(inicio);
+        if (done) return null;
+      }
+    } finally {
+      // Receber a resposta conclui a chamada; esperar EOF trava em servidores que mantêm SSE aberto.
+      await reader.cancel().catch(() => { /* conexão já encerrada */ });
+      reader.releaseLock();
+    }
+  }
+
   async request(method: string, params: any, timeoutMs: number) {
     const id = ++this.seq;
     const r = await fetch(this.cfg.url, {
@@ -150,18 +186,15 @@ class Http implements Transporte {
     });
     const sid = r.headers.get('mcp-session-id');
     if (sid) this.sessao = sid;
-    const texto = await r.text();
-    if (!r.ok) { this.ultimoErro = `HTTP ${r.status}: ${texto.slice(0, 300)}`; throw new Error(this.ultimoErro); }
+    if (!r.ok) { this.ultimoErro = `HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`; throw new Error(this.ultimoErro); }
     let msg = null;
     if ((r.headers.get('content-type') || '').includes('text/event-stream')) {
-      // A resposta vem num evento SSE; o servidor pode mandar notificações antes dela.
-      for (const bloco of texto.split(/\r?\n\r?\n/)) {
-        const dados = bloco.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('\n');
-        if (!dados) continue;
-        try { const m = JSON.parse(dados); if (m.id === id) { msg = m; break; } } catch { /* evento não-JSON */ }
-      }
-    } else if (texto) msg = JSON.parse(texto);
-    if (!msg) throw new Error(`MCP server sent no response to "${method}"`);
+      msg = await this.respostaSse(r, id);
+    } else {
+      const texto = await r.text();
+      if (texto) msg = JSON.parse(texto);
+    }
+    if (!msg || msg.id !== id || msg.method) throw new Error(`MCP server sent no response to "${method}"`);
     if (msg.error) throw new Error(msg.error.message || JSON.stringify(msg.error));
     return msg.result;
   }

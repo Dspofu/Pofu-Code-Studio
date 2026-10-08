@@ -3,15 +3,19 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage, safeStorage } from 'electron';
-import { dirname, join, relative } from 'path';
-import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from 'fs';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage, safeStorage, desktopCapturer, screen, globalShortcut } from 'electron';
+import { dirname, join, relative, resolve, isAbsolute } from 'path';
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync, realpathSync, openSync, fstatSync, closeSync, readSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'os';
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 // main.ts e os demais módulos moram no MESMO diretório (src/), então os imports são
 // "./x.js" — o rootDir "src" do tsconfig espelha a estrutura em out/.
 import { WebSearch } from './websearch.js';
+import { WebResearch } from './web-research.js';
+import { articleText, researchGate } from './research/researchReader.js';
+import { navigable } from './research/webpage.js';
 import packageJson from '../package.json' with { type: "json" };
 import { fileWindow } from './tool-results.js';
 import { editDiagnostics } from './edit-diagnostics.js';
@@ -24,6 +28,9 @@ import { ConsumptionStore } from './consumption-store.js';
 import { queryConsumption, type ConsumptionConnection, type ConsumptionPeriod } from './consumption.js';
 import { protectConsumptionKeys, restoreConsumptionKeys } from './consumption-vault.js';
 import { RemoteControl } from './remote-control.js';
+import { DesktopComputer } from './computer.js';
+import { windowsComputer } from './computer-windows.js';
+import { COMPUTER_IMAGE_MAX_SIDE } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -33,6 +40,20 @@ const __dirname = dirname(__filename);
 const isWindows = process.platform === 'win32';
 
 let mainWindow;
+const COMPUTER_STOP_SHORTCUT = 'CommandOrControl+Alt+Escape';
+function mainSender(event) {
+  return !!mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame
+    && event.senderFrame.url.split('#')[0] === pathToFileURL(join(__dirname, '..', 'index.html')).href;
+}
+function setComputerPermission(enabled: boolean) {
+  getDesktopComputer().setEnabled(enabled);
+  if (!enabled) { globalShortcut.unregister(COMPUTER_STOP_SHORTCUT); return; }
+  if (!globalShortcut.isRegistered(COMPUTER_STOP_SHORTCUT)) globalShortcut.register(COMPUTER_STOP_SHORTCUT, () => {
+    getDesktopComputer().cancel();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('computer-stopped');
+  });
+}
 
 // Precisa ser idêntico ao "build.appId" do package.json: o instalador NSIS grava esse
 // mesmo AUMID no atalho, e o Windows só associa a janela ao atalho (ícone correto na
@@ -75,7 +96,8 @@ function createWindow() {
   // main.js roda de out/ (ver tsconfig.json); o index.html fica na RAIZ do app —
   // sem o join, o loadFile procuraria index.html dentro de out/ e a janela abriria em branco.
   mainWindow.loadFile(join(__dirname, '..', 'index.html'));
-  mainWindow.webContents.on('did-start-loading', () => remoteControl?.stop());
+  mainWindow.webContents.on('did-start-loading', () => { remoteControl?.stop(); setComputerPermission(false); });
+  mainWindow.on('closed', () => setComputerPermission(false));
   // mainWindow.webContents.openDevTools()
 
   // Links (ex: markdown gerado pela IA, target="_blank" ou window.open) nunca abrem
@@ -1142,7 +1164,7 @@ ipcMain.handle('remote-enable', (_, enabled, forget = false) => {
 });
 ipcMain.on('remote-snapshot', (_, snapshot) => { try { getRemoteControl().publish(snapshot); } catch { /* Próxima captura tenta novamente. */ } });
 ipcMain.on('remote-result', (_, id, ok) => { if (typeof id === 'string') getRemoteControl().complete(id, ok === true); });
-app.on('before-quit', () => remoteControl?.stop());
+app.on('before-quit', () => { remoteControl?.stop(); setComputerPermission(false); });
 
 function usageConnection(raw: ConsumptionConnection): ConsumptionConnection {
   if (!raw || typeof raw.id !== 'string' || raw.id.length > 200 || typeof raw.apiUrl !== 'string' || raw.apiUrl.length > 2000 || typeof raw.apiKey !== 'string') throw new Error('Configuração de consumo inválida.');
@@ -1165,19 +1187,26 @@ ipcMain.handle('record-usage', async (_, raw, usage) => {
   catch { return { success: false, error: 'Não foi possível salvar o consumo local.' }; }
 });
 
-ipcMain.handle('load-store', async () => {
+ipcMain.handle('load-store', async (event) => {
+  if (!mainSender(event)) return null;
   try {
     const file = storePath();
-    if (!existsSync(file)) return null;
-    return restoreConsumptionKeys(JSON.parse(readFileSync(file, 'utf-8')), consumptionCipher);
+    if (!existsSync(file)) { setComputerPermission(false); return null; }
+    const data = restoreConsumptionKeys(JSON.parse(readFileSync(file, 'utf-8')), consumptionCipher);
+    setComputerPermission(data?.settings?.computerUse === true);
+    return data;
   } catch (err) {
+    setComputerPermission(false);
     return null;
   }
 });
 
 ipcMain.handle('save-store', async (event, data) => {
+  if (!mainSender(event)) return { success: false, error: 'Untrusted application window.' };
+  if (data?.settings?.computerUse !== true) setComputerPermission(false);
   try {
     writeFileSync(storePath(), JSON.stringify(protectConsumptionKeys(data, consumptionCipher), null, 2), 'utf-8');
+    setComputerPermission(data?.settings?.computerUse === true);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -1376,7 +1405,7 @@ function getBuscador() {
   buscador = new WebSearch({
     language: 'pt-BR',
     resultLimit: 8,
-    pagesToFetch: 2,      // o conteúdo real das páginas é o que vale; 2 já enche o contexto
+    pagesToFetch: 0,      // A leitura com evidências agora pertence ao WebResearch.
     pageCharLimit: 2500,
     searchTimeoutMs: 8000, // scraper bloqueado deve desistir rápido e ceder a vez ao próximo
     logger: (nivel, msg) => { if (nivel !== 'info') console.log('[busca]', msg); },
@@ -1394,30 +1423,13 @@ function getBuscador() {
   return buscador;
 }
 
+const pesquisaWeb = new WebResearch({ fallback: query => getBuscador().search(query), renderHtml: renderizaHtml });
+
 ipcMain.handle('web-search', async (event, query, maxResults = 5) => {
   const max = clamp(maxResults || 5, 1, 10);
   if (!String(query || '').trim()) return { success: false, error: 'Search query must not be empty.' };
   try {
-    const out = await getBuscador().search(String(query || ''));
-    if (!out || !out.results.length) {
-      return {
-        success: false,
-        error: `No search provider returned a useful result for "${query}".`,
-        hint: 'Try simpler, more specific terms (no quotes and no operators such as site:).'
-      };
-    }
-    return {
-      success: true,
-      query: out.query,
-      reformulada: out.simplified ? out.originalQuery : undefined,
-      source: out.provider,
-      count: Math.min(out.results.length, max),
-      totalFound: out.results.length,
-      results: out.results.slice(0, max),
-      // O conteúdo já extraído das primeiras páginas evita um fetch_url a seguir só
-      // para descobrir o que o snippet resumiu pela metade.
-      paginas: out.pages
-    };
+    return await pesquisaWeb.search(String(query || ''), max);
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1492,6 +1504,61 @@ function pruneShots() {
 // Um print de 1920px vira muitos tokens de visão sem informação extra; 1024 mantém
 // texto de UI legível.
 const SHOT_MODEL_WIDTH = 1024;
+
+let desktopComputer: DesktopComputer;
+function getDesktopComputer() {
+  return desktopComputer ||= new DesktopComputer({
+    platform: process.platform,
+    primaryDisplay: () => String(screen.getPrimaryDisplay().id),
+    displays: () => screen.getAllDisplays().map(display => ({
+      id: String(display.id), label: display.label || `Display ${display.id}`,
+      bounds: display.bounds, scaleFactor: display.scaleFactor, rotation: display.rotation,
+      physicalBounds: isWindows ? screen.dipToScreenRect(null, display.bounds) : {
+        x: display.bounds.x, y: display.bounds.y,
+        width: Math.round(display.bounds.width * display.scaleFactor), height: Math.round(display.bounds.height * display.scaleFactor)
+      }
+    })),
+    sources: () => desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: COMPUTER_IMAGE_MAX_SIDE, height: COMPUTER_IMAGE_MAX_SIDE }, fetchWindowIcons: false }),
+    save: (png, id) => { const file = join(shotsDir(), `screen-${id}.png`); writeFileSync(file, png); pruneShots(); return file; },
+    input: windowsComputer
+  });
+}
+ipcMain.handle('capture-screen', (event, opts) => mainSender(event)
+  ? getDesktopComputer().capture(opts) : { success: false, error: 'Untrusted application window.' });
+ipcMain.handle('computer-action', (event, args) => mainSender(event)
+  ? getDesktopComputer().action(args) : { success: false, error: 'Untrusted application window.' });
+ipcMain.handle('cancel-computer', (event) => {
+  if (!mainSender(event)) return { success: false, error: 'Untrusted application window.' };
+  getDesktopComputer().cancel();
+  return { success: true };
+});
+ipcMain.handle('view-image', (event, filePath, opts) => {
+  if (!mainSender(event)) return { success: false, error: 'Untrusted application window.' };
+  let fd: number;
+  try {
+    if (typeof filePath !== 'string' || !filePath || typeof opts?.workspace !== 'string' || !opts.workspace)
+      throw new Error('view_image requires a file path and an active workspace.');
+    const root = realpathSync(opts.workspace), target = realpathSync(resolve(root, filePath));
+    const rel = relative(root, target);
+    if (isAbsolute(rel) || rel === '..' || rel.startsWith('..\\') || rel.startsWith('../')) throw new Error('The image must be inside the active workspace, including its symlink target.');
+    fd = openSync(target, 'r');
+    const info = fstatSync(fd);
+    if (!info.isFile() || info.size < 1 || info.size > 25 * 1024 * 1024) throw new Error('The image must be a non-empty file no larger than 25 MiB.');
+    const bytes = Buffer.alloc(info.size);
+    let offset = 0;
+    while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) break; offset += count; }
+    if (offset !== bytes.length) throw new Error('The image changed while being read. Retry view_image.');
+    if (!tipoDaImagem(bytes)) throw new Error('Unsupported image format. Use PNG, JPEG, GIF, BMP or WebP.');
+    let image = nativeImage.createFromBuffer(bytes);
+    if (image.isEmpty()) throw new Error('The file could not be decoded as an image.');
+    const size = image.getSize(), scale = Math.min(1, COMPUTER_IMAGE_MAX_SIDE / Math.max(size.width, size.height));
+    if (scale < 1) image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) });
+    const png = image.toPNG(), path = join(shotsDir(), `image-${randomUUID()}.png`);
+    writeFileSync(path, png); pruneShots();
+    return { success: true, path, dataUrl: 'data:image/png;base64,' + png.toString('base64'), ...image.getSize(), original_width: size.width, original_height: size.height };
+  } catch (error) { return { success: false, error: String(error?.message || error) }; }
+  finally { if (fd !== undefined) closeSync(fd); }
+});
 
 // Abre a URL oculta, coleta console e rede, roda um script opcional e devolve o PNG.
 // É assim que o agente vê o que construiu, em vez de deduzir pelo código.
@@ -1729,6 +1796,12 @@ function htmlToText(html) {
 const FETCH_MIN_TEXTO_UTIL = 400;
 
 ipcMain.handle('fetch-url', async (event, url, maxChars = 2 * 1024 * 1024) => {
+  maxChars = clamp(maxChars, 80, 2 * 1024 * 1024);
+  if (navigable(String(url))) {
+    const page = await pesquisaWeb.read(String(url), '', AbortSignal.timeout(45000), maxChars);
+    return page ? { success: true, url: page.url, content: page.text, links: page.links, viaBrowser: page.via === 'browser', totalChars: page.text.length }
+      : { success: false, url, error: 'The page returned no readable text (unavailable or access challenge).' };
+  }
   let statusHttp = null, viaBrowser = false, texto = '', erroHttp = null;
   try {
     // Sem timeout, um servidor que aceita a conexão e nunca responde deixa o tool call
@@ -1740,7 +1813,7 @@ ipcMain.handle('fetch-url', async (event, url, maxChars = 2 * 1024 * 1024) => {
     statusHttp = resp.status;
     const ct = resp.headers.get('content-type') || '';
     const bruto = await resp.text();
-    texto = (ct.includes('html') || /^\s*</.test(bruto)) ? htmlToText(bruto) : bruto;
+    texto = resp.ok ? ((ct.includes('html') || /^\s*</.test(bruto)) ? articleText(bruto, url, '', maxChars)?.text || '' : bruto) : '';
   } catch (err) {
     texto = '';
     statusHttp = null;
@@ -1751,12 +1824,12 @@ ipcMain.handle('fetch-url', async (event, url, maxChars = 2 * 1024 * 1024) => {
   if (texto.trim().length < FETCH_MIN_TEXTO_UTIL) {
     const html = await renderizaHtml(url);
     if (html) {
-      const rend = htmlToText(html);
+      const rend = articleText(html, url, '', maxChars)?.text || '';
       if (rend.trim().length > texto.trim().length) { texto = rend; viaBrowser = true; }
     }
   }
 
-  if (!texto.trim()) {
+  if (!texto.trim() || researchGate(url, '', texto)) {
     return { success: false, url, status: statusHttp, error: erroHttp || 'The page returned no readable text.' };
   }
   return {

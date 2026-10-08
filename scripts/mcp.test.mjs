@@ -71,3 +71,62 @@ test('resultado: texto como está, binário descrito, estrutura como JSON', () =
     'conteúdo\n[resource link: file:///y — y]');
   assert.equal(textoDoResultado({ content: [], structuredContent: { ok: 1 } }), '{"ok":1}');
 });
+
+test('Streamable HTTP entrega SSE fragmentado sem esperar o servidor fechar a conexão', async t => {
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', c => raw += c);
+    req.on('end', async () => {
+      if (req.method !== 'POST') { res.statusCode = 204; return res.end(); }
+      const msg = JSON.parse(raw);
+      if (msg.id == null) { res.statusCode = 202; return res.end(); }
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.flushHeaders();
+      res.write('data: {"jsonrpc":"2.0","id":999,"result":{"wrong":true}}\r\n\r\n');
+      res.write(': heartbeat\r\ndata: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n');
+      if (msg.params?.name === 'sem-resposta') return res.end();
+      if (msg.params?.name === 'mudo') return;
+      const result = msg.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} }
+        : msg.method === 'tools/list' ? { tools: [{ name: 'eco' }] }
+        : { content: [{ type: 'text', text: 'ação 🦆: ' + msg.params.arguments.x }] };
+      const response = msg.params?.name === 'falhar'
+        ? { jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: 'Falha em SSE' } }
+        : { jsonrpc: '2.0', id: msg.id, result };
+      const json = JSON.stringify(response).replace(',"id":', ',\r\ndata: "id":');
+      const payload = Buffer.from(`event: message\r\ndata: ${json}\r\n\r\n`);
+      const emoji = payload.indexOf(Buffer.from('🦆'));
+      const limites = [0, ...(emoji >= 0 ? [emoji + 1, emoji + 3] : []), payload.length - 3, payload.length - 1, payload.length];
+      for (let i = 1; i < limites.length; i++) {
+        res.write(payload.subarray(limites[i - 1], limites[i]));
+        await new Promise(r => setImmediate(r));
+      }
+      // O resultado chegou; o stream fica aberto de propósito para reproduzir o defeito.
+    });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const s = new McpServidor('persistente', { url: `http://127.0.0.1:${server.address().port}/mcp`, timeout: 1200 }, '1', matar);
+  t.after(() => { s.fechar(); server.closeAllConnections(); server.close(); });
+  await s.conectar();
+  assert.equal(s.estado, 'ok', s.erro);
+  assert.deepEqual(s.ferramentas.map(f => f.name), ['eco']);
+  assert.equal(textoDoResultado(await s.chamar('eco', { x: 'olá' })), 'ação 🦆: olá');
+  await assert.rejects(s.chamar('falhar', {}), /Falha em SSE/);
+  await assert.rejects(s.chamar('sem-resposta', {}), /no response/);
+  await assert.rejects(s.chamar('mudo', {}), /abort|timeout|timed out/i);
+});
+
+test('Streamable HTTP recusa uma resposta JSON que pertence a outra chamada', async t => {
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 999, result: {} }));
+    });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const s = new McpServidor('id-incorreto', { url: `http://127.0.0.1:${server.address().port}/mcp` }, '1', matar);
+  t.after(() => { s.fechar(); server.closeAllConnections(); server.close(); });
+  await s.conectar();
+  assert.equal(s.estado, 'erro');
+  assert.match(s.erro, /no response/);
+});

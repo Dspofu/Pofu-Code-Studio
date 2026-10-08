@@ -45,10 +45,32 @@ test('argumentos em outra ordem são a mesma chamada; campos voláteis não cont
   assert.notEqual(assinaturaDoResultado('a'), assinaturaDoResultado('b'));
 });
 
+test('PID e ID do resultado identificam a chamada e não podem ser descartados', () => {
+  const g = new LoopGuard();
+  for (const [nome, campo, antes, depois] of [
+    ['read_process_output', 'pid', 100, 200],
+    ['wait_for_process', 'pid', 100, 200],
+    ['read_tool_result', 'result_id', 'result-1', 'result-2']
+  ]) {
+    const primeira = chaveDaChamada(nome, { [campo]: antes });
+    const outra = chaveDaChamada(nome, { [campo]: depois });
+    g.registra(primeira, 'mesma saída', false);
+    g.registra(primeira, 'mesma saída', false);
+    assert.equal(g.bloqueia(primeira), 2);
+    assert.notEqual(primeira, outra);
+    assert.equal(g.bloqueia(outra), 0);
+  }
+  assert.notEqual(chaveDaChamada('mcp__api__consulta', { filtros: { status: 'ok', pid: 1 } }),
+    chaveDaChamada('mcp__api__consulta', { filtros: { status: 'ok', pid: 2 } }));
+});
+
 test('o que tem efeito colateral', () => {
   assert.equal(temEfeito('read_file', {}), false);
   assert.equal(temEfeito('edit_file', {}), true);
   assert.equal(temEfeito('http_request', { method: 'get' }), false);
   assert.equal(temEfeito('http_request', { method: 'POST' }), true);
   assert.equal(temEfeito('capture_page', { script: 'x.click()' }), true);
+  assert.equal(temEfeito('computer_action', { action: 'click' }), true);
+  assert.equal(temEfeito('capture_screen', {}), false);
+  assert.equal(temEfeito('view_image', { filename: 'a.png' }), false);
 });

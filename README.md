@@ -93,6 +93,8 @@ O nível de raciocínio usa as capacidades anunciadas pelo servidor. Quando elas
 
 ## Consumo ao lado do contexto
 
+Contexto e cota aparecem como anéis discretos abaixo da caixa de mensagem, ao lado do modelo, com percentual e valores; clique na cota para ver o consumo. Sem relatório da API, a cota aparece como não informada.
+
 Clique na **cota no cabeçalho**, ao lado do uso de contexto, ou digite `/consumo`, `/usage` ou `/cost`. O resumo segue o provedor ativo, sem exigir outro endereço de API ou uma aba de consumo nas configurações.
 
 ![Resumo atual de consumo, com saldo e tokens sintéticos de demonstração](docs/img/consumo-desktop.png)
@@ -103,13 +105,19 @@ Quando não há relatório remoto acessível, fica disponível o **registro loca
 
 [Veja os relatórios, as credenciais aceitas e os limites de cada integração](docs/consumo-remoto.md).
 
+![Medidores e conexão remota ativa no desktop, com dados de teste](docs/img/studio-conexao.png)
+
+Falhas transitórias aguardam **10 segundos** antes da próxima tentativa, com contagem regressiva e botão para cancelar. Erros mostram orientação e detalhes técnicos recolhidos. Pedidos enviados no encerramento do turno, como “continue”, seguem pela fila automaticamente.
+
 ## Controle remoto pelo site
 
 Continue a conversa pela área **Code** do site, inclusive no celular. O Studio permanece aberto no computador, onde o projeto e as ferramentas continuam executando.
 
 1. No site, entre na sua conta e abra **Code → Conectar computador**. O código aparece automaticamente.
-2. No desktop, abra **Configurações → Controle remoto** e informe a origem HTTPS do site e o código.
+2. Na lateral do desktop, clique em **Controle remoto → Ligar** e informe a origem HTTPS do site e o código.
 3. Conecte e mantenha o Studio aberto. O código é de uso único e vence em cinco minutos.
+
+A lateral tem um único botão **Ligar/Desligar**, com ponto verde e “Conectado” quando a ponte está ativa. Sem pareamento, Ligar abre a configuração. Em falha, mostra o tempo até reconectar. Cota e contexto seguem o visual da página Code, com anéis discretos e percentuais.
 
 **O pareamento conecta uma instalação do Studio à sua conta, não uma API.** Um computador pode ter vários perfis de provedor e usar a mesma conexão remota. Outro computador precisa de seu próprio pareamento.
 
@@ -156,9 +164,22 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `list_processes` / `stop_process` | Lista ou encerra processos acompanhados pelo Studio. |
 | `http_request` | Consulta APIs com status, cabeçalhos e corpo separados. |
 | `capture_page` | Renderiza uma página, captura a imagem e informa erros de console/rede. |
+| `view_image` | Abre imagens do projeto e envia os pixels ao modelo com visão. |
+| `capture_screen` | Captura um monitor real e informa as dimensões para interação. |
+| `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
 | `web_search` / `fetch_url` | Pesquisa na web e extrai o conteúdo de páginas. |
 | `ask_user` | Pede uma escolha ou esclarecimento e aguarda sua resposta. |
 | `mcp__servidor__ferramenta` | Executa ferramentas dos servidores MCP configurados. |
+
+### Imagens e controle do computador
+
+O envio de imagens reconhece tanto `capabilities` quanto as modalidades de entrada anunciadas pelo endpoint, incluindo `architecture.input_modalities` do llama.cpp. `view_image` abre imagens dentro do projeto e guarda uma cópia da versão observada; os pixels seguem pelo mesmo fluxo dos anexos e prints de páginas.
+
+Para interagir com programas do PC, ative **Configurações → Ajustes → Ferramentas → Controle do computador**, com **Enviar prints para o modelo** ligado e um modelo que anuncie visão. A opção começa desligada. `capture_screen` informa os monitores e um `screenshot_id`; o agente usa as coordenadas da imagem para clicar, mover o ponteiro, rolar, digitar texto Unicode ou acionar atalhos. Mouse e teclado estão implementados para **Windows**; a captura depende das permissões de tela do sistema.
+
+Cada captura autoriza uma ação durante dois minutos. Depois, a ferramenta devolve outra imagem para conferir o resultado. No modo **Manual**, ações de mouse e teclado pedem aprovação; no **Auto**, executam diretamente. Use **Parar** ou **Ctrl+Alt+Esc** para interromper uma ação pendente. O controle do computador alcança programas fora da pasta do projeto.
+
+![Configuração do controle do computador](docs/img/studio-computer-tools.png)
 
 ### MCP, instruções e skills
 
@@ -186,7 +207,7 @@ Arquivos e resultados grandes usam leitura por trecho e referências recuperáve
 
 O agente consulta a estrutura de arquivos de código grandes antes de ler tudo, evita releituras sem mudanças e interrompe chamadas repetidas com o mesmo resultado. Busca, listagem e saída de terminal usam formatos compactos. As medições dependem do projeto, do modelo e do servidor: em uma sessão documentada, o teto de 64 mil tokens reduziu o uso de prompt em 19%; isso não é uma previsão de economia para qualquer tarefa.
 
-No modo **Manual**, comandos, exclusões, requisições HTTP com alteração e ferramentas MCP que não declaram somente leitura pedem aprovação. Ferramentas de arquivo verificam os caminhos do projeto, e sobrescrever um arquivo exige leitura prévia sem mudança posterior no disco. Terminal e servidores MCP executam com as permissões do sistema; a pasta do projeto não é um sandbox para esses processos.
+No modo **Manual**, comandos, exclusões, ações no computador, requisições HTTP com alteração e ferramentas MCP que não declaram somente leitura pedem aprovação. Ferramentas de arquivo verificam os caminhos do projeto, e sobrescrever um arquivo exige leitura prévia sem mudança posterior no disco. Terminal e servidores MCP executam com as permissões do sistema; a pasta do projeto não é um sandbox para esses processos.
 
 Histórico e configurações ficam em `app-store.json`, no diretório de dados do Electron. Consumo local fica em `consumo.json`; prints e pontos de restauração ficam em `screenshots/` e `instantaneos/`. Bibliotecas da interface são incluídas em `vendor/`, sem depender de CDN; chamadas à IA e serviços externos dependem da conexão configurada.
 
@@ -200,6 +221,7 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run typecheck` | Verifica os tipos sem emitir arquivos. |
 | `npm test` | Executa os testes de unidade, incluindo consumo e controle remoto. |
 | `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
+| `npm run test:reconnect` | Verifica espera real de 10 segundos, cancelamento, medidores, status remoto e “continue” durante o salvamento. |
 | `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |
 | `npm run test:startup` | Verifica os avisos de atualização em diferentes cenários. |
 | `npm run dist:win` | Gera o instalador Windows. |

@@ -91,6 +91,7 @@ interface Settings {
   execMode: ExecMode;
   safetyInteractions: boolean;
   visionFeedback: boolean;
+  computerUse: boolean;
   /** Esconde a janela de console que o Windows abriria a cada execute_command. */
   hideCommandConsole: boolean;
   /** Instruções escritas pelo usuário, somadas ao prompt de sistema (ou no lugar dele). */
@@ -290,6 +291,11 @@ interface ElectronAPI {
   getDiff(snapshotId: string): Promise<any>;
   httpRequest(url: string, opts?: any): Promise<any>;
   capturePage(url: string, opts?: any): Promise<any>;
+  captureScreen(opts?: { display_id?: string }): Promise<any>;
+  computerAction(args: { action: 'click' | 'double_click' | 'move' | 'scroll' | 'key' | 'type'; screenshot_id: string; x?: number; y?: number; button?: 'left' | 'right' | 'middle'; direction?: 'up' | 'down' | 'left' | 'right'; amount?: number; keys?: string[]; text?: string }): Promise<any>;
+  cancelComputer(): Promise<any>;
+  onComputerStopped(fn: () => void): () => void;
+  viewImage(filePath: string, opts: { workspace: string }): Promise<any>;
   readImage(filePath: string): Promise<any>;
   saveAttachmentImage(dataUrl: string, nome: string): Promise<any>;
   executeCommand(command: string, cwd: string, opts?: any): Promise<any>;

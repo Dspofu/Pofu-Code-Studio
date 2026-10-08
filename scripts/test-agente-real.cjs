@@ -3,7 +3,7 @@
 // test:api — só roda com POFU_TEST_API_URL e POFU_TEST_API_KEY no ambiente, e nunca grava
 // a chave em lugar nenhum. Perfil e workspace são temporários.
 // Uso: npm run build && npx electron scripts/test-agente-real.cjs  (POFU_TEST_MODEL opcional)
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
@@ -16,6 +16,11 @@ const profile = mkdtempSync(join(tmpdir(), 'pofu-agente-real-'));
 const workspace = join(profile, 'projeto');
 mkdirSync(join(workspace, 'src'), { recursive: true });
 app.setPath('userData', profile);
+Notification.prototype.show = () => {};
+app.on('browser-window-created', (_, win) => win.hide());
+const originalFetch = global.fetch;
+global.fetch = (url, ...args) => String(url).startsWith('https://api.github.com/repos/')
+  ? Promise.resolve(new Response('{}', { status: 404 })) : originalFetch(url, ...args);
 
 // Arquivo grande o bastante para ler inteiro ser o caminho caro: 150 funções parecidas e
 // uma só com a fórmula que o cenário pergunta.
@@ -56,19 +61,28 @@ const cenarios = [
 async function main() {
   const models = await (await fetch(endpoint.replace(/\/$/, '') + '/models', { headers: { Authorization: `Bearer ${key}` } })).json();
   const model = process.env.POFU_TEST_MODEL || models.data?.[0]?.id;
-  writeFileSync(join(profile, 'app-store.json'), JSON.stringify({
+  let memoryStore = {
     settings: { apiUrl: endpoint, apiKey: key, model, execMode: 'auto', thinkLevel: 'padrao', maxTokens: 8192,
       mcpConfig: JSON.stringify({ mcpServers: { fake: { command: 'node', args: [resolve('scripts/fixtures/mcp-fake.mjs')] } } }) },
     chats: { real: { id: 'real', name: 'Teste real', path: workspace, messages: [] } }, activeChatId: 'real'
-  }));
+  };
+  // O renderer persiste a cada turno; mantenha também esses salvamentos só na memória.
+  const registerHandler = ipcMain.handle.bind(ipcMain);
+  ipcMain.handle = (channel, handler) => registerHandler(channel,
+    channel === 'load-store' ? async () => memoryStore :
+    channel === 'save-store' ? async (_, data) => { memoryStore = data; return { success: true }; } : handler);
   await import(pathToFileURL(resolve('out/main.js')));
+  ipcMain.handle = registerHandler;
   await app.whenReady();
   const win = BrowserWindow.getAllWindows()[0];
   win.webContents.setBackgroundThrottling(false);
   win.hide();
+  if (win.webContents.isLoading()) await new Promise(r => win.webContents.once('did-finish-load', r));
   const js = (code) => win.webContents.executeJavaScript(code);
   await js(`new Promise((ok, falha) => { let n = 0; const poll = () => import('./out/renderer.js').then(m => m.activeTools().some(t => t.function.name.startsWith('mcp__')) ? ok(true) : ++n > 600 ? falha(new Error('MCP não conectou')) : setTimeout(poll, 100)); poll(); })`);
 
+  const custoFixo = await js(`Promise.all([import('./out/renderer.js'), import('./out/constants.js')]).then(([m, c]) => ({ferramentas: m.activeTools().length, ferramentasChars: JSON.stringify(m.activeTools()).length, promptChars: c.system_prompt(m.activeChat().path, false, false).length}))`);
+  console.log('Custo fixo: ' + JSON.stringify(custoFixo));
   const relatorio = [];
   for (const c of cenarios) {
     await js(`import('./out/renderer.js').then(m => { const chat = m.activeChat(); chat.messages = []; chat.podaManualAte = 0; chat.podaAutoAte = 0; })`);
@@ -77,7 +91,7 @@ async function main() {
     // Terminou quando a última mensagem é do assistente, sem chamadas, e o input destravou.
     const msgs = await js(`new Promise((ok, falha) => { const t0 = Date.now(); const poll = () => import('./out/renderer.js').then(m => {
       const ms = m.activeChat().messages, u = ms[ms.length - 1];
-      if (ms.length > 1 && u.role === 'assistant' && !u.tool_calls && !document.getElementById('user-input').disabled) ok(JSON.parse(JSON.stringify(ms)));
+      if (ms.length > 1 && u.role === 'assistant' && !u.tool_calls && !document.body.classList.contains('agent-running')) ok(JSON.parse(JSON.stringify(ms)));
       else if (Date.now() - t0 > 600000) falha(new Error('timeout')); else setTimeout(poll, 250); }); poll(); })`);
     const chamadas = msgs.flatMap(m => (m.tool_calls || []).map(tc => ({ nome: tc.function.name, args: tc.function.arguments })));
     const final = msgs[msgs.length - 1];
@@ -93,7 +107,7 @@ async function main() {
       (r.stats ? ` · prompt ${r.stats.prompt} tok${r.stats.cachePct != null ? `, cache ${r.stats.cachePct}%` : ''}${r.stats.tps ? `, ${r.stats.tps} tok/s` : ''}` : ''));
     console.log(`     resposta: ${r.resposta.replace(/\n/g, ' ')}`);
   }
-  if (process.env.POFU_TEST_REPORT) writeFileSync(process.env.POFU_TEST_REPORT, JSON.stringify({ model, relatorio }, null, 2));
+  if (process.env.POFU_TEST_REPORT) writeFileSync(process.env.POFU_TEST_REPORT, JSON.stringify({ model, custoFixo, relatorio }, null, 2));
   return relatorio.every(r => r.passou);
 }
 main().then(ok => app.exit(ok ? 0 : 1)).catch(err => { console.error(err); app.exit(1); });
