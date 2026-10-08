@@ -249,6 +249,9 @@ input[type="range"] { accent-color: var(--accent); }
 #consumption-period { width: auto; max-width: 160px; font-size: 12px; padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; }
 #consumption-body .info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 #consumption-body .info-card { min-width: 0; padding: 10px 12px; }
+#consumption-status { margin: 6px 0 14px; }
+#consumption-cycle { margin-top: 12px; }
+#consumption-remote-note { margin-top: 10px; }
 .consumption-local { display: flex; gap: 24px; padding: 16px 0 6px; border-top: 1px solid var(--border); margin-top: 16px; }
 .consumption-local div { flex: 1; min-width: 0; }
 .consumption-local strong { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
