@@ -158,6 +158,7 @@ async function main() {
       await site(`document.getElementById('think-slider').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
       assert.equal(await site(`document.getElementById('think-menu').hidden`), true);
       if (width === 390) assert.ok(await site(`document.getElementById('send').getBoundingClientRect().bottom<=innerHeight+1`), 'Compositor precisa aparecer na primeira tela do celular');
+      if (width === 1380) await until(() => site(`!document.getElementById('feedback').textContent`), 'aviso temporário some antes da captura');
       writeFileSync(join(capture, name + '.png'), (await web.webContents.capturePage()).toPNG()); web.hide();
       await site(`document.getElementById('controls-open').click()`);
       assert.equal(await site(`document.getElementById('controls-modal').hidden`), false);
