@@ -7,7 +7,7 @@ Um agente de código no desktop, com a identidade Pofu e o modelo que você esco
 
 O Studio conecta-se a **APIs compatíveis com OpenAI**, incluindo servidores locais como llama.cpp, Ollama e vLLM. O modelo precisa oferecer chamadas de ferramenta (*function calling*); recursos visuais também exigem um modelo multimodal.
 
-[Baixar instaladores](https://github.com/Dspofu/Pofu-Code-Studio/releases/latest) · [Novidades da 1.6.0](docs/releases/v1.6.0.md) · [Guia de consumo e controle remoto](docs/consumo-remoto.md)
+[Baixar instaladores](https://github.com/Dspofu/Pofu-Code-Studio/releases/latest) · [Novidades da 1.7.0](docs/releases/v1.7.0.md) · [Guia de consumo e controle remoto](docs/consumo-remoto.md)
 
 ![Tela atual do Pofu Code Studio, com projeto e modelo de demonstração](docs/img/studio-desktop.png)
 
@@ -41,7 +41,7 @@ Nos comandos Linux, substitua `NOME_DO_ARQUIVO` pelo nome do pacote baixado. O p
 
 ### Executar a partir do código
 
-Use Node.js 22 ou superior e npm. O CI usa Node.js 22; a versão 1.6.0 também foi validada localmente com Node.js 24.
+Use Node.js 22 ou superior e npm. O CI usa Node.js 22; a versão 1.7.0 também foi validada localmente com Node.js 24.
 
 ```bash
 git clone https://github.com/Dspofu/Pofu-Code-Studio.git
@@ -167,7 +167,7 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `view_image` | Abre imagens do projeto e envia os pixels ao modelo com visão. |
 | `capture_screen` | Captura um monitor real e informa as dimensões para interação. |
 | `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
-| `web_search` / `fetch_url` | Pesquisa na web e extrai o conteúdo de páginas. |
+| `web_search` / `fetch_url` | Pesquisa na web, lê as páginas encontradas e extrai o conteúdo. |
 | `ask_user` | Pede uma escolha ou esclarecimento e aguarda sua resposta. |
 | `mcp__servidor__ferramenta` | Executa ferramentas dos servidores MCP configurados. |
 
@@ -230,7 +230,7 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 
 `npm run test:api` e `npm run test:agent` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
 
-O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`. A versão 1.6.0 mantém a pesquisa estável anterior; o protótipo de pesquisa web em revisão não integra esse release.
+O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`. A partir da 1.7.0, a pesquisa web lê o conteúdo das páginas encontradas e mantém o buscador anterior como reserva.
 
 As imagens deste README foram capturadas no aplicativo e no site reais, com contas, projetos e respostas sintéticos em ambientes isolados.
 
