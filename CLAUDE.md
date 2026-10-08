@@ -33,6 +33,7 @@ são da INTERFACE e continuam em pt-BR.
 | [src/outline.ts](src/outline.ts) | `list_definitions`: definições por linguagem (regex, sem tree-sitter) com a linha de cada uma. |
 | [src/loop-guard.ts](src/loop-guard.ts) | Trava de looping: bloqueia a chamada que já voltou com o mesmo resultado duas vezes seguidas. |
 | [src/mcp.ts](src/mcp.ts) | Cliente MCP no main: transportes stdio e Streamable HTTP, `initialize`/`tools/list`/`tools/call`. |
+| [src/updater.ts](src/updater.ts) | Atualização pelo app: escolhe o instalador do release, baixa conferindo o sha256 e instala (NSIS no Windows, `pkexec` no Linux). |
 | [src/atalho-windows.ts](src/atalho-windows.ts) | Repara, ao abrir, o ícone do atalho do Menu Iniciar que ficou apontando para um `.exe` que não existe (pasta movida). |
 | [src/types.d.ts](src/types.d.ts) | Tipos GLOBAIS (o arquivo não exporta nada de propósito): `Settings`, `Chat`, `ChatMessage`, `ElectronAPI`, `ProcEntry`. Main e renderer os enxergam sem importar. |
 | [src/websearch.js](src/websearch.js) | **Arquivo gerado** — não edite, e não converta para `.ts`. Saída do `tsc` sobre o módulo portátil `…/chat/src/lib/websearch.ts`, mantido em OUTRO repositório. Os tipos dele estão em [src/websearch.d.ts](src/websearch.d.ts). |
@@ -212,6 +213,16 @@ que a ausência dele.
   recentes voltam, porque cada imagem custa milhares de tokens de visão.
 - **HTTP 500 do llama.cpp**: tool call malformado é transitório; existem `MAX_REQUEST_RETRIES`
   e limpeza do histórico. Preserve esse tratamento ao mexer no loop de request.
+- **Resposta vazia é tentada de novo**: 200 com `finish_reason: stop` e nada além de
+  raciocínio (o Qwen fecha depois do `<think>` ou escreve o tool_call DENTRO dele, mais
+  comum com raciocínio alto e contexto cheio de saída de processo) era tratado como fim do
+  turno, e o cartão "O modelo não enviou uma resposta" aparecia no meio de uma tarefa longa.
+  Agora `respostaVazia` repete até `MAX_REQUEST_RETRIES` sem a espera de 10 s (o servidor
+  está de pé, e o cache de prefixo deixa o reenvio barato); o cartão só sai depois disso.
+  Stream que FECHA sem `finish_reason`, sem `[DONE]` e sem nada (proxy/túnel derrubando a
+  conexão enquanto o prompt longo processa) lança `Stream interrompido` e entra na espera de
+  reconexão. Só vazio vira erro: servidor que omita os dois marcadores mas mande texto segue
+  funcionando.
 - **Compactação de contexto** (`compactToolResults`): sem ela o histórico cresce até estourar
   o `n_ctx` e a sessão morre. Duas regras que não podem cair: a mensagem `tool` nunca é
   REMOVIDA (um `tool_call` órfão faz o servidor recusar a requisição inteira, só o `content`
@@ -491,6 +502,15 @@ que a ausência dele.
 - **`promptMode: 'replace'` só vale com texto**: substituir o prompt de fábrica por vazio
   deixaria o modelo sem instrução nenhuma e ele para de chamar ferramenta — por isso o
   `buildSystem` só troca quando o campo tem conteúdo.
+- **Atualização sem `electron-updater`**: o updater do electron-builder lê o `latest.yml`/
+  `latest-linux.yml` do release, e o workflow monta o `.deb` e o `.rpm` em jobs SEPARADOS —
+  cada um geraria o próprio `latest-linux.yml` e o segundo sobrescreveria o primeiro. Por isso
+  o `src/updater.ts` usa o que o GitHub já publica: o asset do formato instalado e o `digest`
+  (`sha256:…`) de cada arquivo. Sem `digest` a instalação automática é RECUSADA — instalar às
+  cegas com `pkexec` não é aceitável. O formato vem de perguntar ao `dpkg -S`/`rpm -qf` quem é
+  dono do executável: o Ubuntu pode ter o comando `rpm` instalado (o próprio CI instala). No
+  Windows, `--updated /S --force-run` é a mesma linha do electron-updater: o instalador
+  reaproveita pasta e modo da instalação atual e reabre o app.
 - **Servidor local**: a porta e o modelo do llama.cpp variam — confirme com o usuário antes de
   assumir `http://localhost:8080/v1`.
 

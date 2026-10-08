@@ -11,7 +11,7 @@ Notification.prototype.show = () => {};
 app.on('browser-window-created', (_, win) => win.hide());
 const originalFetch = global.fetch;
 global.fetch = (url, ...args) => String(url).startsWith('https://api.github.com/repos/') ? Promise.resolve(Response.json({}, { status: 404 })) : originalFetch(url, ...args);
-let mode = 'retry', chatTimes = [], bodies = [], syncTimes = [], blockedSave = false, releaseSave, saveEntered;
+let mode = 'retry', falhaUnica = false, chatTimes = [], bodies = [], syncTimes = [], blockedSave = false, releaseSave, saveEntered;
 // Retém o último salvamento para reproduzir um envio na janela de encerramento do turno.
 const originalHandle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => originalHandle(channel, channel === 'save-store' ? async (...args) => {
@@ -31,8 +31,11 @@ const server = createServer(async (req, res) => {
   bodies.push(JSON.parse(raw)); chatTimes.push(Date.now());
   if (mode === 'auth' || mode === 'cancel' || mode === 'retry' && chatTimes.length === 1) { res.statusCode = mode === 'auth' ? 401 : 503; return res.end(JSON.stringify({ error: { message: 'Synthetic failure' } })); }
   res.setHeader('Content-Type', 'text/event-stream');
-  const text = mode === 'empty' ? '' : 'RESPOSTA ' + bodies.at(-1).messages.at(-1).content;
-  res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 8192, completion_tokens: 20, total_tokens: 8212 } }) + '\n\ndata: [DONE]\n\n');
+  const unica = falhaUnica; falhaUnica = false;
+  if (mode === 'cut' && unica) return res.end();
+  const vazio = mode === 'empty' || mode === 'reasoning' || mode === 'empty-once' && unica;
+  const delta = mode === 'reasoning' ? { reasoning_content: 'Vou pensar e parar.' } : { content: vazio ? '' : 'RESPOSTA ' + bodies.at(-1).messages.at(-1).content };
+  res.end('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: 'stop' }], usage: { prompt_tokens: 8192, completion_tokens: 20, total_tokens: 8212 } }) + '\n\ndata: [DONE]\n\n');
 });
 async function main() {
   await new Promise(ok => server.listen(0, '127.0.0.1', ok));
@@ -73,8 +76,25 @@ async function main() {
     assert.equal(bodies.length, before + 2); assert.equal(bodies.at(-1).messages.at(-1).content, 'continue');
     assert.equal(bodies.at(-1).messages.filter(m => m.role === 'user' && m.content === 'continue').length, 1);
   });
-  await check('resposta vazia mostra orientação em vez de sumir', async () => {
-    mode = 'empty'; await send('VAZIO'); await idle(); await until(`document.getElementById('chat-box').textContent.includes('O modelo não enviou uma resposta')`);
+  const cartoesVazios = () => js(`[...document.querySelectorAll('.error-card')].filter(c=>c.textContent.includes('O modelo não enviou uma resposta')).length`);
+  await check('resposta vazia uma vez é repetida sozinha, sem cartão de erro', async () => {
+    mode = 'empty-once'; falhaUnica = true; const before = bodies.length;
+    await send('VAZIO1'); await until(`document.getElementById('chat-box').textContent.includes('RESPOSTA VAZIO1')`); await idle();
+    assert.equal(bodies.length, before + 2); assert.equal(await cartoesVazios(), 0);
+  });
+  await check('stream cortado sem resposta conta como queda e tenta de novo', async () => {
+    mode = 'cut'; falhaUnica = true; const before = bodies.length;
+    await send('CORTE'); await until(`document.querySelector('.retry-card')?.textContent.includes('A conexão caiu antes da resposta')`);
+    await until(`document.getElementById('chat-box').textContent.includes('RESPOSTA CORTE')`, 20000); await idle();
+    assert.equal(bodies.length, before + 2); assert.equal(await cartoesVazios(), 0);
+  });
+  await check('resposta vazia mostra orientação depois de esgotar as tentativas', async () => {
+    mode = 'empty'; const before = bodies.length; await send('VAZIO'); await idle(); await until(`document.getElementById('chat-box').textContent.includes('O modelo não enviou uma resposta')`);
+    assert.equal(bodies.length, before + 3);
+  });
+  await check('modelo que só raciocina recebe orientação específica', async () => {
+    mode = 'reasoning'; await send('PENSA'); await idle(); await until(`document.getElementById('chat-box').textContent.includes('só raciocinou e parou')`);
+    mode = 'success';
   });
   await check('medidores mostram contexto real e atalhos abrem a aba remota', async () => {
     assert.equal(await js(`document.querySelectorAll('.sidebar-remote button').length`), 1);
@@ -109,4 +129,4 @@ async function main() {
   console.log('RESULT ' + passed + ' verificações de reconexão, fila e interface passaram.');
 }
 main().then(() => { server.closeAllConnections(); server.close(); app.exit(0); }, err => { console.error(err); server.closeAllConnections(); server.close(); app.exit(1); });
-setTimeout(() => { console.error('Tempo máximo do ensaio excedido.'); app.exit(1); }, 90000);
+setTimeout(() => { console.error('Tempo máximo do ensaio excedido.'); app.exit(1); }, 150000);

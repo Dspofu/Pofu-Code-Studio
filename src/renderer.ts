@@ -3476,6 +3476,17 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
       ]
     };
   }
+  if (/^Stream interrompido/.test(msg)) {
+    return {
+      transitorio: true,
+      titulo: 'A conexão caiu antes da resposta',
+      detalhe: `O stream de ${apiUrl} fechou sem enviar nada.`,
+      passos: [
+        'Costuma ser um proxy ou túnel encerrando a conexão enquanto o servidor processa um prompt longo.',
+        'Se repetir, veja o terminal do servidor do modelo.'
+      ]
+    };
+  }
   if (status >= 500) {
     return {
       transitorio: true, // geração estocástica: repetir costuma resolver
@@ -3493,6 +3504,11 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
     detalhe: msg.slice(0, 250),
     passos: ['Confira se o servidor do modelo continua rodando.']
   };
+}
+
+function respostaVazia(result) {
+  const m = result && result.message;
+  return !!m && !result.aborted && !result.apiError && result.finishReason !== 'length' && !(m.content && m.content.trim()) && !(m.tool_calls && m.tool_calls.length);
 }
 
 // Chamada em STREAMING (SSE): dispara os callbacks conforme o texto chega e
@@ -3518,7 +3534,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   let buffer = '';
   let content = '', reasoning = '';
   const toolAcc = [];
-  let usage = null, timings = null, finishReason = null, aborted = false, apiError = null;
+  let usage = null, timings = null, finishReason = null, aborted = false, apiError = null, viuDone = false;
   const startedAt = performance.now();
   let firstTokenAt = 0; // tempo até o primeiro token (TTFT)
 
@@ -3533,7 +3549,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
         const line = raw.trim();
         if (!line || !line.startsWith('data:')) continue;
         const data = line.slice(5).trim();
-        if (data === '[DONE]') continue;
+        if (data === '[DONE]') { viuDone = true; continue; }
         let json;
         try { json = JSON.parse(data); } catch (e) { continue; }
         if (json.error) { apiError = json.error.message || JSON.stringify(json.error); continue; }
@@ -3568,6 +3584,11 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   }
 
   const tool_calls = toolAcc.filter(Boolean);
+  // Proxy/túnel que derruba a conexão ociosa (prompt longo processando) ou servidor que
+  // reinicia o slot fecham o stream sem finish_reason nem [DONE]. Sem isto a queda chegava
+  // ao loop como "o modelo não respondeu nada" e o turno morria sem nova tentativa.
+  if (!aborted && !apiError && !finishReason && !viuDone && !content.trim() && !tool_calls.length)
+    throw new Error('Stream interrompido: a conexão fechou antes de qualquer resposta.');
   const endedAt = performance.now();
   const timing = {
     totalMs: endedAt - startedAt,
@@ -3848,6 +3869,15 @@ async function agentTurns(chat) {
           onContent, onReasoning, onToolCall
         });
         lastErr = null;
+        // Fim de turno sem texto nem ferramenta é geração estocástica (o Qwen fecha depois
+        // do <think>, ou escreve o tool_call DENTRO dele) e passa ao repetir. Sem espera: o
+        // servidor está de pé e o cache de prefixo deixa o reenvio barato.
+        if (respostaVazia(result) && attempt < MAX_REQUEST_RETRIES && !stopRequested) {
+          descartaParcial();
+          logSystem(`O modelo terminou sem texto nem ferramenta. Tentando de novo (${attempt}/${MAX_REQUEST_RETRIES - 1}).`);
+          showTyping();
+          continue;
+        }
         break;
       } catch (err) {
         lastErr = err;
@@ -3985,11 +4015,18 @@ async function agentTurns(chat) {
       break;
     }
 
-    if (!hasContent && !message.tool_calls?.length && !aborted) appendErrorCard({
-      titulo: 'O modelo não enviou uma resposta',
-      detalhe: result.finishReason === 'length' ? 'O orçamento de tokens terminou antes da resposta.' : 'A requisição terminou sem texto ou ferramentas.',
-      passos: [result.finishReason === 'length' ? 'Aumente o limite de tokens ou reduza o raciocínio.' : 'Tente novamente. Se repetir, confira o servidor do modelo.']
-    });
+    if (!hasContent && !message.tool_calls?.length && !aborted) {
+      const soPensou = !!(message.reasoning_content && message.reasoning_content.trim());
+      appendErrorCard({
+        titulo: 'O modelo não enviou uma resposta',
+        detalhe: result.finishReason === 'length' ? 'O orçamento de tokens terminou antes da resposta.'
+          : soPensou ? `O modelo só raciocinou e parou, sem texto nem ferramenta, em ${MAX_REQUEST_RETRIES} tentativas.`
+          : `A requisição terminou sem texto nem ferramentas, em ${MAX_REQUEST_RETRIES} tentativas.`,
+        passos: result.finishReason === 'length' ? ['Aumente o limite de tokens ou reduza o raciocínio.']
+          : soPensou ? ['Mande "continue" para ele seguir de onde parou.', 'Se repetir, baixe o nível de raciocínio no compositor.']
+          : ['Mande "continue" para tentar de novo. Se repetir, confira o servidor do modelo.']
+      });
+    }
 
     // Sem chamadas de ferramenta → o agente terminou
     if (!message.tool_calls || message.tool_calls.length === 0) {
@@ -5520,6 +5557,15 @@ function wireEvents() {
 
   // Verificação de atualização sob demanda
   el('btn-check-update').addEventListener('click', checkForUpdate);
+  el('btn-settings-update').addEventListener('click', abreModalAtualizacao);
+  el('btn-sidebar-update').addEventListener('click', abreModalAtualizacao);
+  el('btn-close-update').addEventListener('click', fechaModalAtualizacao);
+  el('btn-update-now').addEventListener('click', executaAtualizacao);
+  el('btn-update-later').addEventListener('click', () => { if (atualizando) void window.electronAPI.cancelUpdate(); else fechaModalAtualizacao(); });
+  window.electronAPI.onUpdateProgress(progressoAtualizacao);
+  window.electronAPI.onUpdateOpen(async () => { if (!atualizacao) await checkForUpdate(); abreModalAtualizacao(); });
+  // Quem deixa o app aberto por dias também precisa saber da versão nova.
+  setInterval(() => { if (!atualizando) void checkForUpdate(); }, 6 * 60 * 60 * 1000);
 
   // Atualiza o contador de processos periodicamente (badge no cabeçalho)
   setInterval(refreshProcesses, 3000);
@@ -5586,6 +5632,77 @@ async function checkForUpdate() {
       link.innerText = 'Abrir página do release';
     } else link.hidden = true;
   }
+  mostraAtualizacao(res.maior ? res : null);
+}
+
+let atualizacao: any = null, atualizando = false;
+function mostraAtualizacao(info) {
+  atualizacao = info;
+  el('sidebar-update-wrap').hidden = !info;
+  el('btn-settings-update').hidden = !info;
+  if (info) el('sidebar-update-version').textContent = `v${info.atual} → v${info.remota}`;
+}
+
+const MB = (n: number) => (n / 1048576).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+function dicaAtualizacao(info) {
+  const pacote = info.metodo === 'deb' ? '.deb' : '.rpm';
+  const base = info.metodo === 'nsis' ? 'O Studio fecha, instala a nova versão e abre de novo sozinho. As conversas ficam salvas.'
+    : info.metodo ? `O sistema vai pedir a senha de administrador para instalar o pacote ${pacote}. Depois o Studio reabre sozinho.`
+    : 'Esta instalação não se atualiza sozinha (versão de desenvolvimento ou formato sem suporte). Baixe o instalador na página do release.';
+  return document.body.classList.contains('agent-running') ? base + ' O agente está trabalhando: atualizar agora interrompe a tarefa.' : base;
+}
+
+function abreModalAtualizacao() {
+  if (!atualizacao) return;
+  const info = atualizacao;
+  el('update-from').textContent = `v${info.atual}`;
+  el('update-to').textContent = `v${info.remota}`;
+  renderMarkdownInto(el('update-notes'), info.notas || '');
+  el('update-hint').textContent = dicaAtualizacao(info);
+  el<HTMLAnchorElement>('update-release-link').href = info.releaseUrl;
+  if (!atualizando) {
+    el('update-progress').hidden = true;
+    el('update-error').hidden = true;
+    el('btn-update-now').textContent = info.metodo ? 'Atualizar agora' : 'Abrir página do release';
+    el<HTMLButtonElement>('btn-update-now').disabled = false;
+    el('btn-update-later').textContent = 'Depois';
+  }
+  el('update-modal').classList.add('active');
+}
+
+function fechaModalAtualizacao() {
+  if (!atualizando) el('update-modal').classList.remove('active');
+}
+
+function progressoAtualizacao(p) {
+  const box = el('update-progress'); box.hidden = false;
+  const pct = p.total ? Math.min(100, Math.round((p.recebidos || 0) / p.total * 100)) : null;
+  el('update-progress-label').textContent = p.fase === 'baixando' ? `Baixando ${MB(p.recebidos || 0)}${p.total ? ` de ${MB(p.total)}` : ''} MB` : p.fase === 'conferindo' ? 'Conferindo o instalador…' : 'Instalando… o Studio vai reiniciar';
+  el('update-progress-pct').textContent = p.fase === 'baixando' && pct !== null ? `${pct}%` : '';
+  el('update-progress-fill').style.width = `${p.fase === 'baixando' ? pct || 0 : 100}%`;
+}
+
+async function executaAtualizacao() {
+  if (!atualizacao || atualizando) return;
+  if (!atualizacao.metodo) { window.open(atualizacao.releaseUrl, '_blank'); return; }
+  atualizando = true;
+  el('update-error').hidden = true;
+  el<HTMLButtonElement>('btn-update-now').disabled = true;
+  el('btn-update-now').textContent = 'Atualizando…';
+  el('btn-update-later').textContent = 'Cancelar';
+  progressoAtualizacao({ fase: 'baixando', recebidos: 0, total: 0 });
+  try { await persist(); } catch { /* o disco já tem o último estado salvo */ }
+  let res;
+  try { res = await window.electronAPI.installUpdate(); }
+  catch (e) { res = { success: false, error: String(e?.message || e) }; }
+  if (res.success) return;
+  atualizando = false;
+  el('update-progress').hidden = true;
+  el<HTMLButtonElement>('btn-update-now').disabled = false;
+  el('btn-update-later').textContent = 'Depois';
+  if (res.manual) { atualizacao.metodo = null; el('update-hint').textContent = dicaAtualizacao(atualizacao); }
+  el('btn-update-now').textContent = atualizacao.metodo ? 'Tentar de novo' : 'Abrir página do release';
+  if (!res.cancelado) { el('update-error').textContent = res.error || 'A atualização falhou.'; el('update-error').hidden = false; }
 }
 
 // --------------------------------------------------------------------------

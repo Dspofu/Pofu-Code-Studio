@@ -28,6 +28,7 @@ import { ConsumptionStore } from './consumption-store.js';
 import { queryConsumption, type ConsumptionConnection, type ConsumptionPeriod } from './consumption.js';
 import { protectConsumptionKeys, restoreConsumptionKeys } from './consumption-vault.js';
 import { RemoteControl } from './remote-control.js';
+import { baixaInstalador, detectaMetodo, escolheAsset, iniciaInstaladorWindows, instalaPacoteLinux, type AssetRelease } from './updater.js';
 import { DesktopComputer } from './computer.js';
 import { windowsComputer } from './computer-windows.js';
 import { COMPUTER_IMAGE_MAX_SIDE } from './constants.js';
@@ -154,9 +155,13 @@ app.whenReady().then(() => {
     try {
       const notification = new Notification({
         title: packageJson.productName,
-        body: 'Nova atualização disponível: v' + result.remota + '. Clique para abrir o release.'
+        body: 'Nova atualização disponível: v' + result.remota + '. Clique para atualizar.'
       });
-      notification.on('click', () => { void shell.openExternal(result.releaseUrl).catch(() => {}); });
+      notification.on('click', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show(); mainWindow.focus(); mainWindow.webContents.send('update-open');
+      });
       notification.show();
     } catch { /* Sem serviço de notificações: a versão continua disponível nas configurações. */ }
   });
@@ -608,12 +613,47 @@ async function fetchLatestUpdate() {
     return {
       success: true, atual, remota, maior,
       releaseUrl: `https://github.com/${owner}/${repo}/releases/tag/${encodeURIComponent(rel.tag_name)}`,
-      nomeRelease: rel.name || rel.tag_name || ''
+      nomeRelease: rel.name || rel.tag_name || '',
+      notas: String(rel.body || '').slice(0, 20000),
+      assets: (Array.isArray(rel.assets) ? rel.assets : []).map(a => ({ name: String(a.name), url: String(a.browser_download_url), size: Number(a.size) || 0, digest: a.digest || undefined })),
+      metodo: await metodoAtualizacao()
     };
   } catch (e) {
     return { success: false, error: String(e.message || e) };
   }
 }
+
+let metodoCache: Promise<'nsis' | 'deb' | 'rpm' | null> | undefined;
+function metodoAtualizacao() {
+  return metodoCache ??= detectaMetodo({ isPackaged: app.isPackaged, execPath: process.execPath, productName: packageJson.productName });
+}
+
+let atualizacaoEmCurso: AbortController | null = null;
+ipcMain.handle('cancel-update', () => { atualizacaoEmCurso?.abort(); return { success: true }; });
+ipcMain.handle('install-update', async () => {
+  if (atualizacaoEmCurso) return { success: false, error: 'Uma atualização já está em andamento.' };
+  const info: any = await checkForUpdates();
+  if (!info.success || !info.maior) return { success: false, error: info.error || 'Nenhuma versão nova para instalar.' };
+  const metodo = await metodoAtualizacao();
+  const asset = metodo && escolheAsset(info.assets as AssetRelease[], metodo);
+  if (!metodo || !asset) return { success: false, manual: true, error: 'Este formato de instalação não se atualiza sozinho.' };
+  const controle = atualizacaoEmCurso = new AbortController();
+  const envia = (p) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-progress', p); };
+  try {
+    const arquivo = await baixaInstalador(asset, join(tmpdir(), 'pofu-code-studio-update'), controle.signal, envia);
+    envia({ fase: 'instalando' });
+    if (metodo === 'nsis') {
+      iniciaInstaladorWindows(arquivo);
+      setTimeout(() => app.quit(), 300);
+    } else {
+      await instalaPacoteLinux(arquivo, metodo);
+      setTimeout(() => { app.relaunch(); app.exit(0); }, 300);
+    }
+    return { success: true, metodo };
+  } catch (e) {
+    return { success: false, cancelado: controle.signal.aborted, error: controle.signal.aborted ? 'Download cancelado.' : String(e?.message || e) };
+  } finally { atualizacaoEmCurso = null; }
+});
 
 // Compara versões semânticas ponto a ponto (1.2.0 < 1.10.0 — comparação por texto
 // daria o resultado errado). Sem patch, o campo vira 0.

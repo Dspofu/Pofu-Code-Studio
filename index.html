@@ -2367,6 +2367,13 @@
       <div class="sidebar-section-label">Conversas do projeto</div>
       <div class="chat-list" id="chat-list-container"></div>
 
+      <section class="sidebar-update" id="sidebar-update-wrap" aria-label="Atualização" hidden>
+        <button id="btn-sidebar-update" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>
+          <span class="remote-button-copy"><strong>Atualização disponível</strong><span id="sidebar-update-version">—</span></span>
+          <span class="sidebar-update-action">Atualizar</span>
+        </button>
+      </section>
       <section class="sidebar-remote" aria-label="Controle remoto">
         <button id="btn-sidebar-remote-toggle" type="button" aria-pressed="false">
           <span class="remote-dot" id="remote-dot" aria-hidden="true"></span>
@@ -2564,6 +2571,7 @@
                       <a class="update-link" id="info-update-link" href="#" target="_blank" rel="noopener" hidden>Abrir página do release</a>
                     </div>
                   </div>
+                  <button class="btn-primary update-check" id="btn-settings-update" hidden>Atualizar</button>
                   <button class="btn-secondary update-check" id="btn-check-update">Verificar</button>
                 </div>
               </div>
@@ -2759,6 +2767,24 @@
       <div class="question-actions">
         <button id="question-skip" class="btn-secondary">Pular</button>
         <button id="question-send" class="btn-primary">Responder</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="update-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="update-title">
+    <div class="modal-content update-content">
+      <div class="modal-header"><h3 id="update-title">Atualização disponível</h3><button id="btn-close-update" type="button" class="btn-icon" aria-label="Fechar">×</button></div>
+      <div class="update-modal-body">
+        <div class="update-versions"><span id="update-from">—</span><span aria-hidden="true">→</span><strong id="update-to">—</strong></div>
+        <div id="update-notes" class="md-body update-notes"></div>
+        <p id="update-hint" class="cfg-hint"></p>
+        <div id="update-progress" class="credit-box" hidden><div class="credit-header"><span id="update-progress-label">Baixando…</span><span id="update-progress-pct"></span></div><div class="progress-bar-bg"><div id="update-progress-fill" class="progress-bar-fill" style="width:0%"></div></div></div>
+        <p id="update-error" class="update-error" role="alert" hidden></p>
+      </div>
+      <div class="modal-footer update-footer">
+        <a id="update-release-link" class="update-link" href="#" target="_blank" rel="noopener">Ver no GitHub</a>
+        <button id="btn-update-later" type="button" class="btn-secondary">Depois</button>
+        <button id="btn-update-now" type="button" class="btn-primary">Atualizar agora</button>
       </div>
     </div>
   </div>

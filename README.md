@@ -39,6 +39,17 @@ Abra a página de [releases](https://github.com/Dspofu/Pofu-Code-Studio/releases
 
 Nos comandos Linux, substitua `NOME_DO_ARQUIVO` pelo nome do pacote baixado. O pipeline publica esses três formatos; não há instalador macOS nesse fluxo.
 
+### Atualizar pelo app
+
+O Studio consulta o último release do GitHub ao abrir e a cada seis horas. Quando há versão nova, aparece **Atualização disponível** na lateral, uma notificação do sistema e o botão **Atualizar** em **Configurações → Visão geral**. Clique para ver as novidades e escolha **Atualizar agora**:
+
+- **Windows:** o Studio baixa o instalador, fecha, instala na mesma pasta e abre de novo.
+- **Ubuntu / Debian e Fedora:** o Studio baixa o `.deb` ou `.rpm` correspondente à instalação e o sistema pede a senha de administrador para instalar. Depois o app reabre.
+
+O download mostra o progresso e pode ser cancelado. O instalador só é usado se o sha256 conferir com o publicado no release. As conversas são salvas antes de o app fechar. Execução a partir do código e formatos sem suporte mostram o link do release.
+
+![Atualização disponível, com novidades e instalação pelo app](docs/img/studio-atualizacao.png)
+
 ### Executar a partir do código
 
 Use Node.js 22 ou superior e npm. O CI usa Node.js 22; a versão 1.7.0 também foi validada localmente com Node.js 24.
@@ -221,6 +232,7 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run typecheck` | Verifica os tipos sem emitir arquivos. |
 | `npm test` | Executa os testes de unidade, incluindo consumo e controle remoto. |
 | `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
+| `npm run test:update` | Abre o app com um release simulado: aviso na lateral, notificação, novidades, progresso, cancelamento e erro da instalação. |
 | `npm run test:reconnect` | Verifica espera real de 10 segundos, cancelamento, medidores, status remoto e “continue” durante o salvamento. |
 | `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |
 | `npm run test:startup` | Verifica os avisos de atualização em diferentes cenários. |

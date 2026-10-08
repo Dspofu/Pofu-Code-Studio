@@ -306,6 +306,10 @@ interface ElectronAPI {
   clearFinishedProcesses(): Promise<any>;
   getAppInfo(): Promise<{ githubUrl: string; version: string; name: string; author: string; license: string }>;
   checkUpdate(): Promise<any>;
+  installUpdate(): Promise<{ success: boolean; error?: string; manual?: boolean; cancelado?: boolean; metodo?: string }>;
+  cancelUpdate(): Promise<{ success: boolean }>;
+  onUpdateProgress(fn: (p: { fase: 'baixando' | 'conferindo' | 'instalando'; recebidos?: number; total?: number }) => void): () => void;
+  onUpdateOpen(fn: () => void): () => void;
   providerConsumption(connection: import('./consumption.js').ConsumptionConnection, period?: import('./consumption.js').ConsumptionPeriod): Promise<any>;
   recordUsage(connection: import('./consumption.js').ConsumptionConnection, usage: unknown): Promise<{ success: boolean; error?: string }>;
   remoteStatus(): Promise<any>;
