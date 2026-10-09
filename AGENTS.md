@@ -270,6 +270,12 @@ Consumo fica no cabeçalho do chat, ao lado do contexto e em `/usage` (`openCons
 
 Regressões em `model-vision.test.mjs`, `computer.test.mjs`, `test-computer-electron.cjs`, `loop-guard.test.mjs` e `mcp.test.mjs`. `npm run test:computer` roda IPC, aprovação e imagens com adaptador falso; `npm run test:vision` usa a API real com imagem sintética. Não envie inputs ao desktop real durante a suíte. Ctrl+Alt+Esc cancela o helper pelo main e interrompe o turno pelo evento `computer-stopped`.
 
+`npm run test:computer:real` é separado e opcional: envia prompts ao modelo real e usa o input nativo em duas janelas de teste maximizadas. Verifica seis tarefas pelo estado da página e pelo arquivo de nota salvo, exige ações nativas bem-sucedidas e requisições com imagens. A chave fica só na memória. `POFU_TEST_REPORT`, `POFU_QA_OUTPUT` e `POFU_TEST_THINK` controlam relatório, capturas e raciocínio. `capture_screen` aceita o alias `primary`; IDs desconhecidos continuam recusados.
+
+O harness mantém os handlers reais de load/save para atualizar a permissão no main, gravando somente `computerUse` no perfil temporário. Não substituir esses handlers por stubs sem preservar a permissão. `POFU_TEST_NATIVE_ONLY=1` é um diagnóstico sem decisões do modelo, separado nos relatórios. `POFU_TEST_TIMEOUT_MS` limita o turno e `POFU_TEST_TASK` seleciona uma tarefa. Resultados reais de 08/10 em `docs/testes/controle-maquina-2026-10-08.md`.
+
+Reteste de 08/10: os seis cenários passaram com o modelo real, incluindo abrir a segunda janela, salvar texto com acentos e substituir/salvar usando Ctrl+A e Ctrl+S. Foram 29 requisições, 17 ações nativas e 23 capturas, sem falhas. Evidências em `docs/testes/controle-maquina-modelo-reteste.json` e captura do editor ao lado. O travamento anterior da API ficou registrado separadamente.
+
 ## Interface, reconexão e fila: outubro de 2026
 
 Cabeçalho usa medidores de contexto/cota com percentuais, barras e estados desconhecidos. `updateQuotaMeter` mantém os elementos internos, não substitua o texto do botão inteiro. A lateral tem somente `btn-sidebar-remote-toggle`, com ação Ligar/Desligar e status real da ponte. Sem dispositivo pareado, Ligar abre a aba remota. Status online fica separado dos erros do formulário. Não reintroduzir botões extras.

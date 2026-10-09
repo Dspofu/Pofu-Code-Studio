@@ -54,6 +54,15 @@ test('uma observação permite somente uma ação; ID incorreto nunca envia inpu
   assert.deepEqual(f.calls.map(c => c.action), ['observe', 'key']);
 });
 
+test('primary seleciona o monitor principal sem aceitar IDs desconhecidos', async () => {
+  const f = fixture(); f.computer.setEnabled(true);
+  const shot = await f.computer.capture({ display_id: 'primary' });
+  assert.equal(shot.success, true); assert.equal(shot.display_id, display.id);
+  assert.equal((await f.computer.capture({ display_id: 'inventado' })).success, false);
+  assert.equal((await f.computer.action({ action: 'key', screenshot_id: shot.screenshot_id, keys: ['ENTER'] })).success, false);
+  assert.deepEqual(f.calls.map(c => c.action), ['observe']);
+});
+
 test('captura expirada, mudança de monitor e revogação exigem nova observação', async () => {
   const f = fixture(); f.computer.setEnabled(true);
   let shot = await f.computer.capture(); f.time(120101);

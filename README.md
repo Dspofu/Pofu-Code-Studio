@@ -234,7 +234,7 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
 | `npm run test:agent:long` | Conversa longa com o modelo real: muitas chamadas, processos em segundo plano e saídas grandes; registra respostas vazias, streams sem fim e respostas que não aparecem na tela. `POFU_TEST_VOLTAS` repete a sequência no mesmo chat. |
 | `npm run test:agent:quality` | Mede com o modelo real se o agente acha a causa de bugs, corrige sem mexer em teste, escreve testes que pegam mutantes e revisa sem alterar; a nota vem de testes ocultos. `POFU_TEST_NIVEL=dificil` usa o conjunto difícil. |
-| `npm run test:computer:real` | Controle do computador com o modelo real e mouse/teclado de verdade (Windows): clicar, digitar, marcar e rolar numa janela de teste. Não use o PC durante o teste. |
+| `npm run test:computer:real` | Modelo real e mouse/teclado nativos (Windows): clicar, digitar, marcar, rolar, abrir um editor de teste e salvar notas com acentos, emoji e atalhos. Confere a janela e o arquivo salvo. Não use o PC durante o teste. |
 | `npm run test:update` | Abre o app com um release simulado: aviso na lateral, notificação, novidades, progresso, cancelamento e erro da instalação. |
 | `npm run test:reconnect` | Verifica espera real de 10 segundos, cancelamento, medidores, status remoto e “continue” durante o salvamento. |
 | `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |
@@ -244,6 +244,8 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run dist:fedora` | Gera o pacote Fedora; exige `rpmbuild`. |
 
 `npm run test:api`, `npm run test:agent` e os `test:agent:*`/`test:computer:real` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
+
+No teste de computador real, as janelas ficam maximizadas e a chave permanece só na memória. `POFU_TEST_REPORT` salva os prompts, requisições HTTP, ações nativas e verificações. `POFU_QA_OUTPUT` também guarda capturas das janelas de teste. `POFU_TEST_THINK` escolhe o raciocínio e `POFU_TEST_TIMEOUT_MS` limita cada tarefa (30 a 600 segundos). `POFU_TEST_TASK` seleciona uma tarefa pelo nome. `POFU_TEST_NATIVE_ONLY=1` executa as seis verificações com o mouse/teclado real, sem pedir decisões ao modelo. Consulte o [relatório de 08/10/2026](docs/testes/controle-maquina-2026-10-08.md). `capture_screen` aceita `display_id: "primary"` para o monitor principal, além dos IDs devolvidos na captura.
 
 O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`. A partir da 1.7.0, a pesquisa web lê o conteúdo das páginas encontradas e mantém o buscador anterior como reserva.
 

@@ -108,7 +108,8 @@ export class DesktopComputer {
       this.observation = undefined;
       if (!opts || typeof opts !== 'object' || Array.isArray(opts) || (opts.display_id !== undefined && typeof opts.display_id !== 'string')) throw new Error('display_id must be a string returned by capture_screen.');
       const displays = this.deps.displays();
-      const display = displays.find(d => d.id === (opts.display_id ?? this.deps.primaryDisplay()));
+      const displayId = opts.display_id === 'primary' ? this.deps.primaryDisplay() : (opts.display_id ?? this.deps.primaryDisplay());
+      const display = displays.find(d => d.id === displayId);
       if (!display) throw new Error('Display was not found. Capture the screen without display_id to list available displays.');
       const target = this.deps.platform === 'win32' ? await this.deps.input({ action: 'observe' }, controller.signal) : undefined;
       if (target && (!/^[1-9]\d*$/.test(target.handle) || !Number.isInteger(target.pid) || target.pid <= 0)) throw new Error('No foreground window is available. Unlock the desktop and retry.');

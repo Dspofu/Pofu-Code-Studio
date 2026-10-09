@@ -1,0 +1,312 @@
+{
+  "modo": "nativo sem modelo",
+  "data": "2026-10-09T01:30:52.276Z",
+  "resultados": [
+    {
+      "tarefa": "clicar num botão",
+      "passou": true,
+      "estado": {
+        "cliques": 1,
+        "enviado": null,
+        "termos": false,
+        "fim": false,
+        "nota": null,
+        "arquivo": null
+      }
+    },
+    {
+      "tarefa": "digitar e enviar",
+      "passou": true,
+      "estado": {
+        "cliques": 1,
+        "enviado": "Pofu 2026",
+        "termos": false,
+        "fim": false,
+        "nota": null,
+        "arquivo": null
+      }
+    },
+    {
+      "tarefa": "marcar caixa",
+      "passou": true,
+      "estado": {
+        "cliques": 1,
+        "enviado": "Pofu 2026",
+        "termos": true,
+        "fim": false,
+        "nota": null,
+        "arquivo": null
+      }
+    },
+    {
+      "tarefa": "rolar e clicar",
+      "passou": true,
+      "estado": {
+        "cliques": 1,
+        "enviado": "Pofu 2026",
+        "termos": true,
+        "fim": true,
+        "nota": null,
+        "arquivo": null
+      }
+    },
+    {
+      "tarefa": "abrir editor, escrever e salvar",
+      "passou": true,
+      "estado": {
+        "cliques": 1,
+        "enviado": "Pofu 2026",
+        "termos": true,
+        "fim": true,
+        "nota": {
+          "texto": "Teste de controle\nAção concluída com acentuação: café, coração e João.",
+          "salvo": "Teste de controle\nAção concluída com acentuação: café, coração e João.",
+          "salvamentos": 1
+        },
+        "arquivo": "Teste de controle\nAção concluída com acentuação: café, coração e João."
+      }
+    },
+    {
+      "tarefa": "substituir texto e salvar por atalho",
+      "passou": true,
+      "estado": {
+        "cliques": 1,
+        "enviado": "Pofu 2026",
+        "termos": true,
+        "fim": true,
+        "nota": {
+          "texto": "Revisão concluída: amanhã às 10h. 🐾",
+          "salvo": "Revisão concluída: amanhã às 10h. 🐾",
+          "salvamentos": 2
+        },
+        "arquivo": "Revisão concluída: amanhã às 10h. 🐾"
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 71,
+        "y": 170,
+        "screenshot_id": "e97e8096-e55d-42bb-a431-cd9dd9e0939b"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 138,
+        "y": 220,
+        "screenshot_id": "70ef0aa9-213f-46d4-8d3d-8ca4296ab35c"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "type",
+        "text": "Pofu 2026",
+        "screenshot_id": "df1023ba-cb38-48a0-95e5-291e93cfeac9"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "key",
+        "keys": [
+          "ENTER"
+        ],
+        "screenshot_id": "d9372442-644a-41df-8167-e9d6b51268d3"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 28,
+        "y": 262,
+        "screenshot_id": "a01d5855-8ef7-4bd6-9dd4-60d72104dc62"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "scroll",
+        "x": 800,
+        "y": 450,
+        "direction": "down",
+        "amount": 10,
+        "screenshot_id": "5e201ed4-031a-4648-bc9e-1eceed561d5c"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 85,
+        "y": 808,
+        "screenshot_id": "75039d65-88de-4977-a5cb-a41ebfbfd9a7"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "key",
+        "keys": [
+          "CTRL",
+          "HOME"
+        ],
+        "screenshot_id": "2a376722-c207-4b19-a236-2561c862ce94"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 93,
+        "y": 120,
+        "screenshot_id": "540f6dc7-1dc3-4d61-8b86-3f785c01063c"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 725,
+        "y": 301,
+        "screenshot_id": "30738592-5356-4da9-87f9-9e17f42a40c5"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "type",
+        "text": "Teste de controle\nAção concluída com acentuação: café, coração e João.",
+        "screenshot_id": "c5bfc95d-661e-4f64-a327-578a5176ed77"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 90,
+        "y": 445,
+        "screenshot_id": "964d9e91-e6de-4034-b94d-48e36d6dbc9a"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "click",
+        "x": 725,
+        "y": 301,
+        "screenshot_id": "8c92f29f-0946-4d13-bd4f-8ff185274580"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "key",
+        "keys": [
+          "CTRL",
+          "A"
+        ],
+        "screenshot_id": "5b572266-a459-49f8-b6b4-fe93dae23c22"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "type",
+        "text": "Revisão concluída: amanhã às 10h. 🐾",
+        "screenshot_id": "74bbbd54-5081-425f-965d-b4446259e831"
+      },
+      "success": true
+    },
+    {
+      "argumentos": {
+        "action": "key",
+        "keys": [
+          "CTRL",
+          "S"
+        ],
+        "screenshot_id": "97fab25c-aa81-4a26-aa06-36d55006a32d"
+      },
+      "success": true
+    }
+  ],
+  "capturas": [
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    },
+    {
+      "success": true,
+      "pixels": true
+    }
+  ]
+}

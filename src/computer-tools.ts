@@ -14,7 +14,7 @@ export const computerTools = [{
   function: {
     name: 'capture_screen',
     description: 'Captures a real monitor and attaches its image. Returns monitors and a screenshot_id needed for computer_action. Coordinates refer to this image, with (0,0) at its top left.',
-    parameters: { type: 'object', properties: { display_id: { type: 'string', description: 'Monitor ID from an earlier capture. Omit for the primary monitor.' } } }
+    parameters: { type: 'object', properties: { display_id: { type: 'string', description: 'Monitor ID from an earlier capture, or "primary". Omit for the primary monitor.' } } }
   }
 }, {
   type: 'function',
