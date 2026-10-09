@@ -1,7 +1,7 @@
 {
   "name": "pofu-code-studio",
   "productName": "Pofu Code Studio",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Agente de código em desktop (Electron) para qualquer API compatível com OpenAI: lê e edita o projeto, roda comandos e servidores em segundo plano e valida o que faz.",
   "main": "out/main.js",
   "scripts": {
