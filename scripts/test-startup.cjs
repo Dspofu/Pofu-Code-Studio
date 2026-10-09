@@ -39,8 +39,11 @@ const deadline = setTimeout(() => { console.error('Timeout:', scenario); app.exi
   if (scenario === 'newer') {
     assert.equal(result.maior, true);
     assert.match(notifications[0].body, /99\.0\.0/);
+    // O clique leva ao modal de atualização do próprio app, não ao navegador.
     notifications[0].emit('click');
-    assert.deepEqual(opened, ['https://github.com/Dspofu/Pofu-Code-Studio/releases/tag/v99.0.0']);
+    await win.webContents.executeJavaScript(`new Promise((ok, falha) => { const t0 = Date.now(); const poll = () => document.getElementById('update-modal').classList.contains('active') ? ok(true) : Date.now() - t0 > 5000 ? falha(new Error('modal de atualização não abriu')) : setTimeout(poll, 50); poll(); })`);
+    assert.match(await win.webContents.executeJavaScript(`document.getElementById('update-to').textContent`), /v99\.0\.0/);
+    assert.deepEqual(opened, []);
   }
   await win.webContents.executeJavaScript('window.electronAPI.checkUpdate()');
   assert.equal(requests, 1);

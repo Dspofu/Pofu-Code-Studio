@@ -114,3 +114,13 @@ test('Parar cancela input em andamento e invalida o ID observado', async () => {
   assert.equal((await action).success, false);
   assert.equal((await f.computer.action({ action: 'type', text: 'teste', screenshot_id: shot.screenshot_id })).success, false);
 });
+
+test('a parte em PowerShell do helper roda no Windows PowerShell 5.1', async () => {
+  // [ushort], [short], [ulong] e [uint] só existem do PowerShell 6 em diante; no 5.1, que é
+  // o que o Windows traz, o cast falha e toda ação de tecla quebrava (o C# do Add-Type pode).
+  const { WINDOWS_COMPUTER_SCRIPT } = await import('../out/computer-windows.js');
+  const [antes, resto] = WINDOWS_COMPUTER_SCRIPT.split("@'\n");
+  const powershell = antes + resto.slice(resto.indexOf("\n'@") + 3);
+  assert.ok(powershell.includes('[PofuInput]::Keys('));
+  assert.doesNotMatch(powershell, /\[(ushort|short|ulong|uint|sbyte)(\[\])?\]/i);
+});

@@ -118,7 +118,7 @@ Quando não há relatório remoto acessível, fica disponível o **registro loca
 
 ![Medidores e conexão remota ativa no desktop, com dados de teste](docs/img/studio-conexao.png)
 
-Falhas transitórias aguardam **10 segundos** antes da próxima tentativa, com contagem regressiva e botão para cancelar. Erros mostram orientação e detalhes técnicos recolhidos. Pedidos enviados no encerramento do turno, como “continue”, seguem pela fila automaticamente.
+Falhas transitórias aguardam **10 segundos** antes da próxima tentativa, com contagem regressiva e botão para cancelar. Resposta vazia do modelo (só raciocínio, sem texto nem ferramenta) é repetida sozinha. Com llama.cpp, a espera mostra o progresso da leitura do prompt (“Lendo o prompt · X de Y tokens”); se o servidor ficar 3 minutos sem enviar nada, o Studio tenta mais uma vez e avisa que ele parou de responder, em vez de esperar indefinidamente. Erros mostram orientação e detalhes técnicos recolhidos. Pedidos enviados no encerramento do turno, como “continue”, seguem pela fila automaticamente.
 
 ## Controle remoto pelo site
 
@@ -232,6 +232,9 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run typecheck` | Verifica os tipos sem emitir arquivos. |
 | `npm test` | Executa os testes de unidade, incluindo consumo e controle remoto. |
 | `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
+| `npm run test:agent:long` | Conversa longa com o modelo real: muitas chamadas, processos em segundo plano e saídas grandes; registra respostas vazias, streams sem fim e respostas que não aparecem na tela. `POFU_TEST_VOLTAS` repete a sequência no mesmo chat. |
+| `npm run test:agent:quality` | Mede com o modelo real se o agente acha a causa de bugs, corrige sem mexer em teste, escreve testes que pegam mutantes e revisa sem alterar; a nota vem de testes ocultos. `POFU_TEST_NIVEL=dificil` usa o conjunto difícil. |
+| `npm run test:computer:real` | Controle do computador com o modelo real e mouse/teclado de verdade (Windows): clicar, digitar, marcar e rolar numa janela de teste. Não use o PC durante o teste. |
 | `npm run test:update` | Abre o app com um release simulado: aviso na lateral, notificação, novidades, progresso, cancelamento e erro da instalação. |
 | `npm run test:reconnect` | Verifica espera real de 10 segundos, cancelamento, medidores, status remoto e “continue” durante o salvamento. |
 | `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |
@@ -240,7 +243,7 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run dist:linux` | Gera o pacote Ubuntu/Debian. |
 | `npm run dist:fedora` | Gera o pacote Fedora; exige `rpmbuild`. |
 
-`npm run test:api` e `npm run test:agent` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
+`npm run test:api`, `npm run test:agent` e os `test:agent:*`/`test:computer:real` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
 
 O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`. A partir da 1.7.0, a pesquisa web lê o conteúdo das páginas encontradas e mantém o buscador anterior como reserva.
 

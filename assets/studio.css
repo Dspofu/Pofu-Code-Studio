@@ -324,3 +324,5 @@ button.usage-meter { cursor: pointer; }
 .update-error { margin: 0; padding: 10px 12px; border: 1px solid #633c36; border-left: 3px solid #e58b7c; border-radius: 8px; background: #2a211c; color: #f2b8a9; font-size: 12px; overflow-wrap: anywhere; }
 .update-footer { align-items: center; gap: 10px; }
 .update-footer .update-link { margin-right: auto; font-size: 12px; }
+.typing-progresso { margin-left: 10px; align-self: center; font-size: 11px; color: var(--muted-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.typing-nota .typing-progresso { margin-left: 0; align-self: auto; }

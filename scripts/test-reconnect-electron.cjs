@@ -22,6 +22,7 @@ const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.end();
   res.setHeader('Content-Type', 'application/json');
+  if (req.url.endsWith('/props')) return res.end(JSON.stringify({ default_generation_settings: {}, chat_template: '' }));
   if (req.url.endsWith('/models')) return res.end(JSON.stringify({ data: [{ id: 'fixture', meta: { n_ctx: 32768 } }] }));
   if (req.url.endsWith('/usage')) return res.end(JSON.stringify({ schema: 'ai-usage/v1', provider: { id: 'pofu', name: 'Fixture' }, cycle: { used: 750, limit: 3000 }, balances: [{ unit: 'credits', remaining: 2250, used: 750 }] }));
   if (req.url.endsWith('/claim')) return res.end(JSON.stringify({ deviceId: 'test-device', token: 'a'.repeat(64) }));
@@ -32,6 +33,7 @@ const server = createServer(async (req, res) => {
   if (mode === 'auth' || mode === 'cancel' || mode === 'retry' && chatTimes.length === 1) { res.statusCode = mode === 'auth' ? 401 : 503; return res.end(JSON.stringify({ error: { message: 'Synthetic failure' } })); }
   res.setHeader('Content-Type', 'text/event-stream');
   const unica = falhaUnica; falhaUnica = false;
+  if (mode === 'stall' || mode === 'stall-once' && unica) { res.write('data: ' + JSON.stringify({ choices: [], prompt_progress: { total: 5000, cache: 0, processed: 2403, time_ms: 10 } }) + '\n\n'); return; }
   if (mode === 'cut' && unica) return res.end();
   const vazio = mode === 'empty' || mode === 'reasoning' || mode === 'empty-once' && unica;
   const delta = mode === 'reasoning' ? { reasoning_content: 'Vou pensar e parar.' } : { content: vazio ? '' : 'RESPOSTA ' + bodies.at(-1).messages.at(-1).content };
@@ -87,6 +89,23 @@ async function main() {
     await send('CORTE'); await until(`document.querySelector('.retry-card')?.textContent.includes('A conexão caiu antes da resposta')`);
     await until(`document.getElementById('chat-box').textContent.includes('RESPOSTA CORTE')`, 20000); await idle();
     assert.equal(bodies.length, before + 2); assert.equal(await cartoesVazios(), 0);
+  });
+  await check('servidor que trava lendo o prompt é detectado e tentado uma vez só', async () => {
+    await js(`window.POFU_SERVIDOR_PARADO_MS = 2500`);
+    mode = 'stall'; const before = bodies.length;
+    await send('TRAVA'); await until(`document.querySelector('.typing-progresso')?.textContent.includes('2.403 de 5.000')`);
+    assert.equal(await js(`getComputedStyle(document.querySelector('.typing-progresso')).width !== '7px'`), true, 'progresso não pode virar pontinho');
+    await capture('progresso');
+    assert.equal(bodies.at(-1).return_progress, true);
+    await until(`document.querySelector('.retry-card')?.textContent.includes('parou de responder')`, 10000);
+    await until(`!document.body.classList.contains('agent-running')`, 40000); await until(`[...document.querySelectorAll('.error-card')].some(c => c.textContent.includes('O servidor do modelo parou de responder') && !c.classList.contains('retry-card'))`);
+    assert.equal(bodies.length, before + 2);
+  });
+  await check('travamento passageiro se resolve na nova tentativa', async () => {
+    mode = 'stall-once'; falhaUnica = true; const before = bodies.length;
+    await send('TRAVA1'); await until(`document.getElementById('chat-box').textContent.includes('RESPOSTA TRAVA1')`, 30000); await idle();
+    assert.equal(bodies.length, before + 2);
+    await js(`delete window.POFU_SERVIDOR_PARADO_MS`);
   });
   await check('resposta vazia mostra orientação depois de esgotar as tentativas', async () => {
     mode = 'empty'; const before = bodies.length; await send('VAZIO'); await idle(); await until(`document.getElementById('chat-box').textContent.includes('O modelo não enviou uma resposta')`);

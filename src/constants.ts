@@ -241,3 +241,10 @@ export const MAX_LOOP_ITERATIONS = 100;
 export const MAX_REQUEST_RETRIES = 3;
 // Dez segundos dão tempo para o servidor recuperar e permitem cancelar durante a espera.
 export const REQUEST_RETRY_DELAY_MS = 10000;
+
+// Silêncio que caracteriza servidor travado. Com o progresso do llama.cpp (return_progress)
+// chega um pedaço a cada lote do prompt, em segundos; na geração, token a token. Três minutos
+// cobrem fila de slot ocupado e encoder de imagem lento. Visto em uso real: o llama.cpp parou
+// em 2.403 de 8.261 tokens de um prompt com print e não respondeu mais nem a outro pedido; sem
+// este prazo o app esperava para sempre com os três pontinhos.
+export const SERVIDOR_PARADO_MS = 180000;

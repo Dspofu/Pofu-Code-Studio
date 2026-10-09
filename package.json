@@ -26,6 +26,9 @@
     "test:startup": "npm run build && node scripts/run-startup-tests.cjs",
     "test:api": "npm run build && node scripts/test-api.mjs",
     "test:agent": "npm run build && node scripts/run-agent-tests.cjs",
+    "test:agent:long": "npm run build && node scripts/run-electron-script.cjs scripts/test-agente-maratona.cjs",
+    "test:agent:quality": "npm run build && node scripts/run-electron-script.cjs scripts/test-agente-qualidade.cjs",
+    "test:computer:real": "npm run build && node scripts/run-electron-script.cjs scripts/test-computador-real.cjs",
     "test:vision": "npm run build && node scripts/run-vision-tests.cjs"
   },
   "keywords": [

@@ -15,7 +15,7 @@ import { formataEstrutura, suportaEstrutura } from './outline.js';
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -577,6 +577,14 @@ function detectThink(json, apiUrl: string, modelo: string) {
   sondaRaciocinio(apiUrl, modelo, state.settings.apiKey);  // /props e /api/show chegam depois
 }
 
+// O teste de integração encurta o prazo pelo global: esperar três minutos reais por cenário
+// tornaria a suíte inviável.
+const prazoParado = () => Number((window as any).POFU_SERVIDOR_PARADO_MS) || SERVIDOR_PARADO_MS;
+
+// Par endpoint+modelo confirmado como llama.cpp pelo /props. Só ele recebe o return_progress:
+// a OpenAI recusa a requisição inteira por campo desconhecido.
+let servidorLlamaCpp = '';
+
 async function sondaRaciocinio(apiUrl: string, modelo: string, apiKey: string) {
   const revision = ++sondaThinkRevision;
   const chave = `${apiUrl}::${modelo}`;
@@ -590,6 +598,7 @@ async function sondaRaciocinio(apiUrl: string, modelo: string, apiKey: string) {
     if (res.ok) {
       const props = await res.json();
       if (sondaThinkFeita !== chave || revision !== sondaThinkRevision) return;
+      if (props.default_generation_settings || props.build_info) servidorLlamaCpp = chave;
       const template = String(props.chat_template || '');
       // Só o TEMPLATE conta como resposta conclusiva. Versão do llama.cpp que não o
       // devolve deixa `templateLido` falso, e aí o silêncio volta a valer como "não sei".
@@ -2431,6 +2440,18 @@ function showTyping(contextoTokens = 0) {
   scrollChat();
 }
 
+// Progresso do prompt que o llama.cpp manda com return_progress: mostra que o servidor está
+// trabalhando (e quanto falta) em vez de três pontinhos mudos durante minutos.
+function mostraProgressoDoPrompt(p) {
+  const indicador = el('typing-indicator');
+  const total = Number(p?.total) || 0, feito = (Number(p?.processed) || 0) + (Number(p?.cache) || 0);
+  if (!indicador || !total || total - (Number(p?.cache) || 0) < 1000) return;
+  let linha = q<HTMLElement>('.typing-progresso', indicador);
+  // div, e não span: `.typing-indicator > span` transforma todo span filho em pontinho piscando.
+  if (!linha) { linha = document.createElement('div'); linha.className = 'typing-progresso'; (q<HTMLElement>('.typing-nota', indicador) || indicador).appendChild(linha); }
+  linha.textContent = `Lendo o prompt · ${Math.min(feito, total).toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} tokens`;
+}
+
 function hideTyping() {
   if (cronometroEspera) { clearInterval(cronometroEspera); cronometroEspera = 0; }
   const indicador = el('typing-indicator');
@@ -3476,6 +3497,17 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
       ]
     };
   }
+  if (/^Servidor parado/.test(msg)) {
+    return {
+      transitorio: true,
+      titulo: 'O servidor do modelo parou de responder',
+      detalhe: msg.slice(0, 250),
+      passos: [
+        'O servidor aceitou o pedido e travou no meio: nem o prompt nem a resposta avançam.',
+        'Reinicie o servidor do modelo (llama.cpp, Ollama…) e mande "continue".'
+      ]
+    };
+  }
   if (/^Stream interrompido/.test(msg)) {
     return {
       transitorio: true,
@@ -3513,14 +3545,35 @@ function respostaVazia(result) {
 
 // Chamada em STREAMING (SSE): dispara os callbacks conforme o texto chega e
 // retorna a mensagem final montada (content, reasoning_content, tool_calls) + usage.
-async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent, onReasoning, onToolCall = null }) {
+async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent, onReasoning, onToolCall = null, onProgress = null }) {
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
-  const response = await fetch(`${apiUrl}/chat/completions`, {
-    method: 'POST', headers, signal,
-    body: JSON.stringify({ ...payload, stream: true, stream_options: { include_usage: true } })
-  });
+  // Vigia de servidor travado: sem progresso do prompt, silêncio antes do primeiro byte pode ser
+  // só um prompt longo, então ele só vale depois que algo chegou. O abort interno é distinto
+  // do Parar do usuário para virar erro (e nova tentativa) em vez de "interrompido".
+  const comProgresso = servidorLlamaCpp === `${apiUrl}::${payload.model}`;
+  const interno = new AbortController();
+  const repassaAbort = () => interno.abort();
+  if (signal.aborted) interno.abort(); else signal.addEventListener('abort', repassaAbort, { once: true });
+  let ultimoByte = Date.now(), recebeuAlgo = false, travou = false;
+  const vigia = window.setInterval(() => {
+    if ((comProgresso || recebeuAlgo) && Date.now() - ultimoByte > prazoParado()) { travou = true; interno.abort(); }
+  }, Math.min(5000, prazoParado() / 4));
+  const servidorParado = () => new Error(`Servidor parado: nada chegou de ${apiUrl} por ${Math.round(prazoParado() / 1000)} segundos.`);
+  try {
+  let response;
+  try {
+    response = await fetch(`${apiUrl}/chat/completions`, {
+      method: 'POST', headers, signal: interno.signal,
+      body: JSON.stringify({ ...payload, ...(comProgresso ? { return_progress: true } : {}), stream: true, stream_options: { include_usage: true } })
+    });
+  } catch (err) {
+    if (travou) throw servidorParado();
+    if (err.name === 'AbortError') return { message: { role: 'assistant', content: '', reasoning_content: '', tool_calls: undefined }, usage: null, finishReason: null, aborted: true, apiError: null, timing: { totalMs: 0, ttftMs: 0, genMs: 0 }, timings: null };
+    throw err;
+  }
+  ultimoByte = Date.now();
   if (!response.ok) {
     const body = await response.text();
     // 600, e não 300: o llama.cpp responde erro de template despejando ANTES o trecho do
@@ -3542,6 +3595,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      ultimoByte = Date.now(); recebeuAlgo = true;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop(); // guarda a última linha (possivelmente incompleta)
@@ -3555,6 +3609,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
         if (json.error) { apiError = json.error.message || JSON.stringify(json.error); continue; }
         if (json.usage) usage = json.usage;
         if (json.timings) timings = json.timings; // llama.cpp: cache_n, prompt_n, prompt_per_second
+        if (json.prompt_progress && onProgress) onProgress(json.prompt_progress);
         const choice = json.choices && json.choices[0];
         if (!choice) continue;
         const delta = choice.delta || {};
@@ -3579,6 +3634,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
       }
     }
   } catch (err) {
+    if (travou) throw servidorParado();
     if (err.name === 'AbortError') aborted = true;
     else throw err;
   }
@@ -3599,6 +3655,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
     message: { role: 'assistant', content, reasoning_content: reasoning, tool_calls: tool_calls.length ? tool_calls : undefined },
     usage, finishReason, aborted, apiError, timing, timings
   };
+  } finally { clearInterval(vigia); signal.removeEventListener('abort', repassaAbort); }
 }
 
 // Calcula as métricas exibidas abaixo da resposta (velocidade, tokens, tempo)
@@ -3866,7 +3923,7 @@ async function agentTurns(chat) {
             ...(nivelThink.payload || {})
           },
           signal: abortController.signal,
-          onContent, onReasoning, onToolCall
+          onContent, onReasoning, onToolCall, onProgress: mostraProgressoDoPrompt
         });
         lastErr = null;
         // Fim de turno sem texto nem ferramenta é geração estocástica (o Qwen fecha depois
@@ -3932,6 +3989,9 @@ async function agentTurns(chat) {
       // inexistente falham igual nas três tentativas e atrasam o diagnóstico.
       const diag = classificaErroDeRequisicao(lastErr, apiUrl, model);
       if (!diag.transitorio) break;
+      // Um travamento já custou três minutos; servidor travado não volta sozinho, então uma
+      // nova tentativa basta para separar soluço de rede de servidor que precisa reiniciar.
+      if (/^Servidor parado/.test(String(lastErr?.message)) && attempt >= 2) break;
       if (attempt < MAX_REQUEST_RETRIES) {
         descartaParcial();
         if (!await waitForReconnect(diag, attempt)) { lastErr = null; break; }

@@ -88,7 +88,7 @@ try {
     'click' { [PofuInput]::Click([string]$request.button, $false) }
     'double_click' { [PofuInput]::Click([string]$request.button, $true) }
     'scroll' { [PofuInput]::Scroll([string]$request.direction, [int]$request.amount) }
-    'key' { [PofuInput]::Keys([ushort[]]$request.codes) }
+    'key' { [PofuInput]::Keys([uint16[]]$request.codes) }
     'type' { [PofuInput]::Text([string]$request.text) }
     default { throw 'Unsupported computer action.' }
   }

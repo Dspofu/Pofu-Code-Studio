@@ -223,6 +223,15 @@ que a ausência dele.
   conexão enquanto o prompt longo processa) lança `Stream interrompido` e entra na espera de
   reconexão. Só vazio vira erro: servidor que omita os dois marcadores mas mande texto segue
   funcionando.
+- **Servidor travado tem prazo** (`SERVIDOR_PARADO_MS`, 3 min): o llama.cpp já parou no meio de
+  um prompt com print (2.403 de 8.261 tokens) e não respondeu mais nem a outro pedido — o app
+  esperava para sempre. Tempo limite fixo não serve, porque prompt longo leva minutos de verdade
+  (177 s medidos). Por isso o vigia mede SILÊNCIO: com llama.cpp (detectado pelo `/props`) vai
+  `return_progress`, que manda um pedaço por lote do prompt, e o prazo vale desde o envio; nos
+  outros servidores só vale depois do primeiro byte. O `return_progress` NÃO pode ir para quem
+  não é llama.cpp: a OpenAI recusa a requisição inteira por campo desconhecido. Travou → uma
+  nova tentativa só (servidor travado não volta sozinho) e o cartão manda reiniciar o servidor.
+  O progresso também aparece no indicador ("Lendo o prompt · X de Y tokens").
 - **Compactação de contexto** (`compactToolResults`): sem ela o histórico cresce até estourar
   o `n_ctx` e a sessão morre. Duas regras que não podem cair: a mensagem `tool` nunca é
   REMOVIDA (um `tool_call` órfão faz o servidor recusar a requisição inteira, só o `content`
@@ -528,3 +537,7 @@ abre o Electron com perfil e workspace temporários, exercitando o preload e os 
 usa as mesmas variáveis e roda cenários reais DENTRO do app (loop, poda, trava, MCP), com
 perfil e workspace temporários. Mudou prompt, descrição de ferramenta ou o loop do agente?
 Rode os dois antes e depois — o teste com servidor falso não mede escolha de ferramenta.
+`test:agent:long` (maratona no mesmo chat), `test:agent:quality` (bugs, testes e revisão com nota
+de testes ocultos e mutantes; `POFU_TEST_NIVEL=dificil`) e `test:computer:real` (mouse e teclado
+de verdade) usam as mesmas variáveis. O de computador grava a chave num perfil temporário — o
+main só libera o controle lendo o arquivo — e o apaga no fim.
