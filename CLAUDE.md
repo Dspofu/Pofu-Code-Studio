@@ -90,6 +90,8 @@ Esquecer o passo 4 gera tool call que "funciona" mas aparece cru na UI.
 
 ## README — mantenha atualizado
 
+A pasta `docs/` contém apenas guias gerais e referências permanentes, organizados por assunto. Não criar documentação por versão, data ou sessão em nenhum lugar dessa pasta, incluindo notas de versão, changelogs, resumos de alterações e relatórios de testes. Atualizar o guia existente quando o comportamento mudar. Novos guias só para assuntos permanentes, com link em `docs/README.md`. Resultados de testes ficam na resposta ou no PR. Logs e arquivos opcionais de diagnóstico ficam fora do repositório.
+
 O [README.md](README.md) é a vitrine do projeto e **envelhece rápido**: quando foi reescrito,
 metade das ferramentas do agente não estava documentada lá. Toda alteração que muda o que o
 usuário vê ou pode fazer exige atualizar o README **no mesmo commit**:

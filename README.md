@@ -7,7 +7,7 @@ Um agente de código no desktop, com a identidade Pofu e o modelo que você esco
 
 O Studio conecta-se a **APIs compatíveis com OpenAI**, incluindo servidores locais como llama.cpp, Ollama e vLLM. O modelo precisa oferecer chamadas de ferramenta (*function calling*); recursos visuais também exigem um modelo multimodal.
 
-[Baixar instaladores](https://github.com/Dspofu/Pofu-Code-Studio/releases/latest) · [Novidades da 1.7.0](docs/releases/v1.7.0.md) · [Guia de consumo e controle remoto](docs/consumo-remoto.md)
+[Baixar instaladores](https://github.com/Dspofu/Pofu-Code-Studio/releases/latest) · [Guias](docs/README.md) · [Comandos](docs/comandos.md) · [Consumo e controle remoto](docs/consumo-remoto.md)
 
 ![Tela atual do Pofu Code Studio, com projeto e modelo de demonstração](docs/img/studio-desktop.png)
 
@@ -16,6 +16,7 @@ O Studio conecta-se a **APIs compatíveis com OpenAI**, incluindo servidores loc
 | Recurso | No seu trabalho |
 |---|---|
 | Conversas por projeto | Alterne entre chats e pastas recentes, mantendo o histórico de cada conversa. |
+| Subagentes | Divida investigações e revisões em até três análises simultâneas, com progresso e resultados por tarefa. |
 | Edição de código | Leia e pesquise arquivos, consulte funções e classes, aplique alterações e revise o diff com opção de desfazer. |
 | Terminal e processos | Execute testes, acompanhe servidores e watchers e consulte a saída de tarefas demoradas. |
 | Pesquisa e páginas web | Busque informações, leia páginas e capture a interface para conferir o resultado. |
@@ -92,6 +93,12 @@ O endereço é o endpoint compatível com OpenAI, geralmente terminado em `/v1`.
 
 </details>
 
+### Subagentes
+
+Peça, por exemplo: “Use dois subagentes: um revisa a autenticação e outro procura problemas nos testes”. O modelo pode chamar `delegate_tasks` para criar até três análises em paralelo no mesmo projeto e provedor. Cada análise tem seu próprio contexto, consulta arquivos e, quando habilitada, pesquisa na web. O card mostra o andamento e permite abrir cada resultado.
+
+O agente principal recebe os resultados e aplica as alterações. Os subagentes são de leitura: não executam comandos, não editam arquivos e não controlam o computador. **Parar** interrompe todas as análises. O consumo soma as requisições de todos os agentes; o indicador de contexto continua mostrando a conversa principal. Cada análise tem limite de 12 etapas. Servidores locais com poucos slots podem processar as requisições em sequência.
+
 ### Durante a conversa
 
 - Acompanhe os cards das ferramentas, os resultados e os diffs. **Desfazer** reverte a alteração no arquivo.
@@ -138,9 +145,9 @@ Pelo site você pode conversar, enviar mensagens à fila, interromper a geraçã
 
 Chaves das APIs não são enviadas ao site. A credencial de pareamento é protegida pelo cofre do sistema. **Desligar** no desktop pausa a ponte; **Desconectar** no site revoga a conexão.
 
-Na revisão de código atual, o site também edita/apaga/regenera mensagens, duplica/limpa conversas, recebe imagens e mostra diferenças/desfaz alterações por snapshots. O menu `/` inclui processos e compactação. Até três PNG/JPEG/WebP chegam ao modelo com visão e permanecem anexadas no desktop. Ações respeitam execução, histórico atual e permissões do plano; editar/regenerar não desfaz ferramentas anteriores.
+Na área Code, o site também edita/apaga/regenera mensagens, duplica/limpa conversas, recebe imagens e mostra diferenças/desfaz alterações por snapshots. O menu `/` inclui processos e compactação. Até três PNG/JPEG/WebP chegam ao modelo com visão e permanecem anexadas no desktop. Ações respeitam execução, histórico atual e permissões do plano; editar/regenerar não desfaz ferramentas anteriores.
 
-O espelho inclui os últimos 80 blocos/60 mil caracteres, nomes e miniaturas; o histórico completo permanece no desktop. Exportação baixa somente esse trecho. Arquivos gerais e abertura de pastas novas continuam no PC. API/site precisam estar atualizados e o Studio reaberto para as novas capacidades. Esta revisão ainda não tem novo instalador publicado.
+O espelho inclui os últimos 80 blocos/60 mil caracteres, nomes e miniaturas; o histórico completo permanece no desktop. Exportação baixa somente esse trecho. Arquivos gerais e abertura de pastas novas continuam no PC. API, site e desktop precisam oferecer recursos compatíveis.
 
 ## Comandos com `/`
 
@@ -165,6 +172,7 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 |---|---|
 | `list_files` | Lista arquivos e pastas, com filtro glob e opção recursiva. |
 | `read_file` | Lê o arquivo ou um trecho; aceita consulta direta e cursor de continuação. |
+| `delegate_tasks` | Delega até três investigações simultâneas, com contextos isolados e resultados para o principal. |
 | `read_tool_result` | Recupera saídas grandes por cursor ou termo, sem repetir a operação. |
 | `search_files` | Busca texto ou regex com paginação, filtros e linhas de contexto. |
 | `list_definitions` | Mostra funções, classes, métodos e tipos com suas linhas. |
@@ -230,7 +238,9 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 |---|---|
 | `npm run build` | Compila e copia o módulo de pesquisa para `out/`. |
 | `npm run typecheck` | Verifica os tipos sem emitir arquivos. |
-| `npm test` | Executa os testes de unidade, incluindo consumo e controle remoto. |
+| `npm test` | Executa os testes de unidade, incluindo consumo, controle remoto e isolamento de subagentes. |
+| `npm run test:subagents` | Testa requisições concorrentes, isolamento de leituras/histórico, Parar, fila e restauração dos cards no Electron. |
+| `npm run test:subagents:real` | Pede ao modelo real duas revisões de arquivos em um projeto temporário e confere os resultados, sem inputs nativos. |
 | `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
 | `npm run test:agent:long` | Conversa longa com o modelo real: muitas chamadas, processos em segundo plano e saídas grandes; registra respostas vazias, streams sem fim e respostas que não aparecem na tela. `POFU_TEST_VOLTAS` repete a sequência no mesmo chat. |
 | `npm run test:agent:quality` | Mede com o modelo real se o agente acha a causa de bugs, corrige sem mexer em teste, escreve testes que pegam mutantes e revisa sem alterar; a nota vem de testes ocultos. `POFU_TEST_NIVEL=dificil` usa o conjunto difícil. |
@@ -243,11 +253,11 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run dist:linux` | Gera o pacote Ubuntu/Debian. |
 | `npm run dist:fedora` | Gera o pacote Fedora; exige `rpmbuild`. |
 
-`npm run test:api`, `npm run test:agent` e os `test:agent:*`/`test:computer:real` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
+`npm run test:api`, `npm run test:agent`, `npm run test:subagents:real` e os `test:agent:*`/`test:computer:real` fazem chamadas reais e são opcionais. Use `POFU_TEST_API_URL`, `POFU_TEST_API_KEY` e, se necessário, `POFU_TEST_MODEL` no ambiente; não grave credenciais no repositório. `POFU_QA_OUTPUT` define a pasta das capturas reais do teste de integração.
 
-No teste de computador real, as janelas ficam maximizadas e a chave permanece só na memória. `POFU_TEST_REPORT` salva os prompts, requisições HTTP, ações nativas e verificações. `POFU_QA_OUTPUT` também guarda capturas das janelas de teste. `POFU_TEST_THINK` escolhe o raciocínio e `POFU_TEST_TIMEOUT_MS` limita cada tarefa (30 a 600 segundos). `POFU_TEST_TASK` seleciona uma tarefa pelo nome. `POFU_TEST_NATIVE_ONLY=1` executa as seis verificações com o mouse/teclado real, sem pedir decisões ao modelo. Consulte o [relatório de 08/10/2026](docs/testes/controle-maquina-2026-10-08.md). `capture_screen` aceita `display_id: "primary"` para o monitor principal, além dos IDs devolvidos na captura.
+No teste de computador real, as janelas ficam maximizadas e a chave permanece só na memória. `POFU_TEST_REPORT` salva os prompts, requisições HTTP, ações nativas e verificações. `POFU_QA_OUTPUT` também guarda capturas das janelas de teste. `POFU_TEST_THINK` escolhe o raciocínio e `POFU_TEST_TIMEOUT_MS` limita cada tarefa (30 a 600 segundos). `POFU_TEST_TASK` seleciona uma tarefa pelo nome. `POFU_TEST_NATIVE_ONLY=1` executa as seis verificações com o mouse/teclado real, sem pedir decisões ao modelo. `capture_screen` aceita `display_id: "primary"` para o monitor principal, além dos IDs devolvidos na captura.
 
-O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`. A partir da 1.7.0, a pesquisa web lê o conteúdo das páginas encontradas e mantém o buscador anterior como reserva.
+O workflow de [release](.github/workflows/release.yml) gera os instaladores ao receber uma tag `vX.Y.Z`. A tag deve corresponder à versão em `package.json`.
 
 As imagens deste README foram capturadas no aplicativo e no site reais, com contas, projetos e respostas sintéticos em ambientes isolados.
 

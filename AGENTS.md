@@ -12,7 +12,7 @@
 ## 1. O que é o projeto em uma frase
 
 Desktop Electron que é um **agente de código**: fala com qualquer API REST compatível com
-OpenAI (llama.cpp, Ollama, vLLM) e dá ao modelo 18 ferramentas para mexer num workspace
+OpenAI (llama.cpp, Ollama, vLLM) e dá ao modelo ferramentas para mexer num workspace
 ("pasta segura"), rodar comandos, chamar APIs, tirar print de páginas e buscar na web.
 Idioma: **pt-BR para as pessoas** (UI, comentários, commits, docs), **inglês para o modelo**
 (system prompt, descrições das tools, `error`/`hint`/`note`) — o agente responde na língua de
@@ -25,6 +25,7 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `src/main.ts` | Processo main: janela, menu, **todos os handlers IPC** (fs, processos, HTTP, captura, busca, store) |
 | `src/preload.cts` | Ponte `contextBridge` → `window.electronAPI` (`.cts` porque o preload é CommonJS → `preload.cjs`) |
 | `src/renderer.ts` | Cérebro: estado, loop do agente, `tools`, streaming, cards de ferramenta, diff, menções `@`, anexos, workspace |
+| `src/subagents.ts` | Motor e schema `delegate_tasks`: até três análises paralelas, somente leitura, com histórico e cancelamento isolados. |
 | `src/remote-history.ts` | Referências efêmeras de mensagens e revisão para recusar alterações sobre histórico remoto antigo |
 | `src/edit-diagnostics.ts` | Diagnóstico de edições sem correspondência; sugestões nunca escrevem no arquivo |
 | `src/edit-match.ts` | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e lote `edits` atômico |
@@ -48,6 +49,7 @@ quem escreveu. Detalhes e o porquê: CLAUDE.md.
 | `vendor/` | Libs offline do renderer: tailwind, marked, purify, highlight, github-dark |
 | `build/`, `dist/` | Recursos e saída do electron-builder |
 | `.github/workflows/release.yml` | CI: tag `vX.Y.Z` → build `.deb` (ubuntu) + `.rpm` (fedora, cruza via `apt install rpm` no ubuntu) + `.exe` (windows) → publica no release |
+| `docs/README.md`, `docs/comandos.md`, `docs/consumo-remoto.md` | Índice dos guias gerais, referência de comandos e guia de consumo/controle remoto |
 | `CLAUDE.md` | Orientações gerais (convenções, armadilhas, fluxo de tool nova) |
 | `TASKS.md` | Tarefas abertas do usuário |
 
@@ -129,6 +131,7 @@ no macOS). A consulta é compartilhada com o card de configurações e reaprovei
 
 | Tool | IPC no main |
 |---|---|
+| delegate_tasks | Orquestração no renderer, com leitura pelo IPC existente e até três contextos isolados |
 | read_tool_result | Cache do renderer ou histórico persistido do chat (`history:`) |
 | list_files / read_file / write_file / edit_file / search_files / create_directory / delete_file | list-files / read-file / write-file / edit-file / search-files / create-directory / delete-file |
 | ask_user | **nenhum** — pergunta é UI pura (card com opções); o turno para até a resposta ou "Pular" |
@@ -204,6 +207,7 @@ headless com stub de electronAPI):
   roda ANTES de montar o payload.
 - `src/websearch.js`: não editar, não converter.
 - README envelhece rápido: mudança visível ao usuário → atualizar README no mesmo commit.
+- A pasta `docs/` contém apenas guias gerais e referências permanentes, organizados por assunto. Não criar documentação por versão, data ou sessão em nenhum lugar dessa pasta, incluindo notas de versão, changelogs, resumos de alterações e relatórios de testes. Atualizar o guia existente quando o comportamento mudar. Novos guias só para assuntos permanentes, com link em `docs/README.md`. Resultados de testes ficam na resposta ou no PR. Logs e arquivos opcionais de diagnóstico ficam fora do repositório.
 - Git: branch `main`, mensagens pt-BR com prefixo (`feat:`, `fix:`, `docs:`, `update:`);
   release = tag `vX.Y.Z` **batendo com o `version` do package.json** (o CI confere e falha antes do build).
 
@@ -272,9 +276,7 @@ Regressões em `model-vision.test.mjs`, `computer.test.mjs`, `test-computer-elec
 
 `npm run test:computer:real` é separado e opcional: envia prompts ao modelo real e usa o input nativo em duas janelas de teste maximizadas. Verifica seis tarefas pelo estado da página e pelo arquivo de nota salvo, exige ações nativas bem-sucedidas e requisições com imagens. A chave fica só na memória. `POFU_TEST_REPORT`, `POFU_QA_OUTPUT` e `POFU_TEST_THINK` controlam relatório, capturas e raciocínio. `capture_screen` aceita o alias `primary`; IDs desconhecidos continuam recusados.
 
-O harness mantém os handlers reais de load/save para atualizar a permissão no main, gravando somente `computerUse` no perfil temporário. Não substituir esses handlers por stubs sem preservar a permissão. `POFU_TEST_NATIVE_ONLY=1` é um diagnóstico sem decisões do modelo, separado nos relatórios. `POFU_TEST_TIMEOUT_MS` limita o turno e `POFU_TEST_TASK` seleciona uma tarefa. Resultados reais de 08/10 em `docs/testes/controle-maquina-2026-10-08.md`.
-
-Reteste de 08/10: os seis cenários passaram com o modelo real, incluindo abrir a segunda janela, salvar texto com acentos e substituir/salvar usando Ctrl+A e Ctrl+S. Foram 29 requisições, 17 ações nativas e 23 capturas, sem falhas. Evidências em `docs/testes/controle-maquina-modelo-reteste.json` e captura do editor ao lado. O travamento anterior da API ficou registrado separadamente.
+O harness mantém os handlers reais de load/save para atualizar a permissão no main, gravando somente `computerUse` no perfil temporário. Não substituir esses handlers por stubs sem preservar a permissão. `POFU_TEST_NATIVE_ONLY=1` é um diagnóstico sem decisões do modelo, separado nos relatórios. `POFU_TEST_TIMEOUT_MS` limita o turno e `POFU_TEST_TASK` seleciona uma tarefa.
 
 ## Interface, reconexão e fila: outubro de 2026
 
@@ -285,3 +287,9 @@ Cabeçalho usa medidores de contexto/cota com percentuais, barras e estados desc
 `runAgent` mantém o estado ocupado durante o salvamento final e consulta a fila antes de sair. Um “continue” nesse intervalo precisa iniciar o próximo turno sem outro envio. Resposta sem texto/ferramentas gera diagnóstico visível. Regressões reais: `npm run test:reconnect`.
 
 O espelho inclui `usage` opcional e `messages.kind` (`error`/`retry`). Allowlist no Saas `src/functions/remoteCode.ts`, apresentação no websaas `public/code-remote.*`. Não enviar chaves ou mudar identidade/expiração dos comandos. Validar os três projetos com `Saas/bench/bench-remote-code.ts --desktop` e `bench-code-layout.ts`.
+
+## Subagentes
+
+`delegate_tasks` recebe até três tarefas independentes e aguarda os resultados. `src/subagents.ts` mantém os históricos, valida chamadas, restringe schemas e execução à allowlist de inspeção e aplica limites de contexto/etapas. A poda afeta apenas o payload, com recuperação via `read_tool_result`. Não reutilize `agentTurns` nem permita delegação recursiva.
+
+O adaptador `delegateTasks` no renderer fixa provedor/modelo/projeto, usa um `ToolExecutionScope` por filho e propaga Parar a todas as requisições. Leituras dos filhos não autorizam escritas do pai. `trackUsage(usage, true, provider)` soma o consumo sem substituir o contexto do pai. Os cards mantêm estado e resultados na resposta da ferramenta, inclusive ao recarregar. Subagentes não usam terminal, MCP, ações visuais ou ferramentas mutáveis. Regressões: `subagents.test.mjs` e `npm run test:subagents`.

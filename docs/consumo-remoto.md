@@ -1,49 +1,77 @@
 # Consumo e controle remoto
 
-![Consumo no cabeçalho do chat, ao lado do contexto, dados sintéticos](img/consumo-chat.png)
+## Contexto, tokens e cota
 
-![Painel de consumo no Studio, dados sintéticos](img/consumo-desktop.png)
+O indicador de contexto mostra quanto da conversa principal está ocupando o contexto do modelo. O consumo soma as requisições do agente e dos subagentes. Contexto e consumo têm funções diferentes: uma nova análise pode aumentar o consumo sem aumentar o contexto da conversa principal.
 
-Clique no consumo no cabeçalho do chat, ao lado do contexto ou use `/usage`. O resumo usa automaticamente o provedor ativo e permite escolher o período. Saldo e ciclo aparecem quando a API os informa; detalhes por modelo ficam recolhidos. Trocar chave/endpoint separa o registro; reabrir preserva totais em `consumo.json`, sem mensagens/chaves. Contabiliza chamadas do agente com `usage` válido, por dia/modelo, até 366 dias. Chamadas externas e respostas sem `usage` não são contadas; não representa a fatura inteira.
+Clique no indicador de consumo junto ao contexto ou use `/consumo`, `/usage` ou `/cost`. O resumo usa o provedor ativo e permite escolher o período. Detalhes por modelo ficam recolhidos.
 
-| Provedor | Relatório | Credencial |
+![Painel de consumo do Studio com dados de demonstração](img/consumo-desktop.png)
+
+O registro local contabiliza respostas com `usage` válido, por dia e modelo, e preserva até 366 dias. Trocar perfil, chave ou endpoint separa o registro. Os totais ficam em `consumo.json`, sem mensagens ou chaves.
+
+Chamadas de outros aplicativos e respostas sem `usage` não entram nesse registro. Ele não representa a fatura inteira da conta. Saldo, cota e ciclo aparecem quando a API os informa. APIs sem relatório remoto mostram o registro local.
+
+## Relatórios por provedor
+
+| Integração do Studio | Dados consultados | Credencial |
 |---|---|---|
-| OpenAI | Completions e custos da organização | Chave administrativa separada |
-| Claude / Anthropic | Mensagens e custos da organização | Chave administrativa e acesso ao Admin API |
-| OpenRouter | Uso acumulado/mensal e limite da chave | Chave comum |
+| OpenAI | Uso e custos da organização | Chave administrativa separada |
+| Claude / Anthropic | Uso e custos da organização | Chave administrativa com acesso ao Admin API |
+| OpenRouter | Uso acumulado e limite da chave | Chave comum |
 | DeepSeek | Saldo por moeda | Chave comum |
-| Pofu Server | `/v1/usage`: saldo/ciclo/plano em créditos | Chave comum |
-| API própria/compatível | Endpoint da API + `/usage`, `schema: "ai-usage/v1"` | Chave comum |
+| Pofu Server | Saldo, ciclo e plano em créditos | Chave comum |
+| API compatível com `ai-usage/v1` | Relatório do endpoint `/usage` | Chave comum |
 
-OpenAI/Anthropic não oferecem fatura universal com qualquer chave de chat. Sem credencial administrativa previamente salva, o resumo mostra o registro local. Credenciais administrativas existentes são preservadas no cofre do sistema, usadas somente no host HTTPS oficial, fora do payload do modelo. Sistema sem cofre seguro não salva credenciais administrativas/pareamento. OpenRouter informa limite restante da chave, não saldo total da conta; DeepSeek informa saldo, sem histórico de gastos. Falhas e relatório parcial aparecem explicitamente, sem fabricar saldo/custo.
+Sem uma credencial administrativa salva, o Studio usa o registro local nas integrações que precisam dela. Credenciais administrativas são protegidas pelo cofre do sistema e usadas somente no host HTTPS oficial. Elas não entram no payload do modelo. Sistemas sem cofre seguro não salvam credenciais administrativas ou de pareamento.
 
-Referências: [OpenAI Admin APIs](https://developers.openai.com/api/docs/guides/admin-apis), [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api), [OpenRouter Key](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key), [DeepSeek Balance](https://api-docs.deepseek.com/api/get-user-balance/).
+OpenRouter informa o limite da chave. DeepSeek informa saldo por moeda. O Studio mantém essas medidas separadas e sinaliza falhas ou relatórios parciais sem inventar valores.
 
-## Code pelo site
+O consumo usa a conexão do provedor ativo. Não é necessário configurar outra URL para abrir o resumo.
 
-![Chat e consumo na área Code, sessão de teste](img/code-remoto.png)
+## Conectar o computador ao site
 
-![Pareamento no Studio, sessão de teste](img/controle-remoto.png)
+1. Abra **Code → Conectar computador** no site para obter o código de pareamento.
+2. No Studio, abra **Configurações → Controle remoto** e informe a origem HTTPS do site e o código.
+3. Conecte antes de o código expirar, em cinco minutos, e mantenha o Studio aberto.
 
-Abra **Code → Conectar computador** no site atualizado; o código aparece automaticamente. No Studio, **Configurações → Controle remoto**: origem HTTPS do site e código (vence em cinco minutos). Mantenha o Studio aberto. Não é necessário abrir porta no PC.
+Não é necessário abrir uma porta no PC. O botão da lateral permite ligar ou desligar a ponte e mostra se a conexão está ativa. Se ainda não houver pareamento, **Ligar** abre as configurações remotas.
 
-Pelo site, converse com o agente, acompanhe resposta/ferramentas, envie à fila, pare geração, aprove/recuse ferramentas e responda perguntas. Crie/selecione/renomeie/apague chats e troque projeto conhecido, provedor, thinking ou modo de execução com agente parado. As ferramentas e proteção manual continuam no PC. Escolher automático no site exige confirmar que vale também no desktop.
+![Área Code do site com uma conversa de demonstração](img/code-remoto.png)
 
-Consumo aparece na mesma área Code: consulta ao conectar, a cada minuto e no botão Atualizar. Chaves comuns/administrativas e endpoint não vão ao site. Desligar no desktop pausa; desconectar no site revoga. Aplicativo retoma a conexão pareada ao abrir até desligar/revogar.
+Pelo site, você pode conversar, enviar mensagens à fila, parar a geração, responder perguntas, aprovar ou recusar ferramentas e consultar consumo. As ferramentas executam no computador e mantêm as proteções do modo Manual.
 
-Revisão de código de 07/10: o site edita/apaga/regenera mensagens, duplica/limpa/exporta trecho de chats e oferece comandos `/`, processos e compactação. Apagar remove também as mensagens seguintes para preservar sequência das ferramentas. Editar preserva anexos; reenviar/regenerar descarta o ramo com confirmação. Diff/desfazer usa snapshots da conversa e restaura sobre o estado atual do arquivo, com confirmação. Projetos/provedores novos seguem cadastrados no desktop.
+Com o agente parado, você pode gerenciar chats e trocar projeto conhecido, provedor, raciocínio ou modo de execução. Escolher o modo automático pelo site exige confirmar que a escolha também vale no desktop. Novos projetos e provedores são cadastrados no desktop.
 
-Até três PNG/JPEG/WebP podem ser escolhidas/coladas/arrastadas, normalizadas e salvas pelo IPC existente. Modelo com visão obrigatório; pixels vão à inferência e espelho devolve só nomes/miniaturas. Texto segue limitado aos últimos 80 blocos/60 mil caracteres; exportação baixa esse trecho. Sem conexão, comandos novos são recusados; consumo pode estar desatualizado (data acompanha relatório). Comando expirado/reinício não é reproduzido automaticamente. Imagens/processos/desfazer e computadores são gerenciados por plano no servidor.
+### Histórico, imagens e alterações
 
-Necessários API/site compatíveis e reabrir Studio atualizado. Não há novo instalador/release desta revisão. Passaram 90 testes Studio, 15 backend e 22 de integração site/IPC/agente em perfil, workspace e inferência sintéticos; nenhum processo de produção controlado.
+A área Code permite editar mensagens, apagar ramos, regenerar respostas, duplicar ou limpar conversas e consultar processos. Editar ou regenerar não desfaz as ações das ferramentas já executadas. Desfazer um arquivo usa o snapshot da conversa, com confirmação.
 
-## Desenvolvimento
+Até três imagens PNG, JPEG ou WebP podem ser anexadas pelo site. O modelo precisa oferecer visão. Os pixels seguem para a inferência, enquanto o espelho remoto usa nomes e miniaturas.
 
-`consumption.ts`: provedores/caches/moedas/escopo/paginação, deadline e redirecionamento proibido. `consumption-store.ts`: registro atômico. `consumption-vault.ts`: administrativa protegida. `remote-control.ts`: HTTPS no main. Renderer/preload compartilham exclusivamente espelho/comandos/resultados.
+O espelho contém os últimos 80 blocos, limitado a 60 mil caracteres. A exportação pelo site baixa esse trecho. O histórico completo permanece no desktop. Recursos também dependem das permissões do plano no servidor.
 
-`npm test` inclui contratos/persistência da ponte e consumo. `npm run test:consumption` verifica painel/IPC reais com dados sintéticos. Após build, executar da raiz do saas: `node bench/bench-remote-code.ts --desktop` (API, proxy, Electron, contas e workspace isolados; inferência sintética). Não usa produção ou contas reais dos provedores.
+### Conexão e segurança
 
-Versão 1.6.0: API e site compatíveis já publicados; instale o desktop atualizado para parear. O protótipo de pesquisa web permanece local, fora deste release, em revisão após o comparativo. A pesquisa distribuída mantém a implementação estável anterior.
+- Chaves da API e credenciais administrativas não são enviadas ao site.
+- A credencial de pareamento fica protegida pelo cofre do sistema.
+- **Desligar** no desktop pausa a ponte. **Desconectar** no site revoga o pareamento.
+- Sem conexão, novos comandos remotos são recusados. O consumo pode estar desatualizado e mostra a data da consulta.
+- Após uma falha de conexão, a ponte espera dez segundos antes de tentar novamente. Comandos expirados não são reproduzidos ao reconectar.
 
+API, site e desktop precisam oferecer recursos compatíveis para que o acesso remoto funcione.
 
-O endereço da API é único. Consumo usa o provedor ativo automaticamente, sem aba nas configurações e sem URL extra. O botão no cabeçalho, ao lado do contexto, abre um resumo compacto; `/usage`, `/cost` e `/consumo` abrem o mesmo resumo. Detalhes por modelo ficam recolhidos. APIs sem relatório remoto mostram somente o registro local, sem cartão de saldo desconhecido.
+## Referência de desenvolvimento
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `src/consumption.ts` | Normaliza relatórios, tokens, caches, moedas e paginação. |
+| `src/consumption-store.ts` | Persiste o registro local de consumo. |
+| `src/consumption-vault.ts` | Protege credenciais administrativas no cofre do sistema. |
+| `src/remote-control.ts` | Mantém a conexão HTTPS da ponte no processo main. |
+
+Renderer e preload compartilham somente o espelho e os comandos permitidos. Preserve a identidade das aprovações, a expiração e a idempotência dos comandos.
+
+`npm test` cobre os contratos e a persistência. `npm run test:consumption` verifica o painel e os IPCs com dados sintéticos. Consulte o [guia de comandos](comandos.md) para os demais ensaios.
+
+A integração entre API, proxy e Electron pode ser verificada pela raiz do projeto Saas com `node bench/bench-remote-code.ts --desktop`, usando contas e workspace isolados. Os resultados desse ensaio são informados na resposta ou no PR, sem criar um relatório nesta pasta.

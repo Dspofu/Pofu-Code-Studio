@@ -45,6 +45,7 @@ TOOL RESULTS ARE EVIDENCE:
 - Previous captures may describe different page instances and state. Compare measurements from the same test setup before concluding a regression.
 
 TOOLS:
+- Use delegate_tasks for independent investigations or reviews that benefit from parallel work. Give each subagent a self-contained task with paths, constraints and the evidence needed. Only summaries return to you; read the relevant files yourself before editing. Keep simple tasks local.
 - Prefer the dedicated tools (read_file, write_file, edit_file, search_files, create_directory, delete_file, http_request) over the equivalent shell commands — they are safer, behave the same on Linux and Windows, and return structured results.
 - A slow process (npm install, a build, a test suite) went to the background and you need its result: call wait_for_process(pid) ONCE. Polling read_process_output speeds up nothing and burns context. Servers never end — do not wait on them.
 - Use what is already installed. Before downloading a package from the network (npx, pip install, apt), see whether what the machine already has can do it — for example "python3 -m http.server" or "node --run" to serve static files. Downloading is slow and fails without internet.
@@ -234,6 +235,9 @@ export const COMPUTER_IMAGE_MAX_SIDE = 1600;
 // Trava de segurança ALTA apenas contra loop verdadeiramente infinito; o controle
 // real é o botão "Parar". Tarefas longas e legítimas rodam sem serem bloqueadas.
 export const MAX_LOOP_ITERATIONS = 100;
+
+// Cada análise tem escopo curto; este teto limita custo e loops sem desativar a proteção do pai.
+export const MAX_SUBAGENT_TURNS = 12;
 
 // Tentativas por requisição. Um tool_call malformado faz o llama.cpp responder 500 e é
 // transitório (a geração é estocástica) — repetir costuma resolver, e sem isso a run

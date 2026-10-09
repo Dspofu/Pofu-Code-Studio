@@ -326,3 +326,20 @@ button.usage-meter { cursor: pointer; }
 .update-footer .update-link { margin-right: auto; font-size: 12px; }
 .typing-progresso { margin-left: 10px; align-self: center; font-size: 11px; color: var(--muted-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .typing-nota .typing-progresso { margin-left: 0; align-self: auto; }
+
+.subagents-panel { display: grid; gap: 8px; margin: 10px 0; }
+.subagent-row { min-width: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px; background: #171c15; }
+.subagent-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
+.subagent-name { font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.subagent-status { font-size: 11px; color: var(--accent-2); }
+.subagent-row[data-status="running"] .subagent-status::before { content: "● "; }
+.subagent-row[data-status="failed"] .subagent-status { color: #f2a49c; }
+.subagent-row[data-status="cancelled"] .subagent-status { color: #eec985; }
+.subagent-task { margin: 6px 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 85px; overflow-y: auto; }
+.subagent-steps { color: var(--muted-2); font-size: 10px; font-variant-numeric: tabular-nums; }
+.subagent-details { margin-top: 8px; font-size: 11px; }
+.subagent-details summary { color: var(--muted); cursor: pointer; }
+.subagent-output { margin: 8px 0 0; color: var(--text); font: inherit; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; max-height: 300px; overflow-y: auto; }
+
+.subagent-output h1, .subagent-output h2, .subagent-output h3, .subagent-output h4 { font-size: 12px; line-height: 1.5; }
+.subagent-output .is-error { color: #f2a49c; }

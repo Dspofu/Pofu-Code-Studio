@@ -1,5 +1,6 @@
 import { workspacePath } from './workspace-path.js';
 import { supportsVision } from './model-vision.js';
+import { delegateTasksTool, runSubagents, SUBAGENT_TOOL_NAMES, validateSubagentTasks } from './subagents.js';
 import { computerTools, imageTools } from './computer-tools.js';
 import { mountMentionHighlight, paintMentions } from './mention-highlight.js';
 import { activateProvider, migrateProviders, rememberProvider, validateProvider, type ProviderConfig } from './providers.js';
@@ -15,7 +16,7 @@ import { formataEstrutura, suportaEstrutura } from './outline.js';
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -46,6 +47,7 @@ let state: AppState = {
 let isRunning = false;
 let stopRequested = false;   // usuário pediu para parar a geração
 let abortController = null;   // aborta o fetch em streaming em andamento
+const subagentControllers = new Set<AbortController>();
 
 // Mensagens escritas ENQUANTO o agente responde. Não podem entrar no histórico na hora:
 // cairiam no meio de um par tool_call/tool e o servidor recusa o payload inteiro por causa
@@ -108,6 +110,7 @@ function stopAgent() {
   if (pendingConfirm) resolveConfirm('reject'); // fecha o modal de confirmação, se aberto
   if (pendingQuestion) resolveQuestion(true);   // e o card de pergunta, que também segura o turno
   if (abortController) { try { abortController.abort(); } catch (e) { } }
+  for (const controller of subagentControllers) controller.abort();
   window.electronAPI.cancelComputer?.().catch(() => {});
 }
 
@@ -1592,6 +1595,7 @@ function appendToolLog(text) {
 
 // ---- Cards de ferramenta (exibição amigável, sem JSON cru) ----
 const TOOL_META = {
+  delegate_tasks: { icon: '👥', label: 'Subagentes' },
   list_files: { icon: '📁', label: 'Listar arquivos' },
   read_tool_result: { icon: '📑', label: 'Continuar resultado' },
   read_file: { icon: '📄', label: 'Ler arquivo' },
@@ -1620,6 +1624,7 @@ const TOOL_META = {
 function summarizeToolCall(name, args) {
   args = args || {};
   switch (name) {
+    case 'delegate_tasks': return Array.isArray(args.tasks) ? `${args.tasks.length} análise${args.tasks.length === 1 ? '' : 's'} em paralelo` : '';
     case 'execute_command': return '$ ' + commandLabel(args);
     case 'read_file':
       return (args.filename || '') + (args.offset > 1 ? ` (a partir da linha ${args.offset})` : '');
@@ -1685,6 +1690,15 @@ function summarizeToolCall(name, args) {
 // de verdade — é só o '⚠' que o fillToolResult pinta de vermelho.
 // O card já mostra o arquivo na linha de argumentos, então a mensagem não repete o caminho.
 const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
+  [/^HTTP (401|403):/i, m => `⚠ O servidor recusou o acesso (HTTP ${m[1]}). Confira a chave e as permissões.`],
+  [/^HTTP 404:/i, () => '⚠ Endereço ou modelo não encontrado. Confira a conexão.'],
+  [/Subagent cancelled by the user/i, () => '↷ Análise interrompida pelo usuário.'],
+  [/Subagent turn limit reached/i, () => '↷ A análise chegou ao limite de etapas. Confira os resultados parciais.'],
+  [/Subagent context limit reached/i, () => '↷ A análise ultrapassou o contexto. Peça uma tarefa menor.'],
+  [/Subagent returned no text or tool calls|Subagent received no assistant message/i, () => '⚠ O subagente não enviou um resultado.'],
+  [/Subagent response was cut off by the token limit/i, () => '⚠ O resultado do subagente foi cortado pelo limite de tokens.'],
+  [/delegate_tasks requires between 1 and 3 tasks/i, () => '↷ A delegação precisa ter de uma a três tarefas.'],
+  [/Open a project before delegating/i, () => '↷ Abra um projeto antes de criar subagentes.'],
   [/The user rejected this action/i, () => '↷ Ação recusada pelo usuário.'],
   [/Malformed tool call|must be a complete JSON object/i, () => '↷ A chamada veio incompleta e precisa ser corrigida pelo agente.'],
   [/Computer action cancelled/i, () => '↷ Ação interrompida pelo usuário.'],
@@ -1787,6 +1801,11 @@ function summarizeToolResult(name, resultStr) {
   if (data?.result_id && typeof data.content === 'string') return `✓ ${data.content.length.toLocaleString('pt-BR')} de ${data.total_chars.toLocaleString('pt-BR')} caracteres · resultado preservado na sessão`;
 
   switch (name) {
+    case 'delegate_tasks': {
+      const agents = Array.isArray(data.agents) ? data.agents : [];
+      const completed = agents.filter(a => a.status === 'completed').length;
+      return `${completed}/${agents.length} análises concluídas` + (agents.some(a => a.status === 'cancelled') ? ' · interrompido' : agents.some(a => a.status === 'failed') ? ' · houve falha' : '');
+    }
     case 'execute_command': {
       if (data.backgrounded) {
         const head = `▸ rodando em segundo plano · PID ${data.pid} (${data.reason || 'contínuo'})`;
@@ -2130,9 +2149,172 @@ function criaCardFerramentaViva() {
   };
 }
 
+function subagentResultText(text: string) {
+  try {
+    const page = JSON.parse(text);
+    if (page?.result_id) return resultStore.snapshot(page.result_id, state.activeChatId) ||
+      activeChat()?.messages.find(m => m.retainedResult?.id === page.result_id)?.retainedResult?.text || text;
+  } catch { /* resultado sem paginação */ }
+  return text;
+}
+
+function updateSubagentPanel(card: HTMLElement, worker) {
+  if (!card) return;
+  let panel = q<HTMLElement>('.subagents-panel', card);
+  if (!panel) {
+    panel = document.createElement('div'); panel.className = 'subagents-panel';
+    panel.setAttribute('aria-label', 'Análises dos subagentes'); card.appendChild(panel);
+  }
+  let row = Array.from(panel.children).find(element => (element as HTMLElement).dataset.workerId === worker.id) as HTMLElement;
+  if (!row) {
+    row = document.createElement('div'); row.className = 'subagent-row'; row.dataset.workerId = worker.id;
+    const heading = document.createElement('div'); heading.className = 'subagent-heading';
+    const name = document.createElement('strong'); name.className = 'subagent-name';
+    const status = document.createElement('span'); status.className = 'subagent-status'; status.setAttribute('role', 'status');
+    heading.append(name, status);
+    const task = document.createElement('p'); task.className = 'subagent-task';
+    const steps = document.createElement('span'); steps.className = 'subagent-steps';
+    row.append(heading, task, steps); panel.appendChild(row);
+  }
+  row.dataset.status = worker.status;
+  q('.subagent-name', row).textContent = worker.name;
+  const labels = { running: 'Analisando', completed: 'Concluído', failed: 'Falhou', cancelled: 'Interrompido' };
+  q('.subagent-status', row).textContent = worker.retryAt
+    ? `Reconectando em ${Math.max(0, Math.ceil((worker.retryAt - Date.now()) / 1000))}s`
+    : labels[worker.status] || 'Aguardando';
+  q('.subagent-task', row).textContent = worker.task;
+  q('.subagent-steps', row).textContent = `${worker.turns} etapa${worker.turns === 1 ? '' : 's'} · ${worker.tool_calls} consulta${worker.tool_calls === 1 ? '' : 's'}`;
+  if (worker.result || worker.error) {
+    let details = q<HTMLDetailsElement>('.subagent-details', row);
+    if (!details) {
+      details = document.createElement('details'); details.className = 'subagent-details';
+      const summary = document.createElement('summary'); summary.textContent = 'Ver resultado';
+      const result = document.createElement('div'); result.className = 'subagent-output md-body';
+      details.append(summary, result); row.appendChild(details);
+    }
+    const output = q('.subagent-output', details);
+    renderMarkdownInto(output, worker.result || '');
+    if (worker.error) {
+      const error = document.createElement('p'); error.className = 'is-error'; error.textContent = erroParaTela(worker.error);
+      output.appendChild(error);
+    }
+  }
+  scrollChat();
+}
+
+async function subagentReconnect(signal: AbortSignal, update: (deadline: number) => void) {
+  const deadline = Date.now() + REQUEST_RETRY_DELAY_MS;
+  update(deadline);
+  const ticker = window.setInterval(() => update(deadline), 200);
+  let timer;
+  let cancel;
+  try {
+    await new Promise<void>(resolve => {
+      cancel = () => resolve();
+      timer = window.setTimeout(resolve, REQUEST_RETRY_DELAY_MS);
+      signal.addEventListener('abort', cancel, { once: true });
+      if (signal.aborted) resolve();
+    });
+  } finally { clearTimeout(timer); clearInterval(ticker); signal.removeEventListener('abort', cancel); update(0); }
+}
+
+async function delegateTasks(args, workspace: string, toolCallId: string) {
+  const tasks = validateSubagentTasks(args.tasks);
+  if (!workspace) throw new Error('Open a project before delegating file inspection.');
+  const settings = { ...state.settings };
+  if (!settings.model) throw new Error('Select a model before creating subagents.');
+  const tools = activeTools().filter(tool => SUBAGENT_TOOL_NAMES.has(tool.function.name));
+  const controller = new AbortController();
+  if (stopRequested) controller.abort();
+  subagentControllers.add(controller);
+  const card = (Array.from(el('chat-box').getElementsByClassName('tool-card')) as HTMLElement[]).find(card => card.dataset.toolCallId === toolCallId);
+  const scopes = new Map<string, ToolExecutionScope>();
+  const thinking = new Map<string, any>();
+  const statuses = new Map<string, any>();
+  const ctx = state.modelCtx || ASSUMED_CTX_WHEN_UNKNOWN;
+  const maxTokens = Math.min(settings.maxTokens || 4096, Math.floor(ctx * RESPOSTA_MAX_FRACAO));
+  const ownPrompt = String(settings.customPrompt || '').trim();
+  const system = (settings.promptMode === 'replace' && ownPrompt ? ownPrompt :
+    `You are a software engineering investigator working in ${workspace}. Reply in the same language as the assignment. Read project instructions, inspect the actual files, and distinguish observations from assumptions. Report useful findings with paths and line numbers, relevant evidence, limitations and recommended next steps. Never claim to have executed tests or applied changes.`) + blocoInstrucoes();
+  const available = Math.max(1024, ctx - maxTokens - CONTEXT_MARGIN_TOKENS);
+  const maxContextChars = Math.floor(Math.min(available, Number(settings.historyCap) || available) * charsPorToken());
+  const fixedChars = system.length + JSON.stringify(tools).length + 800;
+  const budget = readCharBudget(Math.max(256, (maxContextChars - fixedChars) / charsPorToken()));
+  const provider = settings.providers?.find(p => p.id === settings.activeProviderId);
+  const usageProvider = provider ? { ...provider, apiUrl: settings.apiUrl, apiKey: settings.apiKey, model: settings.model } : null;
+  const update = worker => { statuses.set(worker.id, worker); updateSubagentPanel(card, worker); };
+  try {
+    return await runSubagents(tasks, {
+      tools,
+      onEvent: update,
+      onUsage: usage => trackUsage(usage, true, usageProvider),
+      onToolResult: (message, worker) => {
+        const scope = scopes.get(worker.id);
+        if (scope) retainToolOutput(message as ChatMessage, scope);
+      },
+      execute: async ({ name, args, toolCallId, worker, messages, signal }) => {
+        if (signal.aborted) throw new DOMException('Subagent cancelled by the user.', 'AbortError');
+        let scope = scopes.get(worker.id);
+        if (!scope) {
+          scope = { id: worker.id, messages: messages as ChatMessage[], store: new ToolResultStore(),
+            readFiles: new Map(), deliveredReads: new Map(), budget };
+          scopes.set(worker.id, scope);
+        }
+        scope.messages = messages as ChatMessage[];
+        const output = await runTool(name, args, workspace, toolCallId, scope);
+        return typeof output === 'string' ? output : output.text;
+      },
+      complete: async ({ messages, tools, signal, worker }) => {
+        if (!thinking.has(worker.id)) {
+          const level = THINK_LEVELS[settings.thinkLevel] || THINK_LEVELS.padrao;
+          thinking.set(worker.id, { payload: thinkRecusado ? null : level.payload, noThink: level.semRaciocinio || settings.noThink, adapted: false });
+        }
+        const level = thinking.get(worker.id);
+        let lastError;
+        for (let attempt = 1; attempt <= MAX_REQUEST_RETRIES; attempt++) {
+          if (signal.aborted) return { aborted: true };
+          try {
+            const result = await streamChatCompletion({
+              apiUrl: settings.apiUrl, apiKey: settings.apiKey, signal,
+              payload: { model: settings.model, messages: messages.map(m => m.role === 'system' && level.noThink ? { ...m, content: m.content + ' /no_think' } : m),
+                tools, tool_choice: 'auto', temperature: settings.temperature, top_p: settings.topP, max_tokens: maxTokens, ...(level.payload || {}) },
+              onContent: () => {}, onReasoning: () => {}
+            });
+            if (respostaVazia(result) && attempt < MAX_REQUEST_RETRIES && !signal.aborted) {
+              if (result.usage) trackUsage(result.usage, true, usageProvider);
+              continue;
+            }
+            return result;
+          } catch (error) {
+            lastError = error;
+            if (signal.aborted) return { aborted: true };
+            if (level.payload && recusouRaciocinio(error)) {
+              level.payload = level.adapted ? null : adaptaNivelRaciocinio(level.payload, String(error.message));
+              level.adapted = true;
+              attempt--;
+              continue;
+            }
+            const diag = classificaErroDeRequisicao(error, settings.apiUrl, settings.model);
+            if (!diag.transitorio || attempt === MAX_REQUEST_RETRIES || (/^Servidor parado/.test(String(error.message)) && attempt >= 2)) throw error;
+            await subagentReconnect(signal, retryAt => update({ ...(statuses.get(worker.id) || worker), retryAt }));
+          }
+        }
+        throw lastError || new Error('Subagent request failed.');
+      }
+    }, { signal: controller.signal, systemPrompt: system, maxTurns: MAX_SUBAGENT_TURNS, maxContextChars });
+  } finally { controller.abort(); subagentControllers.delete(controller); scopes.clear(); }
+}
+
 // Preenche (ou atualiza) o resultado dentro do card da chamada
 function fillToolResult(card, name, resultStr, extras: ToolExtras = {}) {
   if (!card) return;
+  if (name === 'delegate_tasks' && typeof resultStr === 'string') {
+    resultStr = subagentResultText(resultStr);
+    try {
+      const data = JSON.parse(resultStr);
+      if (Array.isArray(data.agents)) for (const worker of data.agents) updateSubagentPanel(card, worker);
+    } catch { /* erro de chamada continua no resultado comum */ }
+  }
   let res = q<HTMLElement>('.tool-result', card);
   if (!res) {
     res = document.createElement('pre');
@@ -2487,6 +2669,7 @@ function clipMiddle(str, max, marcador = null) {
 // sistema, ou que narra o óbvio, é custo fixo sem retorno. O que fica é o que muda a chamada
 // que o modelo faz (quando usar, qual parâmetro, o que o resultado significa).
 const tools = [
+  delegateTasksTool,
   {
     type: 'function',
     function: {
@@ -3038,38 +3221,61 @@ function encodeToolResult(value) {
   return resultStore.encode(value, toolBudget(), state.activeChatId);
 }
 
-function retainToolOutput(message: ChatMessage) {
+function retainToolOutput(message: ChatMessage, execution?: ToolExecutionScope) {
+  const scope = execution || localToolScope();
   if (message.name === 'read_tool_result') return;
   try {
     const page = JSON.parse(message.content);
-    const text = resultStore.snapshot(page.result_id, state.activeChatId);
+    const text = scope.store.snapshot(page.result_id, scope.id);
     if (text !== undefined) message.retainedResult = { id: page.result_id, text };
   } catch { /* leitura de arquivo pode ser texto puro */ }
 }
 
-async function runTool(name, args, workspace, toolCallId = '') {
+interface ToolExecutionScope {
+  id: string;
+  messages: ChatMessage[];
+  store: ToolResultStore;
+  readFiles: Map<string, number>;
+  deliveredReads: typeof leiturasEntregues;
+  budget: number;
+}
+function localToolScope(): ToolExecutionScope {
+  return { id: state.activeChatId, messages: activeChat()?.messages || [], store: resultStore,
+    readFiles: arquivosLidos, deliveredReads: leiturasEntregues, budget: toolBudget() };
+}
+
+async function runTool(name, args, workspace, toolCallId = '', execution?: ToolExecutionScope) {
+  const scope = execution || localToolScope();
+  const resultStore = scope.store;
+  const arquivosLidos = scope.readFiles;
+  const leiturasEntregues = scope.deliveredReads;
+  const toolBudget = () => scope.budget;
+  const encodeToolResult = value => resultStore.encode(value, scope.budget, scope.id);
   try {
+    if (execution && !SUBAGENT_TOOL_NAMES.has(name))
+      return JSON.stringify({ success: false, error: 'This tool is not allowed in a read-only subagent.' });
+    if (name === 'delegate_tasks') return encodeToolResult(await delegateTasks(args, workspace, toolCallId));
     if (name === 'read_tool_result') {
       if (String(args.result_id).startsWith('history:')) {
         const id = args.result_id.slice('history:'.length);
-        const message = activeChat().messages.find(m => m.role === 'tool' && m.tool_call_id === id);
+        const message = scope.messages.find(m => m.role === 'tool' && m.tool_call_id === id);
         if (!message) return JSON.stringify({ error: 'Original output is no longer in this chat history.' });
         if (message.retainedResult?.text) {
           const saved = message.retainedResult;
-          resultStore.restore(saved.id, saved.text, state.activeChatId);
-          return resultStore.read(saved.id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
+          resultStore.restore(saved.id, saved.text, scope.id);
+          return resultStore.read(saved.id, args.offset ?? 0, toolBudget(), scope.id, args.query);
         }
         // O texto original entra como está: embrulhado num objeto ele virava JSON dentro de
         // JSON, com cada aspa escapada duas vezes (6,9 mil caracteres para devolver 4,2 mil).
         const original = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
         if (original.length < 2) return JSON.stringify({ result_id: args.result_id, content: original });
-        const retained = JSON.parse(resultStore.encode(original, 1, state.activeChatId));
+        const retained = JSON.parse(resultStore.encode(original, 1, scope.id));
         if (retained.error) return JSON.stringify(retained);
-        return resultStore.read(retained.result_id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
+        return resultStore.read(retained.result_id, args.offset ?? 0, toolBudget(), scope.id, args.query);
       }
-      const saved = activeChat()?.messages.find(m => m.retainedResult?.id === args.result_id)?.retainedResult;
-      if (saved && typeof saved.text === 'string') resultStore.restore(saved.id, saved.text, state.activeChatId);
-      return resultStore.read(args.result_id, args.offset ?? 0, toolBudget(), state.activeChatId, args.query);
+      const saved = scope.messages.find(m => m.retainedResult?.id === args.result_id)?.retainedResult;
+      if (saved && typeof saved.text === 'string') resultStore.restore(saved.id, saved.text, scope.id);
+      return resultStore.read(args.result_id, args.offset ?? 0, toolBudget(), scope.id, args.query);
     }
     if (name === 'list_files') {
       const dir = workspacePath(workspace, args.subpath || '');
@@ -3109,7 +3315,7 @@ async function runTool(name, args, workspace, toolCallId = '') {
       arquivosLidos.set(chave, res.mtimeMs);
       const janela = [chave, args.offset, args.limit, args.char_offset, args.query, args.full].join('|');
       const antes = leiturasEntregues.get(janela);
-      if (antes && antes.mtimeMs === res.mtimeMs && antes.size === res.size && leituraAindaVisivel(antes.toolCallId))
+      if (antes && antes.mtimeMs === res.mtimeMs && antes.size === res.size && !execution && leituraAindaVisivel(antes.toolCallId))
         return JSON.stringify({ unchanged: true, note: `read_file already returned this range (tool call ${antes.toolCallId}) and the file has not changed since. Use that result instead of re-reading; if it is no longer in context, call read_tool_result with result_id "history:${antes.toolCallId}".` });
       if (toolCallId) leiturasEntregues.set(janela, { mtimeMs: res.mtimeMs, size: res.size, toolCallId });
       return formatFileWindow(args.filename, res);
@@ -4136,6 +4342,7 @@ async function agentTurns(chat) {
           appendToolLog(`⚠ ${name}: argumentos inválidos, chamada não executada`);
         } else {
           const card = appendToolCall(name, args, cardStream ? cardStream.encerra() : null);
+          if (toolCall?.id) card.dataset.toolCallId = toolCall.id;
           const chaveLoop = chaveDaChamada(name, args);
           const repetida = name === 'ask_user' ? 0 : trava.bloqueia(chaveLoop);
           // Modo manual: pede confirmação para ações que executam/apagam
@@ -4724,17 +4931,17 @@ function maybeRenameChat(chat) {
 // --------------------------------------------------------------------------
 //  Rastreamento real de uso de tokens
 // --------------------------------------------------------------------------
-function trackUsage(usage) {
+function trackUsage(usage, preserveContext = false, providerOverride = null) {
   if (!usage) return;
   state.usage.prompt += usage.prompt_tokens || 0;
   state.usage.completion += usage.completion_tokens || 0;
   state.usage.requests += 1;
-  state.usage.lastTotal = usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
+  if (!preserveContext) state.usage.lastTotal = usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0));
   state.usage.history.push(usage.completion_tokens || 0);
   if (state.usage.history.length > 12) state.usage.history.shift();
   renderUsage();
-  const provider = state.settings.providers?.find(p => p.id === state.settings.activeProviderId);
-  if (provider) void window.electronAPI.recordUsage({ ...provider, apiUrl: state.settings.apiUrl, apiKey: state.settings.apiKey, model: state.settings.model }, usage)
+  const provider = providerOverride || state.settings.providers?.find(p => p.id === state.settings.activeProviderId);
+  if (provider) void window.electronAPI.recordUsage(providerOverride || { ...provider, apiUrl: state.settings.apiUrl, apiKey: state.settings.apiKey, model: state.settings.model }, usage)
     .then(result => { if (!result.success) logSystem(result.error); else { refreshActiveConsumption(); } }).catch(() => logSystem('Não foi possível salvar o consumo local.'));
 }
 

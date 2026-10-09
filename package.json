@@ -1,7 +1,7 @@
 {
   "name": "pofu-code-studio",
   "productName": "Pofu Code Studio",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Agente de código em desktop (Electron) para qualquer API compatível com OpenAI: lê e edita o projeto, roda comandos e servidores em segundo plano e valida o que faz.",
   "main": "out/main.js",
   "scripts": {
@@ -17,7 +17,7 @@
     "dist:win": "electron-builder --win nsis",
     "predist": "npm run build",
     "dist": "electron-builder --linux deb --win nsis",
-    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs scripts/consumption.test.mjs scripts/remote-control.test.mjs scripts/remote-history.test.mjs scripts/model-vision.test.mjs scripts/computer.test.mjs scripts/updater.test.mjs",
+    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs scripts/consumption.test.mjs scripts/remote-control.test.mjs scripts/remote-history.test.mjs scripts/model-vision.test.mjs scripts/computer.test.mjs scripts/updater.test.mjs scripts/subagents.test.mjs",
     "test:consumption": "npm run build && node scripts/run-consumption-tests.cjs",
     "test:integration": "npm run build && node scripts/run-electron-tests.cjs",
     "test:reconnect": "npm run build && node scripts/run-reconnect-tests.cjs",
@@ -29,7 +29,9 @@
     "test:agent:long": "npm run build && node scripts/run-electron-script.cjs scripts/test-agente-maratona.cjs",
     "test:agent:quality": "npm run build && node scripts/run-electron-script.cjs scripts/test-agente-qualidade.cjs",
     "test:computer:real": "npm run build && node scripts/run-electron-script.cjs scripts/test-computador-real.cjs",
-    "test:vision": "npm run build && node scripts/run-vision-tests.cjs"
+    "test:vision": "npm run build && node scripts/run-vision-tests.cjs",
+    "test:subagents": "npm run build && node scripts/run-electron-script.cjs scripts/test-subagents-electron.cjs",
+    "test:subagents:real": "npm run build && node scripts/run-electron-script.cjs scripts/test-subagents-real.cjs"
   },
   "keywords": [
     "code-agent",
