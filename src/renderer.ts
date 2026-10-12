@@ -16,7 +16,7 @@ import { formataEstrutura, suportaEstrutura } from './outline.js';
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -33,6 +33,40 @@ function el<T extends HTMLElement = CampoUI>(id: string): T {
 /** querySelector com o mesmo tratamento; `raiz` permite buscar dentro de um card. */
 function q<T extends HTMLElement = CampoUI>(seletor: string, raiz: ParentNode = document): T {
   return raiz.querySelector(seletor) as T;
+}
+
+const dialogOpeners = new Map<string, HTMLElement>();
+
+function openDialog(id: string) {
+  const modal = el(id);
+  if (!modal.classList.contains('active') && document.activeElement instanceof HTMLElement) {
+    dialogOpeners.set(id, document.activeElement);
+  }
+  modal.classList.add('active');
+  q<HTMLButtonElement>('button:not(:disabled)', modal)?.focus();
+}
+
+function closeDialog(id: string) {
+  el(id).classList.remove('active');
+  const opener = dialogOpeners.get(id);
+  dialogOpeners.delete(id);
+  if (opener?.isConnected && opener.getClientRects().length) opener.focus();
+  else el('user-input').focus();
+}
+
+function bindDialogKeyboard(id: string, close: () => void) {
+  const modal = el(id);
+  modal.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.defaultPrevented || !modal.classList.contains('active')) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+    if (e.key !== 'Tab') return;
+    const targets = [...modal.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+      .filter(target => target.getClientRects().length && !target.hidden);
+    const first = targets[0], last = targets.at(-1);
+    if (!first) { e.preventDefault(); return; }
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
 }
 
 let state: AppState = {
@@ -112,6 +146,7 @@ function stopAgent() {
   if (abortController) { try { abortController.abort(); } catch (e) { } }
   for (const controller of subagentControllers) controller.abort();
   window.electronAPI.cancelComputer?.().catch(() => {});
+  updateInputState();
 }
 
 // ---- Confirmação de execução (modo manual) ----
@@ -567,6 +602,7 @@ let thinkRecusado: ThinkLevel | '' = '';
 // endpoint+modelo muda: o que o modelo anterior anunciava não vale para o novo.
 function detectThink(json, apiUrl: string, modelo: string) {
   const chave = `${apiUrl}::${modelo}`;
+  if ((json.data || []).some(m => m.id === modelo && m.owned_by === 'llamacpp')) servidorLlamaCpp = chave;
   if (!modelo || sondaThinkFeita === chave) return;
   sondaThinkFeita = chave;
   Object.assign(suporteThink, {
@@ -584,7 +620,7 @@ function detectThink(json, apiUrl: string, modelo: string) {
 // tornaria a suíte inviável.
 const prazoParado = () => Number((window as any).POFU_SERVIDOR_PARADO_MS) || SERVIDOR_PARADO_MS;
 
-// Par endpoint+modelo confirmado como llama.cpp pelo /props. Só ele recebe o return_progress:
+// Par endpoint+modelo confirmado como llama.cpp pelo /models ou /props. Só ele recebe o return_progress:
 // a OpenAI recusa a requisição inteira por campo desconhecido.
 let servidorLlamaCpp = '';
 
@@ -942,12 +978,12 @@ async function stopProc(pid) {
 }
 
 function openProcessesModal() {
-  el('processes-modal').classList.add('active');
+  openDialog('processes-modal');
   refreshProcesses();
 }
 
 function closeProcessesModal() {
-  el('processes-modal').classList.remove('active');
+  closeDialog('processes-modal');
   for (const pid in procOutputTimers) { clearInterval(procOutputTimers[pid]); delete procOutputTimers[pid]; }
 }
 
@@ -955,15 +991,17 @@ function closeProcessesModal() {
 // Se ele rolar para cima (para ler), paramos de puxar — mesmo durante o streaming.
 let stickToBottom = true;
 function scrollChat() {
-  if (!stickToBottom) return;
+  if (!stickToBottom) { el('btn-chat-bottom').hidden = false; return; }
   const cb = el('chat-box');
   cb.scrollTop = cb.scrollHeight;
+  el('btn-chat-bottom').hidden = true;
 }
 // Força ir ao fim e reativa o acompanhamento (ex.: ao enviar mensagem ou trocar de chat)
 function forceScrollBottom() {
   stickToBottom = true;
   const cb = el('chat-box');
   if (cb) cb.scrollTop = cb.scrollHeight;
+  el('btn-chat-bottom').hidden = true;
 }
 
 // Imagem entra no DOM com altura ZERO e só empurra o conteúdo quando termina de carregar
@@ -1092,10 +1130,50 @@ async function loadPersisted() {
 // --------------------------------------------------------------------------
 //  Gerenciamento de Chats
 // --------------------------------------------------------------------------
+const rascunhos = new Map<string, { text: string, attachments: Attachment[], queue: typeof filaMensagens }>();
+
+function guardarRascunho() {
+  if (!state.activeChatId) return;
+  rascunhos.set(state.activeChatId, { text: el('user-input').value, attachments: pendingAttachments, queue: filaMensagens });
+}
+
+function restaurarRascunho(id: string) {
+  const draft = rascunhos.get(id);
+  el('user-input').value = draft?.text || '';
+  pendingAttachments = draft?.attachments || [];
+  filaMensagens = draft?.queue || [];
+  renderAttachments();
+  renderFila();
+  el('user-input').dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function resetConversationContext() {
+  mentionFiles = []; mentionFilesFor = null;
+  closeMention();
+  arquivosLidos = new Map();
+  leiturasEntregues = new Map();
+  ultimaPoda = 0;
+  avisouPoda = false;
+  state.usage.lastTotal = 0;
+  const messages = activeChat()?.messages || [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].stats) {
+      state.usage.lastTotal = messages[i].stats.total || 0;
+      break;
+    }
+  }
+  renderUsage();
+}
+
 function createChat(name) {
+  if (isRunning) return null;
+  const path = activeChat()?.path || '';
+  guardarRascunho();
   const id = 'chat_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
-  state.chats[id] = { id, name: name || 'Novo Chat', path: '', messages: [] };
+  state.chats[id] = { id, name: name || 'Novo Chat', path, messages: [] };
   state.activeChatId = id;
+  resetConversationContext();
+  restaurarRascunho(id);
   return id;
 }
 
@@ -1111,8 +1189,10 @@ function renderChatList() {
     const chat = state.chats[id];
     const item = document.createElement('div');
     item.className = `chat-item ${id === state.activeChatId ? 'active' : ''}`;
+    item.dataset.chatId = id;
 
-    const nameSpan = document.createElement('span');
+    const nameSpan = document.createElement('button');
+    nameSpan.type = 'button';
     nameSpan.className = 'chat-name';
     nameSpan.innerText = chat.name;
     nameSpan.title = 'Duplo clique para renomear';
@@ -1140,9 +1220,29 @@ function renderChatList() {
     actions.appendChild(del);
     item.appendChild(actions);
 
-    item.addEventListener('click', () => switchChat(id));
+    item.addEventListener('click', () => { if (id !== state.activeChatId) switchChat(id); });
     container.appendChild(item);
   });
+  updateChatNavigation();
+}
+
+function updateChatNavigation() {
+  const reason = 'Aguarde a resposta ou use Parar.';
+  const newChat = q<HTMLButtonElement>('.btn-new-chat');
+  newChat.disabled = isRunning;
+  newChat.title = isRunning ? reason : 'Nova conversa no mesmo projeto';
+  el('btn-select-folder').disabled = isRunning;
+  el('btn-select-folder').title = isRunning ? reason : 'Escolher projeto';
+  if (isRunning) el('folder-menu').hidden = true;
+  for (const item of el('chat-list-container').querySelectorAll<HTMLElement>('.chat-item')) {
+    const name = q<HTMLButtonElement>('.chat-name', item);
+    if (name) {
+      name.disabled = isRunning;
+      name.title = isRunning ? reason : 'Abrir conversa · duplo clique para renomear';
+    }
+    q<HTMLButtonElement>('.chat-delete', item).disabled = isRunning;
+    item.classList.toggle('navigation-locked', isRunning);
+  }
 }
 
 // Renomeia um chat com edição inline no próprio item da lista
@@ -1204,29 +1304,31 @@ function renameActiveChat() {
 }
 
 function switchChat(id) {
-  if (!state.chats[id]) return;
+  if (isRunning || !state.chats[id]) return;
+  guardarRascunho();
   state.activeChatId = id;
-  filaMensagens = [];        // a fila é da conversa que estava aberta, não vai junto
-  renderFila();
-  arquivosLidos = new Map(); // o que foi lido vale por conversa
-  leiturasEntregues = new Map();
-  ultimaPoda = 0;
-  avisouPoda = false;
+  resetConversationContext();
+  restaurarRascunho(id);
   renderChatList();
   renderActiveChat();
   persist();
 }
 
 function deleteChat(id) {
+  if (isRunning || !state.chats[id]) return;
+  const wasActive = state.activeChatId === id;
+  const path = activeChat()?.path || '';
   delete state.chats[id];
-  if (state.activeChatId === id) {
+  rascunhos.delete(id);
+  if (wasActive) {
+    state.activeChatId = null;
     const remaining = Object.keys(state.chats);
-    if (remaining.length === 0) createChat('Chat Inicial');
-    else state.activeChatId = remaining[0];
+    if (remaining.length === 0) { createChat('Chat Inicial'); activeChat().path = path; }
+    switchChat(remaining[0] || state.activeChatId);
+  } else {
+    renderChatList();
+    persist();
   }
-  renderChatList();
-  renderActiveChat();
-  persist();
 }
 
 // Reconstrói a visualização do chat ativo a partir do histórico real de mensagens
@@ -1321,6 +1423,7 @@ let syncMentionHighlight = () => {};
 function updateInputState() {
   syncMentionHighlight();
   updateWelcome();
+  updateChatNavigation();
   el('studio-model').innerText = state.settings.model ? shortModelName(state.settings.model) : 'Configure seu modelo';
   const hasPath = !!(activeChat() && activeChat().path);
   const input = el('user-input');
@@ -1336,6 +1439,9 @@ function updateInputState() {
   el('active-provider').disabled = isRunning;
 
   const temTexto = !!(input.value.trim() || pendingAttachments.length);
+  el('btn-stop').hidden = !isRunning || !temTexto;
+  el('btn-stop').disabled = stopRequested;
+  el('btn-stop').textContent = stopRequested ? 'Parando…' : 'Parar';
   // Rodando e sem nada escrito, o botão é PARAR; com texto no campo ele volta a enviar
   // (para a fila), senão não haveria como despachar a mensagem sem antes abortar a run.
   const modo = (isRunning && !temTexto) ? 'parar' : (isRunning ? 'fila' : 'enviar');
@@ -1344,20 +1450,21 @@ function updateInputState() {
     btn.classList.toggle('is-stop', modo === 'parar');
     btn.innerHTML = modo === 'parar' ? STOP_SVG : SEND_SVG;
   }
-  btn.disabled = !hasPath && !input.value.startsWith('/') && modo !== 'parar';
+  btn.disabled = (!hasPath && !input.value.startsWith('/') && modo !== 'parar') || (modo === 'parar' && stopRequested);
   btn.title = modo === 'parar' ? 'Parar geração'
     : modo === 'fila' ? 'Enviar para a fila — o agente lê na próxima etapa'
     : 'Enviar mensagem';
+  btn.setAttribute('aria-label', btn.title);
 
   input.placeholder = !hasPath
-    ? 'Digite / para comandos ou selecione uma pasta de trabalho…'
+    ? 'Digite / ou abra um projeto…'
     : isRunning
-      ? 'Escreva agora — entra na fila e o agente lê ao terminar a etapa atual…'
-      : 'Peça uma alteração, use / para comandos ou @ para arquivos…';
+      ? 'Escreva para a próxima etapa…'
+      : 'Peça uma alteração · / comandos · @ arquivos';
 
   if (hint) {
     hint.innerText = isRunning
-      ? 'Enter põe na fila · o agente lê na próxima etapa · botão vazio para a geração'
+      ? 'Enter põe na fila · Parar interrompe'
       : 'Enter envia · Shift+Enter nova linha · / comandos · @ arquivos';
   }
 }
@@ -2578,63 +2685,82 @@ async function waitForReconnect(diag, attempt) {
   return !stopRequested;
 }
 
-// Espera com explicação. A primeira requisição de um chat REABERTO faz o servidor
-// reprocessar o histórico inteiro, sem nada em cache: medido em 177s num chat de 123k
-// tokens. Três pontinhos por três minutos são indistinguíveis de travamento, então quando
-// o contexto é grande e ainda está frio o indicador diz o que está acontecendo e conta o
-// tempo. `contextoTokens` em 0 (o caso comum) mantém o indicador simples de sempre.
+// O servidor pode demorar antes do primeiro token, mesmo com pouco histórico.
+// A espera precisa ser visível também durante a preparação, antes do POST à API.
 let cronometroEspera = 0;
-function showTyping(contextoTokens = 0) {
-  if (cronometroEspera) { clearInterval(cronometroEspera); cronometroEspera = 0; } // indicador anterior sem hideTyping
+let atualizaRelogioEspera: (() => void) | null = null;
+function showTyping(contextoTokens = 0, etapa: 'modelo' | 'consulta' | 'preparando' = 'modelo') {
+  hideTyping();
   const chatBox = el('chat-box');
   const div = document.createElement('div');
-  div.className = 'typing-indicator';
+  div.className = 'typing-indicator com-nota';
   div.id = 'typing-indicator';
+  div.setAttribute('role', 'status');
+  div.setAttribute('aria-live', 'polite');
   div.innerHTML = '<span></span><span></span><span></span>';
-
+  const nota = document.createElement('div'); nota.className = 'typing-nota';
+  const titulo = document.createElement('strong'); titulo.className = 'typing-etapa';
+  const detalhe = document.createElement('span'); detalhe.className = 'typing-detalhe';
+  const relogio = document.createElement('span'); relogio.className = 'typing-relogio';
+  relogio.setAttribute('aria-hidden', 'true');
+  titulo.textContent = etapa === 'consulta' ? 'Consultando o modelo' : etapa === 'preparando' ? 'Preparando conversa' : 'Aguardando o modelo';
+  detalhe.textContent = etapa === 'consulta' ? 'Verificando o contexto e as capacidades.' : etapa === 'preparando' ? 'Preparando o histórico e os anexos.' : 'Esperando a primeira resposta.';
   if (contextoTokens > 0) {
-    div.classList.add('com-nota');
-    const nota = document.createElement('div');
-    nota.className = 'typing-nota';
-    const titulo = document.createElement('strong');
-    // Arredondado e com "≈" porque a estimativa erra: contando caracteres deu 99 mil onde o
-    // servidor cobrou 123 mil no mesmo prompt (código tokeniza pior que a média). O número
-    // está aqui para explicar a demora, não para prestar contas.
     const mil = Math.max(1, Math.round(contextoTokens / 1000));
-    titulo.innerText = `Lendo o contexto da conversa · ≈ ${mil.toLocaleString('pt-BR')} mil tokens`;
-    const detalhe = document.createElement('span');
-    detalhe.innerText = 'Primeira mensagem depois de reabrir o app: o servidor precisa reprocessar o histórico antes de começar a responder.';
-    const relogio = document.createElement('span');
-    relogio.className = 'typing-relogio';
-    nota.append(titulo, detalhe, relogio);
-    div.appendChild(nota);
-
-    const inicio = Date.now();
-    const tick = () => {
-      const s = Math.round((Date.now() - inicio) / 1000);
-      relogio.innerText = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-    };
-    tick();
-    cronometroEspera = window.setInterval(tick, 1000);
+    detalhe.textContent = `Contexto estimado: ≈ ${mil.toLocaleString('pt-BR')} mil tokens. A API ainda não informou a etapa.`;
   }
-
+  nota.append(titulo, detalhe, relogio); div.appendChild(nota);
+  const inicio = Date.now();
+  const tick = () => {
+    const elapsed = Date.now() - inicio;
+    const seconds = Math.floor(elapsed / 1000);
+    relogio.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} de espera`;
+    const ultimaAtualizacao = Number(div.dataset.progressAt) || inicio;
+    if (div.dataset.progressAt) relogio.textContent += ` · atualização há ${Math.floor((Date.now() - ultimaAtualizacao) / 1000)}s`;
+    if (etapa === 'modelo' && Date.now() - ultimaAtualizacao >= RESPONSE_WAIT_NOTICE_MS && !div.classList.contains('typing-slow')) {
+      div.classList.add('typing-slow');
+      detalhe.textContent = div.dataset.progressAt ? 'Sem novas atualizações de progresso. Use Parar para cancelar.' : 'A API não informou o estado deste pedido. Use Parar para cancelar.';
+      scrollChat();
+    }
+  };
+  atualizaRelogioEspera = tick;
+  tick(); cronometroEspera = window.setInterval(tick, 1000);
   chatBox.appendChild(div);
   scrollChat();
 }
 
-// Progresso do prompt que o llama.cpp manda com return_progress: mostra que o servidor está
-// trabalhando (e quanto falta) em vez de três pontinhos mudos durante minutos.
+function mostraConexaoDaRequisicao() {
+  const indicador = el('typing-indicator');
+  if (!indicador) return;
+  q('.typing-etapa', indicador).textContent = 'Conexão aberta';
+  q('.typing-detalhe', indicador).textContent = 'A API ainda não informou o estado do pedido.';
+}
+
+// Progresso do mesmo pedido em return_progress, sem associar atividade de outros clientes.
 function mostraProgressoDoPrompt(p) {
   const indicador = el('typing-indicator');
-  const total = Number(p?.total) || 0, feito = (Number(p?.processed) || 0) + (Number(p?.cache) || 0);
-  if (!indicador || !total || total - (Number(p?.cache) || 0) < 1000) return;
+  const total = Number(p?.total), processados = Number(p?.processed), cache = Number(p?.cache) || 0;
+  if (!indicador || !Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(processados) || processados < 0 || processados > total) return;
+  // O processed do llama.cpp já inclui o cache; somá-lo de novo inventava progresso.
+  const feito = processados, percentual = Math.floor(feito / total * 100);
+  indicador.dataset.progressAt = String(Date.now());
+  indicador.classList.remove('typing-slow');
+  q('.typing-etapa', indicador).textContent = feito === total ? 'Contexto processado' : 'Lendo o contexto';
+  q('.typing-detalhe', indicador).textContent = feito === total ? 'Esperando os primeiros tokens da resposta.' : 'Progresso informado pela API.';
+  setAppTitle(feito === total ? 'aguardando resposta…' : 'lendo o contexto…');
   let linha = q<HTMLElement>('.typing-progresso', indicador);
   // div, e não span: `.typing-indicator > span` transforma todo span filho em pontinho piscando.
   if (!linha) { linha = document.createElement('div'); linha.className = 'typing-progresso'; (q<HTMLElement>('.typing-nota', indicador) || indicador).appendChild(linha); }
-  linha.textContent = `Lendo o prompt · ${Math.min(feito, total).toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} tokens`;
+  linha.textContent = `${percentual}% · ${feito.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} tokens`;
+  if (Number.isSafeInteger(cache) && cache > 0 && cache <= feito) linha.textContent += ` · ${cache.toLocaleString('pt-BR')} em cache`;
+  let barra = q<HTMLProgressElement>('.typing-bar', indicador);
+  if (!barra) { barra = document.createElement('progress'); barra.className = 'typing-bar'; barra.setAttribute('aria-label', 'Leitura do contexto'); q('.typing-nota', indicador).appendChild(barra); }
+  barra.max = total; barra.value = feito;
+  atualizaRelogioEspera?.();
 }
 
 function hideTyping() {
+  atualizaRelogioEspera = null;
   if (cronometroEspera) { clearInterval(cronometroEspera); cronometroEspera = 0; }
   const indicador = el('typing-indicator');
   if (indicador) indicador.remove();
@@ -3538,20 +3664,32 @@ async function runAgent() {
   isRunning = true;
   stopRequested = false;
   updateInputState();
-  // O n_ctx precisa ser conhecido ANTES de montar o primeiro payload: é ele que dimensiona
-  // a poda do histórico. Sem isso, justamente a primeira requisição de uma conversa longa
-  // (a mais perigosa) iria inteira e estouraria o contexto. Só a primeira vez espera;
-  // depois a atualização volta a rodar em paralelo, sem somar latência ao envio.
-  if (!state.modelCtx) await refreshModelContext();
-  else refreshModelContext();
-
+  const preparation = new AbortController();
+  abortController = preparation;
+  showTyping(0, 'consulta');
+  setAppTitle('preparando conversa…');
   try {
-    await agentTurns(chat);
+    // Sem metadados, a poda usa ASSUMED_CTX_WHEN_UNKNOWN. Consultar ajuda, mas não pode prender o envio.
+    if (!state.modelCtx) {
+      const known = await refreshModelContext(preparation.signal);
+      const key = `${state.settings.apiUrl}::${state.settings.model}`;
+      if (!known && !stopRequested && contextoEstimadoAvisado !== key) {
+        contextoEstimadoAvisado = key;
+        logSystem('O servidor não informou o contexto. Vou usar uma estimativa para iniciar.');
+      }
+    } else void refreshModelContext(preparation.signal);
+    if (!stopRequested) {
+      showTyping(0, 'preparando');
+      await agentTurns(chat);
+    }
   } catch (err) {
     hideTyping();
     appendError(`Erro inesperado no agente: ${err.message}`);
     console.error(err);
   } finally {
+    preparation.abort();
+    if (abortController === preparation) abortController = null;
+    hideTyping();
     try {
       await persist();
       await refreshProcesses();
@@ -3751,7 +3889,8 @@ function respostaVazia(result) {
 
 // Chamada em STREAMING (SSE): dispara os callbacks conforme o texto chega e
 // retorna a mensagem final montada (content, reasoning_content, tool_calls) + usage.
-async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent, onReasoning, onToolCall = null, onProgress = null }) {
+async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent, onReasoning, onToolCall = null, onProgress = null, onConnected = null }) {
+  const requestStartedAt = performance.now();
   const headers = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
@@ -3787,6 +3926,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
     // curto demais escondia justamente a parte que o recusouRaciocinio procura.
     throw new Error(`HTTP ${response.status}: ${truncate(body, 600)}`);
   }
+  if (onConnected) onConnected();
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -3794,7 +3934,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   let content = '', reasoning = '';
   const toolAcc = [];
   let usage = null, timings = null, finishReason = null, aborted = false, apiError = null, viuDone = false;
-  const startedAt = performance.now();
+  const startedAt = requestStartedAt;
   let firstTokenAt = 0; // tempo até o primeiro token (TTFT)
 
   try {
@@ -4050,10 +4190,12 @@ async function agentTurns(chat) {
     if (drenaFila(chat)) { iterations = 0; trava.novaInstrucao(); await persist(); }
     iterations++;
 
+    showTyping(0, 'preparando');
     // ANTES de montar o payload: num chat reaberto o cache de imagens está vazio, e o
     // toApiMessages só manda os pixels do que está nele — montar primeiro fazia a imagem
     // anexada sumir da conversa depois de fechar o app.
     await hydrateShots(chat.messages);
+    if (stopRequested) break;
 
     // O payload é montado UMA vez por turno (antes ia dentro do laço de tentativas, e as
     // tentativas mandam exatamente o mesmo conteúdo). Além de poupar a poda repetida, é
@@ -4063,7 +4205,7 @@ async function agentTurns(chat) {
     const tokensDoPrompt = estimaTokensDoPrompt(mensagensApi);
     const contextoFrio = !chatsAquecidos.has(chat.id) && tokensDoPrompt >= LIMIAR_CONTEXTO_FRIO;
     showTyping(contextoFrio ? tokensDoPrompt : 0);
-    setAppTitle(contextoFrio ? 'lendo o contexto…' : 'pensando…');
+    setAppTitle('aguardando o modelo…');
 
     // Elementos de streaming (criados sob demanda quando o primeiro token chega)
     let liveBody = null, liveReason = null;
@@ -4129,7 +4271,7 @@ async function agentTurns(chat) {
             ...(nivelThink.payload || {})
           },
           signal: abortController.signal,
-          onContent, onReasoning, onToolCall, onProgress: mostraProgressoDoPrompt
+          onContent, onReasoning, onToolCall, onProgress: mostraProgressoDoPrompt, onConnected: mostraConexaoDaRequisicao
         });
         lastErr = null;
         // Fim de turno sem texto nem ferramenta é geração estocástica (o Qwen fecha depois
@@ -4746,7 +4888,9 @@ async function acceptMention(relPath) {
 async function addMentionAttachment(relPath) {
   const chat = activeChat();
   if (!chat || !chat.path) return;
-  if (pendingAttachments.some(a => a.mention && a.path === relPath)) return;
+  const path = chat.path;
+  const attachments = pendingAttachments;
+  if (attachments.some(a => a.mention && a.path === relPath)) return;
   // O anexo quer o arquivo inteiro (até ATTACH_MAX), não a janela de leitura do agente:
   // o teto de linhas é neutralizado e quem corta é o de caracteres.
   let res;
@@ -4758,13 +4902,14 @@ async function addMentionAttachment(relPath) {
     res = null;
   }
   if (!res || !res.success) {
-    logSystem(`Não consegui ler o arquivo mencionado: ${relPath}${res && res.error ? ` — ${res.error}` : ''}`);
+    if (activeChat() === chat) logSystem(`Não consegui ler o arquivo mencionado: ${relPath}${res && res.error ? ` — ${res.error}` : ''}`);
     return;
   }
   const content = res.content || '';
   const truncated = !!res.hasMore;
-  pendingAttachments.push({ name: relPath, path: relPath, mention: true, content, size: res.size || content.length, truncated });
-  renderAttachments();
+  if (chat.path !== path) return;
+  attachments.push({ name: relPath, path: relPath, mention: true, content, size: res.size || content.length, truncated });
+  if (activeChat() === chat) renderAttachments();
 }
 const TEXT_EXT = /\.(txt|md|markdown|js|mjs|cjs|ts|jsx|tsx|json|jsonc|html?|css|scss|sass|less|py|rb|go|rs|java|kt|c|h|hpp|cpp|cc|cs|php|sh|bash|zsh|zig|yml|yaml|toml|ini|cfg|conf|env|xml|sql|csv|tsv|log|vue|svelte|swift|dart|lua|r|pl|pm|ex|exs|erl|hs|clj|gradle|properties)$/i;
 const TEXT_NAME = /^(dockerfile|makefile|\.gitignore|\.env|readme|license|procfile)$/i;
@@ -4811,13 +4956,15 @@ function makeThumb(file: File): Promise<string | null> {
 }
 
 async function handleFiles(fileList: FileList | File[]) {
+  const chatId = state.activeChatId;
+  const attachments = pendingAttachments;
   const files = Array.from<File>(fileList || []);
   for (const file of files) {
     const looksText = TEXT_EXT.test(file.name) || TEXT_NAME.test(file.name) ||
       (file.type && (file.type.startsWith('text/') || file.type === 'application/json' || file.type.includes('xml')));
     if (!looksText) {
       const att: Attachment = { name: file.name, size: file.size, binary: true, content: '' };
-      pendingAttachments.push(att);
+      attachments.push(att);
       // Imagem: gera a miniatura (data URL) em background e re-renderiza o chip
       // quando ela chegar. Se o formato não decodificar, o chip fica com o ícone.
       if (file.type && file.type.startsWith('image/')) {
@@ -4832,14 +4979,14 @@ async function handleFiles(fileList: FileList | File[]) {
     }
     let content = await readFileAsText(file) as string;
     if (content == null) {
-      pendingAttachments.push({ name: file.name, size: file.size, binary: true, content: '' });
+      attachments.push({ name: file.name, size: file.size, binary: true, content: '' });
       continue;
     }
     let truncated = false;
     if (content.length > ATTACH_MAX) { content = content.slice(0, ATTACH_MAX); truncated = true; }
-    pendingAttachments.push({ name: file.name, size: file.size, content, truncated });
+    attachments.push({ name: file.name, size: file.size, content, truncated });
   }
-  renderAttachments();
+  if (state.activeChatId === chatId) renderAttachments();
 }
 
 // Salva a imagem anexada e deixa o caminho no anexo. A miniatura (140 px) serve para o
@@ -5105,6 +5252,7 @@ function renderUsage() {
 let providerDrafts: ProviderConfig[] = [];
 let draftProviderId = '';
 let modelRequest = 0;
+let contextoEstimadoAvisado = '';
 
 function renderProviderOptions(select: HTMLSelectElement, providers: ProviderConfig[], selected: string) {
   select.replaceChildren();
@@ -5135,6 +5283,8 @@ function showProviderDraft() {
 }
 
 function resetProviderCapabilities() {
+  servidorLlamaCpp = '';
+  contextoEstimadoAvisado = '';
   sondaThinkRevision++;
   modelRequest++; sondaThinkFeita = ''; thinkRecusado = ''; state.modelCtx = 0; modelSupportsVision = false;
   Object.assign(suporteThink, { detectado: false, templateLido: false, enableThinking: false, reasoningEffort: false, valores: null, origem: '' });
@@ -5146,6 +5296,7 @@ async function switchProvider(id: string) {
   if (isRunning) { renderActiveProvider(); logSystem('Pare a geração antes de trocar de provedor.'); return; }
   rememberProvider(state.settings); activateProvider(state.settings, id);
   resetProviderCapabilities(); renderActiveProvider(); applySettingsToForm();
+  updateInputState();
   el('consumption-provider').value = id; updateQuotaMeter();
   refreshActiveConsumption();
   consumptionProfiles();
@@ -5168,7 +5319,7 @@ async function fetchModels() {
   try {
     const headers = {};
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const res = await fetch(`${apiUrl}/models`, { headers });
+    const res = await fetch(`${apiUrl}/models`, { headers, signal: AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     if (request !== modelRequest || providerId !== draftProviderId || apiUrl !== el('api-url').value.trim() || apiKey !== el('api-key').value.trim()) return;
@@ -5203,7 +5354,9 @@ async function fetchModels() {
     if (request !== modelRequest || providerId !== draftProviderId) return;
     // 401/403 é quase sempre a chave: dizer só "HTTP 401" deixa o usuário procurando no
     // lugar errado (endpoint, modelo) enquanto o campo que falta está logo abaixo.
-    status.innerText = /HTTP 40[13]/.test(err.message)
+    status.innerText = err.name === 'TimeoutError'
+      ? 'A consulta dos modelos passou de 5s. Tente novamente ou informe o ID manual.'
+      : /HTTP 40[13]/.test(err.message)
       ? `O servidor em ${apiUrl} recusou a autenticação (${err.message}) — confira a API Key.` + pendenciaDaConexao()
       : `Não foi possível carregar modelos de ${apiUrl}/models — ${err.message}`;
     // Preserve o ID salvo quando a descoberta estiver indisponível.
@@ -5243,22 +5396,25 @@ function updateModelInfo(model) {
 
 // Atualiza silenciosamente os dados do modelo (n_ctx etc.) direto do endpoint,
 // sem mexer no dropdown — chamado a cada nova requisição para manter o contexto fresco.
-async function refreshModelContext() {
+async function refreshModelContext(signal?: AbortSignal) {
   const { apiUrl, apiKey, model } = state.settings;
-  if (!model) return;
+  if (!model) return false;
   try {
     const headers = {};
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const res = await fetch(`${apiUrl}/models`, { headers });
-    if (!res.ok) return;
+    const timeout = AbortSignal.timeout(MODEL_DISCOVERY_TIMEOUT_MS);
+    const res = await fetch(`${apiUrl}/models`, { headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    if (!res.ok) return false;
     const json = await res.json();
-    if (apiUrl !== state.settings.apiUrl || apiKey !== state.settings.apiKey || model !== state.settings.model) return;
+    if (signal?.aborted || apiUrl !== state.settings.apiUrl || apiKey !== state.settings.apiKey || model !== state.settings.model) return false;
     const models = json.data || [];
     const m = models.find(x => x.id === model) || models[0];
     if (m) updateModelInfo(m);
     detectVision(json, model);
     detectThink(json, apiUrl, model);
-  } catch (e) { /* silencioso: não atrapalha o envio */ }
+    if (state.modelCtx) contextoEstimadoAvisado = '';
+    return state.modelCtx > 0;
+  } catch (e) { return false; }
 }
 
 // --------------------------------------------------------------------------
@@ -5407,7 +5563,7 @@ function registraPastaRecente(caminho) {
 // Ponto único de troca de workspace: o cache do autocomplete de @ é por pasta e ficaria
 // apontando para a árvore antiga se a troca acontecesse em outro lugar.
 function defineWorkspace(caminho) {
-  if (!caminho) return;
+  if (isRunning || !caminho) return;
   const chat = activeChat();
   if (chat.path === caminho) return;
   chat.path = caminho;
@@ -5496,11 +5652,8 @@ async function executeSlashCommand(command, args) {
   }
   switch (command.name) {
     case 'novo': {
-      const path = activeChat()?.path || '';
+      el('user-input').value = '';
       const id = createChat('Novo Chat');
-      state.chats[id].path = path;
-      pendingAttachments = [];
-      renderAttachments();
       switchChat(id);
       break;
     }
@@ -5527,7 +5680,9 @@ function wireEvents() {
   const chatBox = el('chat-box');
   chatBox.addEventListener('scroll', () => {
     stickToBottom = (chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight) < 80;
+    el('btn-chat-bottom').hidden = stickToBottom;
   });
+  el('btn-chat-bottom').addEventListener('click', () => { forceScrollBottom(); el('user-input').focus(); });
 
   el('btn-compactar').addEventListener('click', compactarAgora);
 
@@ -5567,6 +5722,10 @@ function wireEvents() {
       logSystem('Selecione um projeto com /projeto antes de enviar uma mensagem.');
       return;
     }
+    if ((prompt || pendingAttachments.length) && !state.settings.model) {
+      appendError('Escolha um modelo nas Configurações antes de enviar. Seu rascunho foi mantido.');
+      return;
+    }
     if (!prompt && pendingAttachments.length === 0) {
       // Campo vazio mas com fila pendurada: sobrou de uma geração interrompida antes da
       // virada de turno. Sem isto os chips ficariam encalhados, esperando o usuário
@@ -5593,6 +5752,7 @@ function wireEvents() {
     if (isRunning && !inputEl.value.trim() && pendingAttachments.length === 0) stopAgent();
     else sendMessage();
   });
+  el('btn-stop').addEventListener('click', stopAgent);
   inputEl.addEventListener('input', () => { autoGrow(); updateInputState(); });
   inputEl.addEventListener('keydown', (e) => {
     if (e.isComposing) return;
@@ -5657,11 +5817,13 @@ function wireEvents() {
   });
 
   // Novo chat
-  document.querySelector('.btn-new-chat').addEventListener('click', () => {
+  q('.btn-new-chat').addEventListener('click', () => {
+    if (isRunning) return;
     createChat('Novo Chat');
     renderChatList();
     renderActiveChat();
     persist();
+    inputEl.focus();
   });
 
   // Abas do modal
@@ -5682,7 +5844,7 @@ function wireEvents() {
   el('btn-open-settings').addEventListener('click', () => {
     // 'active' primeiro: o applySettingsToForm recalcula o selo de alteração pendente, e
     // esse cálculo é pulado enquanto o modal está fechado (ver atualizaEstadoSalvamento).
-    modal.classList.add('active');
+    openDialog('settings-modal');
     applySettingsToForm();
     fetchModels();
     consumptionProfiles();
@@ -5694,9 +5856,11 @@ function wireEvents() {
     // Sair com campo pendente é silencioso demais: o formulário some com o que foi digitado
     // e nada na tela principal diria que a chave nova não chegou a valer.
     if (selo && !selo.hidden) logSystem('Configurações fechadas sem salvar — o que estava no formulário não foi gravado.');
-    modal.classList.remove('active');
+    closeDialog('settings-modal');
   };
   el('btn-close-modal').addEventListener('click', closeModal);
+  bindDialogKeyboard('settings-modal', closeModal);
+  bindDialogKeyboard('processes-modal', closeProcessesModal);
   // Esperar o persist antes de fechar mantém o selo honesto: fechar antes da gravação
   // faria o closeModal avisar "sem salvar" logo depois de o usuário ter salvado.
   el('btn-save-settings').addEventListener('click', async () => {

@@ -15,7 +15,7 @@ O Studio conecta-se a **APIs compatíveis com OpenAI**, incluindo servidores loc
 
 | Recurso | No seu trabalho |
 |---|---|
-| Conversas por projeto | Alterne entre chats e pastas recentes, mantendo o histórico de cada conversa. |
+| Conversas por projeto | Novo chat mantém o projeto. Ao trocar de conversa, o rascunho e os anexos ficam na origem. |
 | Subagentes | Divida investigações e revisões em até três análises simultâneas, com progresso e resultados por tarefa. |
 | Edição de código | Leia e pesquise arquivos, consulte funções e classes, aplique alterações e revise o diff com opção de desfazer. |
 | Terminal e processos | Execute testes, acompanhe servidores e watchers e consulte a saída de tarefas demoradas. |
@@ -101,11 +101,25 @@ O agente principal recebe os resultados e aplica as alterações. Os subagentes 
 
 ### Durante a conversa
 
+- Desde o envio, acompanhe a etapa e o tempo de espera. Quando a API fornece progresso, veja percentual, tokens e cache reais. Sem esse sinal, o app mostra que o estado não foi informado. Dez segundos sem atualização geram um aviso.
 - Acompanhe os cards das ferramentas, os resultados e os diffs. **Desfazer** reverte a alteração no arquivo.
 - Digite enquanto o agente trabalha: a mensagem entra na fila e é entregue na próxima etapa, após a ferramenta em execução terminar.
-- Use **Parar** para interromper a geração. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
-- Digite `@` para mencionar um arquivo; caminhos com espaços são preenchidos com aspas. O clipe, arrastar e colar adicionam anexos.
+- **Parar** continua acessível quando você escreve outro pedido, sem apagar o rascunho. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
+- Use **Últimas mensagens** para voltar ao fim depois de rolar para cima. As quebras de linha aparecem durante a geração.
+- Digite `@` para mencionar um arquivo. Caminhos com espaços usam aspas. O clipe, arrastar e colar adicionam anexos.
 - Ajuste **Auto/Manual** e **Raciocínio** junto ao compositor. A troca de provedor fica bloqueada durante a geração.
+
+Durante a geração, a troca de chat e projeto fica bloqueada. Ao terminar ou parar, a navegação volta a funcionar. Rascunhos, anexos e mensagens ainda na fila ficam separados por conversa enquanto o app está aberto. Sem modelo configurado, o envio mantém o pedido no compositor.
+
+**Novo chat**, `/novo` e o comando remoto abrem uma conversa no mesmo projeto, com campo vazio e contexto zerado. As leituras da conversa anterior não autorizam sobrescrever arquivos na nova conversa.
+
+![Fila e rascunho de demonstração, com Parar acessível sem apagar o texto](docs/img/studio-draft-stop.png)
+
+Nos modais de configurações e processos, **Esc** fecha e devolve o foco. **Tab** percorre os controles do modal. Fechar configurações com alterações pendentes informa que elas não foram salvas.
+
+A consulta do modelo tem prazo de cinco segundos. Sem metadados, o agente usa uma estimativa de contexto. **Parar** também cancela essa consulta.
+
+![Progresso confirmado pela API, com percentual, tokens e cache de demonstração](docs/img/studio-conversation-wait.png)
 
 O nível de raciocínio usa as capacidades anunciadas pelo servidor. Quando elas não estão disponíveis, o menu oferece os níveis para você escolher; se a API recusar um ajuste, o Studio tenta uma alternativa indicada pelo erro ou reenvia sem esse ajuste.
 
@@ -113,7 +127,7 @@ O nível de raciocínio usa as capacidades anunciadas pelo servidor. Quando elas
 
 Contexto e cota aparecem como anéis discretos abaixo da caixa de mensagem, ao lado do modelo, com percentual e valores; clique na cota para ver o consumo. Sem relatório da API, a cota aparece como não informada.
 
-Clique na **cota no cabeçalho**, ao lado do uso de contexto, ou digite `/consumo`, `/usage` ou `/cost`. O resumo segue o provedor ativo, sem exigir outro endereço de API ou uma aba de consumo nas configurações.
+Clique na **cota ao lado do modelo** ou digite `/consumo`, `/usage` ou `/cost`. O resumo segue o provedor ativo, sem exigir outro endereço de API ou uma aba de consumo nas configurações.
 
 ![Resumo atual de consumo, com saldo e tokens sintéticos de demonstração](docs/img/consumo-desktop.png)
 
@@ -247,6 +261,8 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 | `npm run test:computer:real` | Modelo real e mouse/teclado nativos (Windows): clicar, digitar, marcar, rolar, abrir um editor de teste e salvar notas com acentos, emoji e atalhos. Confere a janela e o arquivo salvo. Não use o PC durante o teste. |
 | `npm run test:update` | Abre o app com um release simulado: aviso na lateral, notificação, novidades, progresso, cancelamento e erro da instalação. |
 | `npm run test:reconnect` | Verifica espera real de 10 segundos, cancelamento, medidores, status remoto e “continue” durante o salvamento. |
+| `npm run test:conversation` | Verifica consulta inicial com prazo, preparação, espera pelo primeiro token, avisos e cancelamento. |
+| `npm run test:ux` | Verifica rascunhos, anexos, fila, navegação, Parar, contexto, teclado e rolagem no Electron. |
 | `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |
 | `npm run test:startup` | Verifica os avisos de atualização em diferentes cenários. |
 | `npm run dist:win` | Gera o instalador Windows. |

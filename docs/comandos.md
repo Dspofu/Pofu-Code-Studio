@@ -47,8 +47,12 @@ Exemplos:
 | Inserir uma nova linha | Shift+Enter |
 | Mencionar um arquivo do projeto | `@` |
 | Anexar um arquivo | Clipe, arrastar ou colar |
+| Fechar configurações ou processos | Esc |
+| Percorrer os controles do modal | Tab e Shift+Tab |
 
 Mensagens enviadas enquanto a IA trabalha entram na fila. O botão **Parar** interrompe a geração, mas processos de terminal que continuam em segundo plano são gerenciados pelo painel **Processos**.
+
+Ao digitar durante a geração, **Parar** aparece ao lado dos comandos e mantém o rascunho. A troca de chat e projeto aguarda o fim da tarefa. Depois de parar, mensagens ainda na fila continuam na conversa de origem. **Últimas mensagens** volta ao fim e retoma o acompanhamento da resposta.
 
 Subagentes são solicitados em uma mensagem normal, por exemplo: “Use dois subagentes para revisar autenticação e testes”. Não existe um comando `/subagents` no catálogo.
 
@@ -77,6 +81,8 @@ No Windows, rode `npm run build` antes de `npx electron .`.
 | `npm run test:integration` | Ferramentas, preload e interface no Electron com perfil isolado. |
 | `npm run test:subagents` | Paralelismo, histórico isolado, cancelamento, reconexão e cards dos subagentes. |
 | `npm run test:reconnect` | Contagem regressiva, respostas vazias, fila e status remoto. |
+| `npm run test:conversation` | Etapas e relógio no início da conversa, prazo da consulta do modelo e cancelamento. |
+| `npm run test:ux` | Fluxos de rascunho, anexo, fila, navegação, Parar, contexto e teclado no Electron. |
 | `npm run test:computer` | Ferramentas visuais com adaptador falso, sem inputs nativos ao PC. |
 | `npm run test:consumption` | Painel e IPCs de consumo. |
 | `npm run test:update` | Fluxo de atualização com release simulado. |

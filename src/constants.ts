@@ -252,3 +252,8 @@ export const REQUEST_RETRY_DELAY_MS = 10000;
 // em 2.403 de 8.261 tokens de um prompt com print e não respondeu mais nem a outro pedido; sem
 // este prazo o app esperava para sempre com os três pontinhos.
 export const SERVIDOR_PARADO_MS = 180000;
+
+// Metadados são auxiliares: uma consulta travada não pode impedir o primeiro pedido à IA.
+export const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
+// Ausência de estado ou de novas atualizações merece aviso, sem interromper uma geração saudável.
+export const RESPONSE_WAIT_NOTICE_MS = 10000;

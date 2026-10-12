@@ -1691,7 +1691,7 @@
       min-width: 0;
     }
 
-    /* Espera longa e explicada (contexto frio) — ver showTyping. */
+    /* Etapa e tempo de espera, inclusive antes do primeiro token — ver showTyping. */
     /* Os três pontinhos são filhos diretos do indicador: em coluna eles empilhavam um
        embaixo do outro. Aqui a nota entra AO LADO deles, na mesma linha. */
     .typing-indicator.com-nota {
@@ -2418,6 +2418,7 @@
       <div id="chat-box"></div>
 
       <div class="input-area">
+        <button id="btn-chat-bottom" class="chat-bottom" type="button" hidden title="Ir ao fim e acompanhar as respostas">↓ Últimas mensagens</button>
         <div class="composer">
           <div id="slash-menu" class="slash-menu" aria-label="Comandos do Pofu" hidden></div>
           <div class="mention-menu" id="mention-menu" hidden></div>
@@ -2441,6 +2442,7 @@
           <div class="composer-footer">
             <div class="composer-ctls">
               <button id="btn-slash" class="composer-chip" title="Comandos do Pofu (/)" aria-label="Abrir comandos">/</button>
+              <button id="btn-stop" class="composer-chip composer-stop" type="button" hidden title="Parar sem apagar o rascunho">Parar</button>
               <div class="exec-mode" id="exec-mode" title="Modo de execução de comandos — Manual pede confirmação; Auto executa direto">
                 <span class="exec-mode-lbl">Comandos:</span>
                 <button class="exec-opt" data-mode="auto">Auto</button>
@@ -2503,11 +2505,11 @@
     </div>
   </div>
 
-  <div id="settings-modal" class="modal-overlay">
+  <div id="settings-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="modal-content">
       <div class="modal-header">
-        <h3>Configurações</h3>
-        <button id="btn-close-modal" class="btn-icon" style="border:none; padding:4px;">
+        <h3 id="settings-title">Configurações</h3>
+        <button id="btn-close-modal" class="btn-icon" aria-label="Fechar configurações" style="border:none; padding:4px;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -2789,11 +2791,11 @@
     </div>
   </div>
 
-  <div id="processes-modal" class="modal-overlay">
+  <div id="processes-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="processes-title">
     <div class="modal-content proc-modal">
       <div class="modal-header">
-        <h3>Processos em execução</h3>
-        <button id="btn-close-processes" class="btn-icon" style="border:none; padding:4px;">
+        <h3 id="processes-title">Processos em execução</h3>
+        <button id="btn-close-processes" class="btn-icon" aria-label="Fechar processos" style="border:none; padding:4px;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
