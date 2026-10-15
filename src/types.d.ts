@@ -324,6 +324,8 @@ interface ElectronAPI {
   loadStore(): Promise<PersistedStore>;
   saveStore(data: PersistedStore): Promise<any>;
   setTitle(title: string): void;
+  notify(title: string, body: string): void;
+  onNotifyClick(fn: () => void): () => void;
 }
 
 // As libs do renderer são vendorizadas em vendor/ e entram por <script> global, não por

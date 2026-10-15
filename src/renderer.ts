@@ -414,6 +414,11 @@ function showQuestionModal(args) {
   el('question-chip').innerText = String(args.header || 'Pergunta').slice(0, 24);
   el('question-title').innerText = String(args.question || 'O agente fez uma pergunta.');
 
+  // O turno para aqui até a resposta: se o app está em segundo plano, a notificação do
+  // sistema é o que avisa que há uma pergunta esperando (clique foca e rola até o card).
+  window.electronAPI?.notify?.('Uma caixa de pergunta foi aberta',
+    String(args.question || 'O agente fez uma pergunta.').slice(0, 200));
+
   const caixa = el('question-options');
   caixa.innerHTML = '';
   const escolhidas = new Set<number>();
@@ -620,9 +625,12 @@ function detectThink(json, apiUrl: string, modelo: string) {
 // tornaria a suíte inviável.
 const prazoParado = () => Number((window as any).POFU_SERVIDOR_PARADO_MS) || SERVIDOR_PARADO_MS;
 
-// Par endpoint+modelo confirmado como llama.cpp pelo /models ou /props. Só ele recebe o return_progress:
-// a OpenAI recusa a requisição inteira por campo desconhecido.
+// Par endpoint+modelo confirmado como llama.cpp pelo /models ou /props.
 let servidorLlamaCpp = '';
+// Endpoint+modelo que RECUSOU o return_progress (4xx citando o campo). O campo sai por
+// padrão (é o que mantém a conexão viva no túnel durante o prefill); só um servidor que
+// o rejeitar desliga o envio para aquele par — a OpenAI, na prática, ignora campos extras.
+let progressRecusado = '';
 
 async function sondaRaciocinio(apiUrl: string, modelo: string, apiKey: string) {
   const revision = ++sondaThinkRevision;
@@ -3783,6 +3791,18 @@ function estourouContexto(err) {
   };
 }
 
+// O servidor recusou um campo da requisição (tipicamente o return_progress, que mandamos
+// por padrão para manter o túnel vivo durante o prefill). Diferente do estouro de
+// contexto, isto NÃO é falha da conversa: a correção é reenviar a MESMA mensagem sem o
+// campo. progressRecusado (definido em streamChatCompletion) já garante que o reenvio
+// sai limpo; aqui só detectamos para acionar o reenvio imediato sem gastar tentativa.
+function recusouProgresso(err) {
+  const msg = String((err && err.message) || err || '');
+  const status = Number((msg.match(/^HTTP (\d{3})/) || [])[1]) || 0;
+  return status >= 400 && status < 500 &&
+    /return_progress|unrecognized|unknown field|invalid field|unsupported field|extra field|unexpected field|invalid argument/i.test(msg);
+}
+
 function classificaErroDeRequisicao(err, apiUrl, model) {
   const msg = String((err && err.message) || err || '');
   const status = Number((msg.match(/^HTTP (\d{3})/) || [])[1]) || 0;
@@ -3897,7 +3917,16 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   // Vigia de servidor travado: sem progresso do prompt, silêncio antes do primeiro byte pode ser
   // só um prompt longo, então ele só vale depois que algo chegou. O abort interno é distinto
   // do Parar do usuário para virar erro (e nova tentativa) em vez de "interrompido".
-  const comProgresso = servidorLlamaCpp === `${apiUrl}::${payload.model}`;
+  const chaveProgress = `${apiUrl}::${payload.model}`;
+  // return_progress por padrão: é o que faz o llama.cpp enviar prompt_progress DURANTE o
+  // prefill, mantendo o túnel (Cloudflare/ngrok) vendo a conexão viva. Sem ele, um
+  // contexto grande processa em silêncio e o túnel corta a conexão ociosa — "stream
+  // fechou sem enviar nada". Servidores que ignoram o campo (Ollama, vLLM, LM Studio)
+  // não se afetam; só um que o RECUSAR (4xx citando o campo) desliga o envio.
+  const enviarProgress = progressRecusado !== chaveProgress;
+  // A vigia "espera" progresso só se o servidor é llama.cpp de fato: para os demais o
+  // relógio de silêncio começa no primeiro byte (recebeuAlgo), não no envio.
+  const comProgresso = servidorLlamaCpp === chaveProgress;
   const interno = new AbortController();
   const repassaAbort = () => interno.abort();
   if (signal.aborted) interno.abort(); else signal.addEventListener('abort', repassaAbort, { once: true });
@@ -3911,7 +3940,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   try {
     response = await fetch(`${apiUrl}/chat/completions`, {
       method: 'POST', headers, signal: interno.signal,
-      body: JSON.stringify({ ...payload, ...(comProgresso ? { return_progress: true } : {}), stream: true, stream_options: { include_usage: true } })
+      body: JSON.stringify({ ...payload, ...(enviarProgress ? { return_progress: true } : {}), stream: true, stream_options: { include_usage: true } })
     });
   } catch (err) {
     if (travou) throw servidorParado();
@@ -3921,6 +3950,13 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   ultimoByte = Date.now();
   if (!response.ok) {
     const body = await response.text();
+    // O servidor não aceita o return_progress (alguns gateways estritos): para de
+    // enviá-lo para este endpoint+modelo. A próxima tentativa sai sem o campo e o
+    // prefill segue — a troca é transparente para o resto do fluxo.
+    if (enviarProgress && response.status >= 400 && response.status < 500 &&
+      /return_progress|unrecognized|unknown field|invalid field|unsupported field|extra field|unexpected field|invalid argument/i.test(body)) {
+      progressRecusado = chaveProgress;
+    }
     // 600, e não 300: o llama.cpp responde erro de template despejando ANTES o trecho do
     // Jinja, e a frase que diz o que ele recusou (e o que aceita) só vem no fim — cortar
     // curto demais escondia justamente a parte que o recusouRaciocinio procura.
@@ -4314,6 +4350,16 @@ async function agentTurns(chat) {
         }
         showTyping();
         attempt--; // o reenvio corrige a requisição: não gasta uma das tentativas de erro
+        continue;
+      }
+      // O servidor recusou o return_progress (gateway estrito): a conversa não falhou,
+      // só o campo. Reenvia a MESMA mensagem sem ele (progressRecusado já está definido)
+      // sem gastar uma das tentativas — o prefill segue e o túnel recebe o stream.
+      if (recusouProgresso(lastErr) && progressRecusado) {
+        descartaParcial();
+        logSystem('O servidor recusou o progresso do prompt; reenviando sem o campo.');
+        showTyping();
+        attempt--;
         continue;
       }
       // Estouro de contexto: a estimativa errou para menos. Em vez de encerrar o turno
@@ -5284,6 +5330,7 @@ function showProviderDraft() {
 
 function resetProviderCapabilities() {
   servidorLlamaCpp = '';
+  progressRecusado = '';
   contextoEstimadoAvisado = '';
   sondaThinkRevision++;
   modelRequest++; sondaThinkFeita = ''; thinkRecusado = ''; state.modelCtx = 0; modelSupportsVision = false;
@@ -5970,6 +6017,12 @@ function wireEvents() {
   // Esc no card de pergunta é "pular", não "cancelar": o agente segue trabalhando.
   el('question-modal').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); resolveQuestion(true); }
+  });
+  // Clique na notificação do sistema: a janela já foi focada pelo main; focar o
+  // primeiro campo da pergunta é o que falta para o usuário responder.
+  window.electronAPI?.onNotifyClick?.(() => {
+    const alvo = el('question-modal').querySelector('button.question-opt') || el('question-free');
+    alvo && (alvo as HTMLElement).focus();
   });
 
   // Painel de processos

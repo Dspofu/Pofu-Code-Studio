@@ -101,7 +101,7 @@ async function main() {
     await capture('consulta-modelo');
     await until("document.getElementById('chat-box').textContent.includes('RESPOSTA PRIMEIRO')"); await idle();
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].body.return_progress, undefined, 'outro modelo anunciar llama.cpp não habilita campos para o selecionado');
+    assert.equal(requests[0].body.return_progress, true, 'return_progress vai por padrão: mantém o túnel vivo no prefill mesmo sem detecção do llama.cpp');
     assert.ok(requests[0].time - start >= 4800, 'a consulta deve aguardar o prazo real de cinco segundos');
     assert.ok(requests[0].time - start < 7000, 'metadados presos não podem impedir o envio');
     assert.equal(await js("document.querySelector('#typing-indicator')===null"), true);

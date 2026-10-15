@@ -59,7 +59,9 @@ const api: ElectronAPI = {
   fetchUrl: (url, maxChars) => ipcRenderer.invoke('fetch-url', url, maxChars),
   loadStore: () => ipcRenderer.invoke('load-store'),
   saveStore: (data) => ipcRenderer.invoke('save-store', data),
-  setTitle: (title) => ipcRenderer.send('set-title', title)
+  setTitle: (title) => ipcRenderer.send('set-title', title),
+  notify: (title, body) => ipcRenderer.send('notify', title, body),
+  onNotifyClick: (fn) => { const listener = () => fn(); ipcRenderer.on('notify-click', listener); return () => ipcRenderer.removeListener('notify-click', listener); }
 };
 
 contextBridge.exposeInMainWorld('electronAPI', api);
