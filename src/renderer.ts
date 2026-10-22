@@ -5959,11 +5959,23 @@ async function executeSlashCommand(command, args) {
 }
 
 function wireEvents() {
-  // Detecta se o usuário está perto do fim: se rolar para cima, paramos de acompanhar
+  // Quem desliga o acompanhamento é a INTENÇÃO de subir, não a distância até o fim. A roda do
+  // mouse rola animada: o primeiro passo sobe ~20 px, ainda "perto do fim", e o próximo pedaço
+  // do stream chamava scrollChat(), cancelava a animação e puxava de volta — a tela piscava
+  // e não deixava subir. Religar só quando o usuário DESCE até o fim; subida com o conteúdo
+  // encolhendo (scrollTop preso no máximo) não conta como intenção.
   const chatBox = el('chat-box');
+  const soltaDoFim = () => { stickToBottom = false; el('btn-chat-bottom').hidden = false; };
+  let topoAnterior = chatBox.scrollTop, toqueY = 0;
+  chatBox.addEventListener('wheel', e => { if (e.deltaY < 0) soltaDoFim(); }, { passive: true });
+  chatBox.addEventListener('touchstart', e => { toqueY = e.touches[0]?.clientY ?? 0; }, { passive: true });
+  chatBox.addEventListener('touchmove', e => { if ((e.touches[0]?.clientY ?? 0) > toqueY + 2) soltaDoFim(); }, { passive: true });
+  chatBox.addEventListener('keydown', e => { if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) soltaDoFim(); });
   chatBox.addEventListener('scroll', () => {
-    stickToBottom = (chatBox.scrollHeight - chatBox.scrollTop - chatBox.clientHeight) < 80;
-    el('btn-chat-bottom').hidden = stickToBottom;
+    const topo = chatBox.scrollTop, falta = chatBox.scrollHeight - topo - chatBox.clientHeight;
+    if (topo < topoAnterior && falta > 2) soltaDoFim();
+    else if (topo > topoAnterior && falta < 80) { stickToBottom = true; el('btn-chat-bottom').hidden = true; }
+    topoAnterior = topo;
   });
   el('btn-chat-bottom').addEventListener('click', () => { forceScrollBottom(); el('user-input').focus(); });
 

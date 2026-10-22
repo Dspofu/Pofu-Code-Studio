@@ -204,6 +204,22 @@ async function main() {
     await capture('studio-scroll-back', true);
     await js("document.getElementById('btn-chat-bottom').click()"); await until("document.getElementById('btn-chat-bottom').hidden");
     assert.equal(await js("(() => {const chat=document.getElementById('chat-box');return chat.scrollHeight-chat.scrollTop-chat.clientHeight<80;})()"), true);
+    // Roda de verdade, subindo menos que a faixa de 80 px: a rolagem animada do Chromium dava o
+    // primeiro passo, o pedaço seguinte do stream puxava de volta ao fim e a tela piscava.
+    const centro = await js("(() => {const r=document.getElementById('chat-box').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()");
+    await js("window.__rodaY=null;document.getElementById('chat-box').addEventListener('wheel',e=>{window.__rodaY=e.deltaY;},{once:true})");
+    // Janela oculta às vezes ainda não tem quadro para o teste de acerto: reenvia até a PRIMEIRA chegar.
+    for (let i = 0; i < 30 && await js('window.__rodaY') === null; i++) {
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: centro.x, y: centro.y });
+      win.webContents.sendInputEvent({ type: 'mouseWheel', x: centro.x, y: centro.y, deltaX: 0, deltaY: 40, canScroll: true });
+      await new Promise(r => setTimeout(r, 100));
+    }
+    assert.ok(await js('window.__rodaY') < 0, 'o evento de roda precisa subir');
+    for (let i = 0; i < 6; i++) { res.write(event({ choices: [{ delta: { content: 'pedaço ' + i + ' da resposta.\n\n' }, finish_reason: null }] })); await new Promise(r => setTimeout(r, 60)); }
+    await until("document.getElementById('chat-box').textContent.includes('pedaço 5')");
+    assert.ok(await js("(() => {const chat=document.getElementById('chat-box');return chat.scrollHeight-chat.scrollTop-chat.clientHeight;})()") >= 20, 'a subida curta foi puxada de volta ao fim');
+    assert.equal(await js("document.getElementById('btn-chat-bottom').hidden"), false);
+    await js("document.getElementById('btn-chat-bottom').click()"); await until("document.getElementById('btn-chat-bottom').hidden");
     res.write(event({ choices: [{ delta: { content: 'RESPOSTA FINAL' }, finish_reason: null }] }));
     await until("document.getElementById('chat-box').textContent.includes('RESPOSTA FINAL')");
     assert.equal(await js("document.getElementById('btn-chat-bottom').hidden"), true);
