@@ -27,6 +27,7 @@ const thinkingBodies = [];
 // ferramenta ou texto final), com usage e timings no último chunk, como o llama.cpp manda.
 let agenteRoteiro = null;
 const agenteCorpos = [];
+const pendurados = []; // respostas que o servidor nunca termina (/pendurada)
 const server = createServer((req, res) => {
   providerRequests.push({ url: req.url, authorization: req.headers.authorization });
   if (req.url === '/v1/chat/completions') completions++;
@@ -57,6 +58,10 @@ const server = createServer((req, res) => {
   if (req.url === '/second/v1/models') return res.end(JSON.stringify({ data: [{ id: 'pofu-second-test', meta: { n_ctx: 131072 } }] }));
   if (req.url === '/large') { if (req.method === 'POST') posts++; return res.end(JSON.stringify({ body: bigBody })); }
   if (req.url === '/page') { res.setHeader('Content-Type', 'text/html'); return res.end('<html><title>Pofu fixture</title><body style="background:#172011;color:white"><main><h1>Pofu funcionando</h1><p>' + 'Texto de teste. '.repeat(2000) + '</p></main></body></html>'); }
+  // Páginas que travavam o capture_page: diálogo que ninguém vê, laço infinito e servidor mudo.
+  if (req.url === '/trava-alert') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end('<html><title>Alerta</title><body><h1>Página com alerta</h1><script>alert("ALERTA_FIXTURE")</script></body></html>'); }
+  if (req.url === '/trava-laco') { res.setHeader('Content-Type', 'text/html'); return res.end('<html><title>Laço</title><body><h1>Página que trava</h1><script>setTimeout(() => { for (;;) {} }, 30)</script></body></html>'); }
+  if (req.url === '/pendurada') { pendurados.push(res); return; }
   res.statusCode = 404; res.end('{}');
 });
 let passed = 0;
@@ -233,6 +238,30 @@ async function main() {
     assert.match(resultados[2], /^\{"error":"Loop detected/);
     const texto = await js(`document.getElementById('chat-box').textContent`);
     assert.match(texto, /cache 90%/); assert.match(texto, /leitura 512 tok\/s/);
+    agenteRoteiro = null;
+  });
+  await check('Parar solta o turno mesmo com uma ferramenta pendurada', async () => {
+    const corpos = agenteCorpos.length;
+    agenteRoteiro = [{ tool: 'capture_page', id: 'pendurada-1', args: { url: url + '/pendurada' } }, { content: 'NAO_DEVE_CHEGAR' }];
+    await typeSlash('Capture a página que nunca responde.'); await pressSlash('Enter');
+    await js(`new Promise((resolve,reject)=>{let n=0;const poll=()=>[...document.querySelectorAll('.tool-card .tool-title')].at(-1)?.textContent==='Print da página'&&document.body.classList.contains('agent-running')?resolve(true):++n>250?reject(new Error('capture did not start')):setTimeout(poll,40);poll();})`);
+    while (!pendurados.length) await new Promise(r => setTimeout(r, 30));
+    const inicio = Date.now();
+    await js(`document.getElementById('btn-send').click()`);
+    await js(`new Promise((resolve,reject)=>{let n=0;const poll=()=>!document.body.classList.contains('agent-running')?resolve(true):++n>150?reject(new Error('Stop did not release the turn')):setTimeout(poll,20);poll();})`);
+    assert.ok(Date.now() - inicio < 3000, 'demorou ' + (Date.now() - inicio) + 'ms');
+    assert.equal(agenteCorpos.length, corpos + 1, 'depois do Parar não pode haver outra requisição ao modelo');
+    const texto = await js(`document.getElementById('chat-box').textContent`);
+    assert.match(texto, /Interrompida pelo Parar antes de terminar/);
+    assert.equal(await js(`!!document.getElementById('continuar-barra')`), true);
+    for (const res of pendurados.splice(0)) res.destroy();
+    // Depois do Parar, o Continuar segue de onde parou: a última mensagem é o resultado da
+    // ferramenta, então vai direto ao modelo, sem pedido novo.
+    agenteRoteiro = [{ content: 'SEGUIU_DEPOIS_DO_PARAR' }];
+    await js(`document.querySelector('#continuar-barra .continuar-btn').click()`);
+    await js(`new Promise((resolve,reject)=>{let n=0;const poll=()=>document.getElementById('chat-box').textContent.includes('SEGUIU_DEPOIS_DO_PARAR')&&!document.body.classList.contains('agent-running')?resolve(true):++n>250?reject(new Error('continue did not run')):setTimeout(poll,40);poll();})`);
+    assert.equal(agenteCorpos.at(-1).messages.at(-1).role, 'tool');
+    assert.equal(await js(`document.getElementById('continuar-barra')===null`), true);
     agenteRoteiro = null;
   });
   await check('menções azuis preservam texto, espaços e e-mails', async () => {
@@ -574,6 +603,32 @@ async function main() {
     assert.equal(bad.ok, true);
     assert.equal(bad.script_status, 'failed');
     assert.match(bad.script_error, /SCRIPT_FAILED_FIXTURE/);
+  });
+  await check('capture_page com alert() não abre diálogo nem trava', async () => {
+    const inicio = Date.now();
+    const result = data(await tool('capture_page', { url: url + '/trava-alert', wait_ms: 0 }));
+    assert.equal(result.ok, true, JSON.stringify(result).slice(0, 300));
+    assert.match(result.visible_text, /Página com alerta/);
+    assert.ok(Date.now() - inicio < 5000, 'demorou ' + (Date.now() - inicio) + 'ms');
+  });
+  await check('capture_page com script que nunca termina devolve dentro do prazo', async () => {
+    process.env.POFU_CAPTURE_SCRIPT_MS = '1500';
+    try {
+      const inicio = Date.now();
+      const result = data(await tool('capture_page', { url: url + '/page', wait_ms: 0, script: 'await new Promise(() => {});' }));
+      assert.equal(result.ok, true); assert.equal(result.script_status, 'failed');
+      assert.match(result.script_error, /did not finish within 1\.5 s/);
+      assert.ok(Date.now() - inicio < 10000, 'demorou ' + (Date.now() - inicio) + 'ms');
+    } finally { delete process.env.POFU_CAPTURE_SCRIPT_MS; }
+  });
+  await check('capture_page de página presa num laço infinito devolve em vez de pendurar', async () => {
+    Object.assign(process.env, { POFU_CAPTURE_STEP_MS: '1000', POFU_CAPTURE_FRAME_MS: '2000' });
+    try {
+      const inicio = Date.now();
+      const result = data(await tool('capture_page', { url: url + '/trava-laco', wait_ms: 300 }));
+      assert.ok(Date.now() - inicio < 15000, 'demorou ' + (Date.now() - inicio) + 'ms');
+      assert.ok(result.ok || /did not produce a frame/.test(result.error), JSON.stringify(result).slice(0, 300));
+    } finally { delete process.env.POFU_CAPTURE_STEP_MS; delete process.env.POFU_CAPTURE_FRAME_MS; }
   });
   await check('ask_user aguarda seleção e devolve a escolha', async () => {
     const pending = tool('ask_user', { question: 'Escolha uma opção de teste', options: ['Primeira', 'Segunda'] });

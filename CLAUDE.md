@@ -32,6 +32,8 @@ são da INTERFACE e continuam em pt-BR.
 | [src/edit-match.ts](src/edit-match.ts) | Casamento do `edit_file` (exato → CRLF → tolerante a espaço), reindentação e o lote `edits`. |
 | [src/outline.ts](src/outline.ts) | `list_definitions`: definições por linguagem (regex, sem tree-sitter) com a linha de cada uma. |
 | [src/loop-guard.ts](src/loop-guard.ts) | Trava de looping: bloqueia a chamada que já voltou com o mesmo resultado duas vezes seguidas. |
+| [src/retry-policy.ts](src/retry-policy.ts) | Quando repetir uma requisição ao modelo e quanto esperar: escala de espera, `Retry-After`, erro idêntico que encerra. A classificação do erro fica no renderer. |
+| [src/icons.ts](src/icons.ts) | Ícones SVG de traço (estilo Lucide) dos cards de ferramenta, cartões e chips. `poeIcone` não recria o SVG quando o ícone não mudou. |
 | [src/mcp.ts](src/mcp.ts) | Cliente MCP no main: transportes stdio e Streamable HTTP, `initialize`/`tools/list`/`tools/call`. |
 | [src/updater.ts](src/updater.ts) | Atualização pelo app: escolhe o instalador do release, baixa conferindo o sha256 e instala (NSIS no Windows, `pkexec` no Linux). |
 | [src/atalho-windows.ts](src/atalho-windows.ts) | Repara, ao abrir, o ícone do atalho do Menu Iniciar que ficou apontando para um `.exe` que não existe (pasta movida). |
@@ -81,12 +83,13 @@ Uma ferramenta nova exige tocar em **quatro** pontos, na ordem:
 
 1. `ipcMain.handle('nome', …)` em [src/main.ts](src/main.ts)
 2. exposição em [src/preload.cts](src/preload.cts) — e a assinatura em `ElectronAPI`, em [src/types.d.ts](src/types.d.ts)
-3. entrada no array `tools` em [src/renderer.ts:1328](src/renderer.ts#L1328) (schema JSON enviado ao modelo)
-4. o `case` no executor `runTool` ([src/renderer.ts:1684](src/renderer.ts#L1684)), a entrada em
-   `TOOL_META` ([src/renderer.ts:810](src/renderer.ts#L810)) e os `switch` de rótulo/resumo em
-   [src/renderer.ts:830](src/renderer.ts#L830) e [src/renderer.ts:873](src/renderer.ts#L873)
+3. entrada no array `tools` em [src/renderer.ts](src/renderer.ts) (`const tools = [`: o schema JSON enviado ao modelo)
+4. o `case` no executor `runTool`, a entrada em `TOOL_META` (rótulo, `icon` — um nome de
+   [src/icons.ts](src/icons.ts), nunca emoji — e o `tom` que pinta o ícone pela categoria) e os
+   `switch` de `summarizeToolCall`/`summarizeToolResult`, todos em [src/renderer.ts](src/renderer.ts)
 
-Esquecer o passo 4 gera tool call que "funciona" mas aparece cru na UI.
+Esquecer o passo 4 gera tool call que "funciona" mas aparece cru na UI. (Os números de linha
+saíram daqui de propósito: o renderer muda todo dia e eles apontavam para o lugar errado.)
 
 ## README — mantenha atualizado
 
@@ -215,16 +218,36 @@ que a ausência dele.
   recentes voltam, porque cada imagem custa milhares de tokens de visão.
 - **HTTP 500 do llama.cpp**: tool call malformado é transitório; existem `MAX_REQUEST_RETRIES`
   e limpeza do histórico. Preserve esse tratamento ao mexer no loop de request.
+- **Novas tentativas** (`RetryPolicy`, `src/retry-policy.ts`): eram 3 com espera fixa de 10 s,
+  e duas quedas seguidas de túnel matavam a tarefa. Agora são até `MAX_REQUEST_RETRIES` (6),
+  com a escala `RETRY_DELAYS_MS` (2/4/8/15/30 s, como o opencode e o Hermes) e o `Retry-After`
+  do servidor só AUMENTANDO a espera — lido também do corpo, porque o cabeçalho de outra
+  origem não é legível sem `Access-Control-Expose-Headers`. O mesmo 500 três vezes seguidas
+  encerra antes (erro de template não passa esperando) — só o 500: o 503 "Loading model" do
+  llama.cpp e o 502 do túnel voltam idênticos enquanto o servidor sobe, e são o que a escala
+  existe para esperar. A contagem é por etapa do
+  agente: zera a cada requisição nova do `while`. Duas armadilhas que já aconteceram: (1)
+  todo `continue` do laço precisa de limite PRÓPRIO — o reenvio "sem o `return_progress`"
+  olhava só o texto do erro, e um 4xx com "invalid argument" por outro motivo reenviava em
+  looping sem fim e sem espera; a marca agora vai no erro (`progressoRecusado`), só quando o
+  campo foi enviado naquela requisição; (2) `result` precisa ser zerado a cada volta — uma
+  resposta vazia seguida de uma queda mostrava "o modelo não enviou uma resposta" no lugar
+  do erro de rede.
 - **Resposta vazia é tentada de novo**: 200 com `finish_reason: stop` e nada além de
   raciocínio (o Qwen fecha depois do `<think>` ou escreve o tool_call DENTRO dele, mais
   comum com raciocínio alto e contexto cheio de saída de processo) era tratado como fim do
   turno, e o cartão "O modelo não enviou uma resposta" aparecia no meio de uma tarefa longa.
-  Agora `respostaVazia` repete até `MAX_REQUEST_RETRIES` sem a espera de 10 s (o servidor
-  está de pé, e o cache de prefixo deixa o reenvio barato); o cartão só sai depois disso.
+  Agora `respostaVazia` repete até `MAX_EMPTY_RETRIES` vezes, sem espera (o servidor está de
+  pé, e o cache de prefixo deixa o reenvio barato) e com contagem PRÓPRIA — dividir a das
+  falhas fazia duas vazias seguidas de um 500 encerrarem sem nova tentativa.
   Stream que FECHA sem `finish_reason`, sem `[DONE]` e sem nada (proxy/túnel derrubando a
   conexão enquanto o prompt longo processa) lança `Stream interrompido` e entra na espera de
-  reconexão. Só vazio vira erro: servidor que omita os dois marcadores mas mande texto segue
-  funcionando.
+  reconexão. Fechou no meio (sem esses dois e sem o `usage` do último chunk): com uma chamada
+  de ferramenta pela metade também lança — executar o JSON quebrado devolveria ao modelo um
+  erro que ele não cometeu —; com texto, a resposta segue marcada como `cortado`, com aviso e o
+  botão de continuar. Texto não é repetido sozinho porque servidor que omita os marcadores
+  existe e continuaria funcionando. A última linha do buffer é processada no fim do stream:
+  sem o `\n` final, o chunk do `finish_reason` se perdia.
 - **Servidor travado tem prazo** (`SERVIDOR_PARADO_MS`, 3 min): o llama.cpp já parou no meio de
   um prompt com print (2.403 de 8.261 tokens) e não respondeu mais nem a outro pedido — o app
   esperava para sempre. Tempo limite fixo não serve, porque prompt longo leva minutos de verdade
@@ -377,8 +400,13 @@ que a ausência dele.
   arquivo e travaria o main —, mas depois reinsere esse entorno como contexto, senão o diff vira
   uma lista de linhas soltas.
 - **Falha de requisição**: `classificaErroDeRequisicao` traduz o erro em causa + passos e diz se
-  vale repetir. Só 5xx é transitório; servidor fora do ar, 401 e 404 falham igual nas três
-  tentativas e só atrasam o diagnóstico. Não volte a mostrar a exceção crua.
+  vale repetir. 5xx, stream interrompido e 429 (fora cota esgotada) são transitórios; 401, 404 e
+  os demais 4xx falham igual em todas as tentativas e só atrasariam o diagnóstico. "Failed to
+  fetch" é o mesmo texto para porta errada e para conexão derrubada no meio: só vira
+  transitório quando o endpoint já respondeu nesta sessão (`enderecosQueResponderam`). O teste
+  de "contexto grande demais" vale só para 4xx — o corpo de um 500 do llama.cpp despeja o
+  template Jinja, que cita "context" à toa, e a falha passageira perdia as tentativas. Não
+  volte a mostrar a exceção crua.
 - **Confirmação**: `CONFIRM_TOOLS` (`execute_command`, `delete_file`, `http_request` fora de
   GET/HEAD/OPTIONS) e `execMode` `manual`/`auto` controlam o modal de aprovação. O valor pode ser
   `true` ou um teste sobre os argumentos. Ferramentas destrutivas novas devem entrar aí — e quem
@@ -394,6 +422,32 @@ que a ausência dele.
   termina de carregar (anúncio pendurado, websocket) fica preso PARA SEMPRE e o tool call do
   agente nunca retorna. Todo `loadURL` aqui corre contra um `sleep` e chama `stop()` no
   estouro, aproveitando o que já renderizou.
+- **O resto da janela oculta também trava**: `executeJavaScript` e `capturePage` não têm
+  cancelamento, e numa página presa (script do agente que espera algo que nunca chega, laço
+  infinito) nunca resolvem — o `capture_page` ficava pendurado e o usuário precisava fechar o
+  app. Cada etapa passa por `comPrazo` (`CAPTURE_*` em `src/constants.ts`; o teste encurta pelo
+  ambiente, `POFU_CAPTURE_*`), há um teto para a chamada inteira, e a página que estourou um
+  prazo é marcada (`travada`): as leituras seguintes não esperam de novo e o processo dela é
+  derrubado (`forcefullyCrashRenderer`), porque o laço continua queimando CPU depois do
+  `destroy()`. Só no `capture_page`: no `comJanelaOculta` os subagentes buscam em paralelo, e
+  não se derruba processo que pode ser de outra janela. `disableDialogs: true` nas duas: um
+  `alert()` da janela invisível vira DIÁLOGO NATIVO na tela do usuário e prende a página até
+  alguém clicar (medido: o load passou de 6 s esperando). Não troque isso pelo protocolo de
+  depuração: o `Page.enable` numa janela offscreen antes da primeira navegação nunca responde,
+  e a "proteção" travava a captura.
+- **Chamada sem resposta envenena o chat**: o histórico é salvo em vários momentos de uma
+  execução (até o "Sempre" do modal de confirmação chama `persist()` no meio das ferramentas),
+  então fechar o app com uma ferramenta pendurada deixava no disco um `tool_call` sem o `tool`
+  — e o servidor recusava TODA requisição seguinte daquele chat. `reparaChamadasSemResposta`
+  (`src/reparo-historico.ts`) roda ao carregar o store e no começo do `agentTurns`: cada
+  chamada órfã ganha um resultado "No result…" logo depois das que voltaram, levando junto as
+  marcas de poda (são índices).
+- **Parar solta ferramenta pendurada**: chamada IPC não se cancela, então a espera do
+  `runTool` no `agentTurns` corre contra `sinalDeParada` (recriado a cada execução, disparado
+  no `stopAgent`). O resultado é descartado e o modelo recebe "Stopped by the user before this
+  tool returned". `delegate_tasks` e `ask_user` ficam fora (`TRATAM_PARADA`): tratam o Parar
+  por conta própria e devolvem o parcial. As chamadas que sobram na mesma resposta recebem
+  "Not run" — não "rejected", que ensinaria o modelo a não repeti-las ao continuar.
 - **`depends` substitui o default**: declarar `depends` em `build.rpm`/`build.deb` no
   package.json TROCA a lista inteira do electron-builder — não acrescenta. O default do rpm
   inclui `at-spi2-core` e `libuuid`, que são `NEEDED` de verdade do binário do Electron
@@ -447,6 +501,16 @@ que a ausência dele.
   do `while` do `agentTurns`, único ponto em que toda chamada já tem a sua resposta. Entrega
   de mensagem zera `iterations`: a trava existe contra o agente em looping, não contra a
   conversa. Não converta isso em envio imediato.
+- **Continuar de onde parou**: `chat.interrompido` é PESSIMISTA — vira `true` no começo do
+  `agentTurns` e só a resposta final completa o desliga; erro, Parar, trava de iterações, corte
+  e até o app fechado no meio deixam o botão no fim do chat, inclusive ao reabrir (a marca é
+  persistida; `precisaContinuar` também aceita histórico que termina em `user`/`tool`, o caso
+  dos chats antigos). Continuar com pedido ou resultado de ferramenta sem resposta só roda o
+  agente; só quando o modelo parou num TEXTO entra a mensagem `CONTINUE_PROMPT` — em inglês,
+  com `[System: …]` (formato do Hermes) e a ordem de manter o idioma do usuário, porque uma
+  mensagem em inglês fazia o modelo trocar de idioma. Na tela ela vira o marcador
+  `.continuacao-marcador`, sem `messageIndex`: não é bolha editável nem aparece como pedido do
+  usuário no controle remoto.
 - **Tela parada durante o tool call**: os argumentos da ferramenta não passam por
   `onContent`, então sem o `onToolCall` a UI fica congelada do fim do texto até o resultado
   — num `write_file` grande, dezenas de segundos que parecem travamento. O

@@ -209,6 +209,9 @@ interface ChatMessage {
   image?: ShotRef;
   alteracao?: Alteracao;
   stats?: MessageStats;
+  /** Pedido do botão "Continuar de onde parou": vai ao modelo em inglês e aparece na tela
+   *  como marcador, não como bolha do usuário. */
+  continuacao?: boolean;
 }
 
 interface Chat {
@@ -222,6 +225,9 @@ interface Chat {
   /** Índice até onde a poda automática já encurtou. Memória: o que foi podado continua
    *  podado, para o prefixo da requisição não mudar a cada turno (ver compactToolResults). */
   podaAutoAte?: number;
+  /** A última execução do agente terminou antes da resposta final (erro, Parar, corte).
+   *  Persistido para o botão de continuar sobreviver a reabrir o app. */
+  interrompido?: boolean;
 }
 
 interface UsageStats {

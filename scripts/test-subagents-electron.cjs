@@ -160,8 +160,8 @@ const server = createServer(async (req, res) => {
       return emit(res, { content: 'RETRY_FINDING: a conexão foi recuperada.' }, CHILD_TOTAL);
     }
     if (task.startsWith('WORKER_TRANSPORT_CANCEL:')) {
-      res.statusCode = 500;
-      return res.end(JSON.stringify({ error: { message: 'Temporary failure while awaiting user stop.' } }));
+      res.statusCode = 503;
+      return res.end(JSON.stringify({ error: { message: 'Temporary failure while awaiting user stop.', retry_after: 30 } }));
     }
     if (task.startsWith('WORKER_TRANSPORT_AUTH:')) {
       res.statusCode = 401;
@@ -312,27 +312,26 @@ async function main() {
     for (const call of messages.filter(m => m.role === 'assistant').flatMap(m => m.tool_calls || []))
       assert.equal(messages.filter(m => m.role === 'tool' && m.tool_call_id === call.id).length, 1, 'cada chamada do pai deve ter um resultado');
   });
-  await check('falha 500 aguarda dez segundos com contagem regressiva antes de reconectar', async () => {
+  await check('falha 500 aguarda a primeira espera da escala com contagem regressiva antes de reconectar', async () => {
     const task = 'WORKER_TRANSPORT_RETRY:';
     await send('BATCH_RETRY');
-    await until(`/Reconectando em (?:9|10)s/.test(${status(task)})`);
-    assert.equal(childRequests(task).length, 1);
-    await until(`/Reconectando em [78]s/.test(${status(task)})`, 5000);
-    assert.equal(childRequests(task).length, 1, 'não deve haver repetição antes do fim dos dez segundos');
+    await until(`/Reconectando em (?:1|2)s/.test(${status(task)})`);
+    assert.equal(childRequests(task).length, 1, 'não deve haver repetição antes do fim da espera');
+    assert.equal(await js(`(${row(task)})?.dataset.status`), 'retry');
     await until(`document.getElementById('chat-box').textContent.includes('PARENT_RETRY_DONE')`, 20000);
     await idle();
     const attempts = childRequests(task);
     assert.equal(attempts.length, 2);
-    assert.ok(attempts[1].started - attempts[0].started >= 9950, `intervalo medido: ${attempts[1].started - attempts[0].started}ms`);
+    assert.ok(attempts[1].started - attempts[0].started >= 1950, `intervalo medido: ${attempts[1].started - attempts[0].started}ms`);
     assert.equal(await js(status(task)), 'Concluído');
     const result = JSON.parse((await history()).findLast(message => message.name === 'delegate_tasks').content);
     assert.equal(result.success, true);
     assert.match(result.agents[0].result, /RETRY_FINDING/);
   });
-  await check('Parar durante a contagem regressiva cancela rapidamente sem repetir a chamada', async () => {
+  await check('Retry-After do corpo alonga a espera, e Parar durante a contagem cancela sem repetir a chamada', async () => {
     const task = 'WORKER_TRANSPORT_CANCEL:';
     await send('BATCH_RETRY_CANCEL');
-    await until(`/Reconectando em (?:9|10)s/.test(${status(task)})`);
+    await until(`/Reconectando em (?:29|30)s/.test(${status(task)})`);
     const parents = parentBodies.length, started = Date.now();
     await js(`document.getElementById('btn-send').click()`); await idle();
     assert.ok(Date.now() - started < 2500);

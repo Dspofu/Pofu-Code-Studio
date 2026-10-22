@@ -104,7 +104,8 @@ O agente principal recebe os resultados e aplica as alterações. Os subagentes 
 - Desde o envio, acompanhe a etapa e o tempo de espera. Quando a API fornece progresso, veja percentual, tokens e cache reais. Sem esse sinal, o app mostra que o estado não foi informado. Dez segundos sem atualização geram um aviso.
 - Acompanhe os cards das ferramentas, os resultados e os diffs. **Desfazer** reverte a alteração no arquivo.
 - Digite enquanto o agente trabalha: a mensagem entra na fila e é entregue na próxima etapa, após a ferramenta em execução terminar.
-- **Parar** continua acessível quando você escreve outro pedido, sem apagar o rascunho. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
+- **Parar** continua acessível quando você escreve outro pedido, sem apagar o rascunho, e libera o turno na hora mesmo com uma ferramenta que não responde. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
+- Se a tarefa parar antes do fim — erro, **Parar**, resposta cortada pelo limite de tokens ou pela conexão —, o fim do chat mostra **Continuar de onde parou**. O agente retoma do ponto em que estava, sem você precisar escrever “continue”, e o botão continua lá ao reabrir o app.
 - Use **Últimas mensagens** para voltar ao fim depois de rolar para cima. As quebras de linha aparecem durante a geração.
 - Digite `@` para mencionar um arquivo. Caminhos com espaços usam aspas. O clipe, arrastar e colar adicionam anexos.
 - Ajuste **Auto/Manual** e **Raciocínio** junto ao compositor. A troca de provedor fica bloqueada durante a geração.
@@ -114,6 +115,8 @@ Durante a geração, a troca de chat e projeto fica bloqueada. Ao terminar ou pa
 **Novo chat**, `/novo` e o comando remoto abrem uma conversa no mesmo projeto, com campo vazio e contexto zerado. As leituras da conversa anterior não autorizam sobrescrever arquivos na nova conversa.
 
 ![Fila e rascunho de demonstração, com Parar acessível sem apagar o texto](docs/img/studio-draft-stop.png)
+
+![Resposta de demonstração cortada pela conexão, com o botão Continuar de onde parou](docs/img/studio-continuar.png)
 
 Nos modais de configurações e processos, **Esc** fecha e devolve o foco. **Tab** percorre os controles do modal. Fechar configurações com alterações pendentes informa que elas não foram salvas.
 
@@ -139,7 +142,7 @@ Quando não há relatório remoto acessível, fica disponível o **registro loca
 
 ![Medidores e conexão remota ativa no desktop, com dados de teste](docs/img/studio-conexao.png)
 
-Falhas transitórias aguardam **10 segundos** antes da próxima tentativa, com contagem regressiva e botão para cancelar. Resposta vazia do modelo (só raciocínio, sem texto nem ferramenta) é repetida sozinha. Com llama.cpp, a espera mostra o progresso da leitura do prompt (“Lendo o prompt · X de Y tokens”); se o servidor ficar 3 minutos sem enviar nada, o Studio tenta mais uma vez e avisa que ele parou de responder, em vez de esperar indefinidamente. Erros mostram orientação e detalhes técnicos recolhidos. Pedidos enviados no encerramento do turno, como “continue”, seguem pela fila automaticamente.
+Falhas passageiras — erro interno do servidor, conexão que caiu, túnel que fechou o stream — são repetidas sozinhas, até seis tentativas, com espera crescente (2, 4, 8, 15 e 30 segundos) ou o tempo que o servidor pedir (`Retry-After`). O cartão mostra a contagem regressiva, **Tentar agora** e **Cancelar tentativa**, e a contagem recomeça a cada etapa do agente. Queda de conexão só é repetida quando o servidor já respondeu nesta sessão; porta errada falha na hora, com o diagnóstico. O mesmo erro interno (500) três vezes seguidas encerra antes, e requisição recusada (4xx) não é repetida; servidor ainda carregando o modelo (503) é esperado até o fim da escala. Uma chamada de ferramenta cortada pela conexão é pedida de novo em vez de executada pela metade. Resposta vazia do modelo (só raciocínio, sem texto nem ferramenta) é repetida sozinha, com contagem própria. Com llama.cpp, a espera mostra o progresso da leitura do prompt (“Lendo o prompt · X de Y tokens”); se o servidor ficar 3 minutos sem enviar nada, o Studio tenta mais uma vez e avisa que ele parou de responder, em vez de esperar indefinidamente. Erros mostram orientação e detalhes técnicos recolhidos. Pedidos enviados no encerramento do turno, como “continue”, seguem pela fila automaticamente.
 
 ## Controle remoto pelo site
 
@@ -196,7 +199,7 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `wait_for_process` / `read_process_output` | Aguarda tarefas demoradas e consulta sua saída. |
 | `list_processes` / `stop_process` | Lista ou encerra processos acompanhados pelo Studio. |
 | `http_request` | Consulta APIs com status, cabeçalhos e corpo separados. |
-| `capture_page` | Renderiza uma página, captura a imagem e informa erros de console/rede. |
+| `capture_page` | Renderiza uma página, captura a imagem e informa erros de console/rede. Cada etapa tem prazo: página travada, script que nunca termina ou `alert()` não prendem o agente. |
 | `view_image` | Abre imagens do projeto e envia os pixels ao modelo com visão. |
 | `capture_screen` | Captura um monitor real e informa as dimensões para interação. |
 | `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
@@ -252,15 +255,15 @@ O aplicativo usa Electron, TypeScript e DOM direto. A fonte vive em `src/`; o bu
 |---|---|
 | `npm run build` | Compila e copia o módulo de pesquisa para `out/`. |
 | `npm run typecheck` | Verifica os tipos sem emitir arquivos. |
-| `npm test` | Executa os testes de unidade, incluindo consumo, controle remoto e isolamento de subagentes. |
+| `npm test` | Executa os testes de unidade, incluindo consumo, controle remoto, isolamento de subagentes e a escala de novas tentativas. |
 | `npm run test:subagents` | Testa requisições concorrentes, isolamento de leituras/histórico, Parar, fila e restauração dos cards no Electron. |
 | `npm run test:subagents:real` | Pede ao modelo real duas revisões de arquivos em um projeto temporário e confere os resultados, sem inputs nativos. |
-| `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado. |
+| `npm run test:integration` | Exercita preload, ferramentas e interface no Electron com perfil isolado, incluindo páginas que travavam a captura e o Parar com uma ferramenta pendurada. |
 | `npm run test:agent:long` | Conversa longa com o modelo real: muitas chamadas, processos em segundo plano e saídas grandes; registra respostas vazias, streams sem fim e respostas que não aparecem na tela. `POFU_TEST_VOLTAS` repete a sequência no mesmo chat. |
 | `npm run test:agent:quality` | Mede com o modelo real se o agente acha a causa de bugs, corrige sem mexer em teste, escreve testes que pegam mutantes e revisa sem alterar; a nota vem de testes ocultos. `POFU_TEST_NIVEL=dificil` usa o conjunto difícil. |
 | `npm run test:computer:real` | Modelo real e mouse/teclado nativos (Windows): clicar, digitar, marcar, rolar, abrir um editor de teste e salvar notas com acentos, emoji e atalhos. Confere a janela e o arquivo salvo. Não use o PC durante o teste. |
 | `npm run test:update` | Abre o app com um release simulado: aviso na lateral, notificação, novidades, progresso, cancelamento e erro da instalação. |
-| `npm run test:reconnect` | Verifica espera real de 10 segundos, cancelamento, medidores, status remoto e “continue” durante o salvamento. |
+| `npm run test:reconnect` | Verifica a escala de espera, Tentar agora, cancelamento, queda de conexão, resposta e chamada de ferramenta cortadas, o botão Continuar de onde parou, medidores, status remoto e “continue” durante o salvamento. |
 | `npm run test:conversation` | Verifica consulta inicial com prazo, preparação, espera pelo primeiro token, avisos e cancelamento. |
 | `npm run test:ux` | Verifica rascunhos, anexos, fila, navegação, Parar, contexto, teclado e rolagem no Electron. |
 | `npm run test:consumption` | Testa o painel e os IPCs de consumo com dados sintéticos. |

@@ -26,7 +26,7 @@ import { RemoteControl } from './remote-control.js';
 import { baixaInstalador, detectaMetodo, escolheAsset, iniciaInstaladorWindows, instalaPacoteLinux, type AssetRelease } from './updater.js';
 import { DesktopComputer } from './computer.js';
 import { windowsComputer } from './computer-windows.js';
-import { COMPUTER_IMAGE_MAX_SIDE } from './constants.js';
+import { CAPTURE_FRAME_MS, CAPTURE_SCRIPT_MS, CAPTURE_STEP_MS, CAPTURE_TOTAL_MS, COMPUTER_IMAGE_MAX_SIDE } from './constants.js';
 import { fileOps, type FileWorkerPool } from './fileworker.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -783,6 +783,21 @@ const WEB_HEADERS = {
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// O Electron não cancela executeJavaScript nem capturePage. Numa página com a thread presa
+// (laço infinito, script que espera algo que nunca chega) eles
+// nunca resolvem, e o tool call do agente ficava pendurado: o Parar não alcança uma chamada
+// IPC pendente, e a saída era fechar o app. Estourado o prazo, quem chamou segue em frente e
+// o finally de quem abriu a janela a destrói.
+// O teste de integração encurta os prazos pelo ambiente: esperar os valores reais em cada
+// cenário de página travada tornaria a suíte inviável.
+const prazoDe = (nome: string, padrao: number) => Number(process.env[nome]) || padrao;
+
+function comPrazo<T>(promessa: Promise<T>, ms: number, motivo: string): Promise<T> {
+  let timer;
+  const estouro = new Promise<never>((_, rejeita) => { timer = setTimeout(() => rejeita(new Error(motivo)), ms); });
+  return Promise.race([promessa, estouro]).finally(() => clearTimeout(timer));
+}
+
 function decodeEntities(s) {
   return String(s)
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -808,13 +823,14 @@ function ddgRealUrl(href) {
 // invisível, roda um extrator no DOM e SEMPRE fecha a janela.
 async function comJanelaOculta(url, opts, extrator) {
   const timeoutMs = clamp(opts.timeoutMs || 15000, 1000, 60000);
-  let win = null;
+  let win: BrowserWindow = null;
   try {
     win = new BrowserWindow({
       width: opts.width || 1280, height: opts.height || 900, show: false, skipTaskbar: true,
       webPreferences: {
         offscreen: true, nodeIntegration: false, contextIsolation: true, sandbox: true,
-        backgroundThrottling: false, partition: opts.partition || 'janela-oculta'
+        backgroundThrottling: false, partition: opts.partition || 'janela-oculta',
+        disableDialogs: true // ver capture-page: alert() abre diálogo nativo e prende a página
       }
     });
     // loadURL só resolve no did-finish-load: numa página que nunca termina de carregar
@@ -827,7 +843,8 @@ async function comJanelaOculta(url, opts, extrator) {
     ]);
     if (expirou && win.webContents.isLoading()) win.webContents.stop(); // usa o que já renderizou
     if (opts.waitMs) await sleep(opts.waitMs);
-    return await win.webContents.executeJavaScript(extrator, true);
+    return await comPrazo(win.webContents.executeJavaScript(extrator, true), 10000,
+      `The page at ${url} did not respond to text extraction within 10 s (its scripts may be stuck).`);
   } finally {
     if (win && !win.isDestroyed()) win.destroy();
   }
@@ -1116,12 +1133,25 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
   const width = clamp(opts.width || 1280, 320, 2560);
   const height = clamp(opts.height || 800, 240, 2000);
   const waitMs = clamp(opts.waitMs ?? 700, 0, 20000);
+  const prazoScript = prazoDe('POFU_CAPTURE_SCRIPT_MS', CAPTURE_SCRIPT_MS);
+  const prazoEtapa = prazoDe('POFU_CAPTURE_STEP_MS', CAPTURE_STEP_MS);
+  const prazoQuadro = prazoDe('POFU_CAPTURE_FRAME_MS', CAPTURE_FRAME_MS);
+  const prazoTotal = prazoDe('POFU_CAPTURE_TOTAL_MS', CAPTURE_TOTAL_MS);
 
   const logs = [];
   const netErrors = [];
-  let win = null;
+  // O que já se leu da página volta mesmo quando o print falha: o texto e o título dizem ao
+  // agente onde a página parou.
+  const parcial: { title?: string; text?: string } = {};
+  let win: BrowserWindow = null;
+  // Página que estourou um prazo está com a thread presa: as leituras seguintes estourariam
+  // também, cinco segundos cada, sem trazer nada — e no fim o processo dela é derrubado,
+  // porque um laço infinito segue queimando CPU depois de a janela ser destruída.
+  let travada = false;
 
-  try {
+  // Cada etapa que depende da página tem prazo próprio (ver comPrazo); o teto geral pega o
+  // que escapar delas, e o finally lá embaixo destrói a janela nos dois casos.
+  const captura = async () => {
     win = new BrowserWindow({
       width, height, show: false, frame: false, skipTaskbar: true,
       webPreferences: {
@@ -1129,10 +1159,20 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
         offscreen: true,
         nodeIntegration: false, contextIsolation: true, sandbox: true,
         backgroundThrottling: false,
-        partition: 'capture-session' // sessão isolada: não mistura cookies/cache com o app
+        partition: 'capture-session', // sessão isolada: não mistura cookies/cache com o app
+        // alert/confirm/prompt da janela invisível viram DIÁLOGOS NATIVOS na tela do usuário,
+        // e a página fica parada até alguém clicar (medido: o load de uma página com alert()
+        // passou de 6 s esperando). Desligados, alert volta na hora e confirm responde false.
+        disableDialogs: true
       }
     });
     const wc = win.webContents;
+
+    const lePagina = async (codigo: string, padrao) => {
+      if (travada) return padrao;
+      try { return await comPrazo(wc.executeJavaScript(codigo), prazoEtapa, 'prazo-da-pagina'); }
+      catch (e) { if (String(e?.message) === 'prazo-da-pagina') travada = true; return padrao; }
+    };
 
     // A assinatura de 'console-message' mudou entre versões do Electron (argumentos
     // soltos → objeto de detalhes); aceita as duas para não quebrar ao atualizar.
@@ -1168,8 +1208,8 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     if (opts.selector) {
       const deadline = Date.now() + clamp(opts.selectorTimeoutMs || 5000, 100, 20000);
       selectorFound = false;
-      while (Date.now() < deadline) {
-        selectorFound = await wc.executeJavaScript(`!!document.querySelector(${JSON.stringify(opts.selector)})`).catch(() => false);
+      while (Date.now() < deadline && !travada) {
+        selectorFound = await lePagina(`!!document.querySelector(${JSON.stringify(opts.selector)})`, false);
         if (selectorFound) break;
         await sleep(150);
       }
@@ -1180,18 +1220,22 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     let scriptResult, scriptError;
     if (opts.script) {
       try {
-        const r = await wc.executeJavaScript(`(async () => { ${opts.script} })()`, true);
+        const r = await comPrazo(wc.executeJavaScript(`(async () => { ${opts.script} })()`, true), prazoScript, 'prazo-do-script');
         scriptResult = typeof r === 'string' ? r : JSON.stringify(r ?? null);
         if (waitMs) await sleep(Math.min(waitMs, 800)); // deixa a UI reagir ao script
       } catch (e) {
-        scriptError = String(e && e.message || e).slice(0, 500);
+        const estourou = String(e && e.message) === 'prazo-do-script';
+        if (estourou) travada = true;
+        scriptError = estourou
+          ? `The script did not finish within ${prazoScript / 1000} s: it is waiting for something that never happens, or stuck in a loop. The page was captured as it is.`
+          : String(e && e.message || e).slice(0, 500);
       }
     }
 
-    const title = await wc.executeJavaScript('document.title').catch(() => '');
-    const text = await wc.executeJavaScript(
-      '(document.body ? document.body.innerText : "").replace(/\\n{3,}/g, "\\n\\n")'
-    ).catch(() => '');
+    const title = parcial.title = await lePagina('document.title', '');
+    const text = parcial.text = await lePagina(
+      '(document.body ? document.body.innerText : "").replace(/\\n{3,}/g, "\\n\\n")', ''
+    );
 
     // Página inteira: sem isto o agente vê só a primeira dobra e conclui que "está tudo
     // certo" sem nunca ter olhado o rodapé. Aumentar a janela até a altura do documento
@@ -1199,9 +1243,9 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     // que ficariam invisíveis numa captura só do topo.
     let alturaTotal = height;
     if (opts.fullPage) {
-      const medida = await wc.executeJavaScript(
-        'Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)'
-      ).catch(() => height);
+      const medida = await lePagina(
+        'Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)', height
+      );
       alturaTotal = clamp(medida, height, 6000);
       if (alturaTotal > height) {
         win.setSize(width, Math.round(alturaTotal));
@@ -1214,22 +1258,22 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     // redução. Capturando só o elemento, ele chega ao modelo em tamanho cheio.
     let rect = null, recorteFalhou = null;
     if (opts.cropSelector) {
-      const medida = await wc.executeJavaScript(`(() => {
+      const medida = await lePagina(`(() => {
         const el = document.querySelector(${JSON.stringify(opts.cropSelector)});
         if (!el) return null;
         el.scrollIntoView({ block: 'center' });
         const r = el.getBoundingClientRect();
         return { x: r.x, y: r.y, width: r.width, height: r.height };
-      })()`).catch(() => null);
+      })()`, null);
       if (!medida || medida.width < 1 || medida.height < 1) {
         recorteFalhou = `Element "${opts.cropSelector}" not found (or has no size) — captured the whole page instead.`;
       } else {
         await sleep(250); // o scrollIntoView precisa assentar antes de medir de novo
-        const r2 = await wc.executeJavaScript(`(() => {
+        const r2 = await lePagina(`(() => {
           const el = document.querySelector(${JSON.stringify(opts.cropSelector)});
           const r = el.getBoundingClientRect();
           return { x: r.x, y: r.y, width: r.width, height: r.height };
-        })()`).catch(() => medida);
+        })()`, medida);
         const folga = 8; // uma margem ajuda a julgar alinhamento em relação ao redor
         rect = {
           x: Math.max(0, Math.floor(r2.x - folga)),
@@ -1241,7 +1285,11 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     }
 
     // Recorta dentro do bitmap para não solicitar pixels fora da superfície capturada.
-    let image = await wc.capturePage();
+    // O invalidate pede um quadro novo ao modo offscreen: sem quadro pintado, o capturePage
+    // pode esperar para sempre.
+    wc.invalidate();
+    let image = await comPrazo(wc.capturePage(), prazoQuadro,
+      `The page did not produce a frame to capture within ${prazoQuadro / 1000} s (a script on it is probably stuck).`);
     if (image.isEmpty()) return { success: false, error: 'The capture came out empty (the page never rendered).' };
     if (rect) {
       const size = image.getSize();
@@ -1265,14 +1313,25 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
       console: logs, netErrors, text, selectorFound, scriptResult, scriptError,
       recorte: rect ? opts.cropSelector : undefined, recorteFalhou: recorteFalhou || undefined
     };
+  };
+
+  try {
+    return await comPrazo(captura(), prazoTotal, `capture_page did not finish within ${prazoTotal / 1000} s; the page stopped responding.`);
   } catch (err) {
     const msg = String(err && err.message || err);
     const hint = /ERR_CONNECTION_REFUSED|ERR_FAILED|ERR_EMPTY_RESPONSE/i.test(msg)
       ? 'The page did not respond. Confirm the server is up (list_processes / read_process_output) before capturing.'
-      : undefined;
-    return { success: false, url, error: msg, hint };
+      : /did not (finish|produce)|stopped responding/i.test(msg)
+        ? 'The page froze (a script stuck in a loop or waiting forever). Check console for errors, and capture without the script or with a simpler one.'
+        : undefined;
+    if (/did not (finish|produce)|stopped responding/i.test(msg)) travada = true;
+    // O console e a rede que já chegaram são a melhor pista de por que a página travou.
+    return { success: false, url, error: msg, hint, console: logs, netErrors, ...parcial };
   } finally {
-    if (win && !win.isDestroyed()) win.destroy();
+    if (win && !win.isDestroyed()) {
+      if (travada) win.webContents.forcefullyCrashRenderer();
+      win.destroy();
+    }
   }
 });
 

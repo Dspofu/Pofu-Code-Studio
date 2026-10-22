@@ -80,7 +80,7 @@ No Windows, rode `npm run build` antes de `npx electron .`.
 | `npm test` | Testes unitários das ferramentas, provedores, consumo, ponte remota e subagentes. |
 | `npm run test:integration` | Ferramentas, preload e interface no Electron com perfil isolado. |
 | `npm run test:subagents` | Paralelismo, histórico isolado, cancelamento, reconexão e cards dos subagentes. |
-| `npm run test:reconnect` | Contagem regressiva, respostas vazias, fila e status remoto. |
+| `npm run test:reconnect` | Escala de espera, Tentar agora, queda de conexão, respostas vazias e cortadas, Continuar de onde parou, fila e status remoto. |
 | `npm run test:conversation` | Etapas e relógio no início da conversa, prazo da consulta do modelo e cancelamento. |
 | `npm run test:ux` | Fluxos de rascunho, anexo, fila, navegação, Parar, contexto e teclado no Electron. |
 | `npm run test:computer` | Ferramentas visuais com adaptador falso, sem inputs nativos ao PC. |

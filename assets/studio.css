@@ -350,12 +350,14 @@ button.usage-meter { cursor: pointer; }
 
 .subagents-panel { display: grid; gap: 8px; margin: 10px 0; }
 .subagent-row { min-width: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 8px; background: #171c15; }
-.subagent-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
-.subagent-name { font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
-.subagent-status { font-size: 11px; color: var(--accent-2); }
-.subagent-row[data-status="running"] .subagent-status::before { content: "● "; }
+.subagent-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.subagent-avatar { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: #c4b2ff17; color: #c4b2ff; }
+.subagent-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.subagent-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--accent-2); }
+.subagent-row[data-status="running"] .subagent-status-icone .icone { animation: icone-girando 1s linear infinite; }
 .subagent-row[data-status="failed"] .subagent-status { color: #f2a49c; }
-.subagent-row[data-status="cancelled"] .subagent-status { color: #eec985; }
+.subagent-row[data-status="cancelled"] .subagent-status,
+.subagent-row[data-status="retry"] .subagent-status { color: #eec985; }
 .subagent-task { margin: 6px 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; max-height: 85px; overflow-y: auto; }
 .subagent-steps { color: var(--muted-2); font-size: 10px; font-variant-numeric: tabular-nums; }
 .subagent-details { margin-top: 8px; font-size: 11px; }
@@ -364,3 +366,41 @@ button.usage-meter { cursor: pointer; }
 
 .subagent-output h1, .subagent-output h2, .subagent-output h3, .subagent-output h4 { font-size: 12px; line-height: 1.5; }
 .subagent-output .is-error { color: #f2a49c; }
+
+/* Ícones de traço (src/icons.ts): herdam a cor do texto, e o data-tom pinta pela categoria
+   da ação, que é o que se bate o olho numa sequência longa de chamadas. */
+.icone { display: block; flex: none; }
+.tool-head .tool-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; background: #ffffff0d; color: var(--muted); }
+.tool-icon[data-tom="leitura"] { color: #8bc3ff; background: #8bc3ff14; }
+.tool-icon[data-tom="escrita"] { color: var(--accent-2); background: #a5d67614; }
+.tool-icon[data-tom="perigo"] { color: #f2a49c; background: #f2a49c14; }
+.tool-icon[data-tom="terminal"] { color: #eec985; background: #eec98514; }
+.tool-icon[data-tom="rede"] { color: #7fd8cf; background: #7fd8cf14; }
+.tool-icon[data-tom="agente"] { color: #c4b2ff; background: #c4b2ff17; }
+.tool-icon[data-tom="computador"] { color: #f0b37e; background: #f0b37e14; }
+.tool-card.viva .tool-icon { color: #fcd34d; background: #fcd34d14; }
+.error-card-title { display: flex; align-items: center; gap: 8px; }
+.error-card-title .icone { color: #e58b7c; }
+.retry-card .error-card-title .icone { color: #eab859; }
+.retry-acoes { display: flex; flex-wrap: wrap; gap: 8px; }
+.retry-card .retry-agora { border-color: #6b5a33; background: #3a3220; color: #eec985; }
+.retry-card .retry-agora:hover { border-color: #eab859; background: #463c25; }
+.fila-chip .fila-icone { display: inline-flex; color: var(--accent-2); }
+.msg-attach-chip:not(.has-thumb) { display: inline-flex; align-items: center; gap: 5px; }
+.attach-icon .icone { color: var(--muted); }
+.diff-file .icone { display: inline-block; margin-right: 5px; vertical-align: -1px; color: #f2a49c; }
+.folder-item.acao .icone { color: var(--muted); }
+
+/* "Continuar de onde parou": fica no fim do chat quando a tarefa parou antes da resposta
+   final, e o marcador substitui a bolha do pedido (que vai em inglês para o modelo). */
+.continuar-barra { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 14px; padding: 10px 12px 10px 16px; border: 1px solid #46533c; border-radius: 10px; background: #1b2317; }
+.continuar-texto { font-size: 12px; color: var(--muted); }
+.continuar-btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border: 1px solid var(--accent); border-radius: 8px; background: #2a3a1f; color: var(--accent-2); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
+.continuar-btn:hover { background: #33482a; }
+.continuar-btn:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.continuacao-marcador { align-self: flex-end; display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border: 1px dashed #46533c; border-radius: 999px; color: var(--muted-2); font-size: 11px; }
+
+@keyframes icone-girando { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .subagent-row[data-status="running"] .subagent-status-icone .icone { animation: none; }
+}

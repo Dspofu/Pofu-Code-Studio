@@ -11,12 +11,15 @@ import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from 
 import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
 import { LoopGuard, chaveDaChamada, temEfeito } from './loop-guard.js';
 import { formataEstrutura, suportaEstrutura } from './outline.js';
+import { RetryPolicy, retryAfterMs } from './retry-policy.js';
+import { reparaChamadasSemResposta } from './reparo-historico.js';
+import { iconeSvg, poeIcone } from './icons.js';
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, REQUEST_RETRY_DELAY_MS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CONTINUE_PROMPT, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_EMPTY_RETRIES, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -83,6 +86,19 @@ let stopRequested = false;   // usuário pediu para parar a geração
 let abortController = null;   // aborta o fetch em streaming em andamento
 const subagentControllers = new Set<AbortController>();
 
+// Sinal do Parar para quem espera uma ferramenta. Chamada IPC não tem cancelamento: uma
+// ferramenta pendurada (o capture_page já travou numa página presa) segurava o turno para
+// sempre, o Parar não soltava, e a saída era fechar o app. A espera corre contra este
+// sinal; o que a ferramenta ainda fizer no main é descartado. Recriado a cada execução.
+const PAROU = Symbol('parou');
+const TRATAM_PARADA = new Set(['delegate_tasks', 'ask_user']);
+function criaSinalDeParada() {
+  let dispara = () => {};
+  const promessa = new Promise<typeof PAROU>(resolve => { dispara = () => resolve(PAROU); });
+  return { promessa, dispara: () => dispara() };
+}
+let sinalDeParada = criaSinalDeParada();
+
 // Mensagens escritas ENQUANTO o agente responde. Não podem entrar no histórico na hora:
 // cairiam no meio de um par tool_call/tool e o servidor recusa o payload inteiro por causa
 // do tool_call órfão. Ficam aqui até a próxima virada de turno do loop (drenaFila), único
@@ -106,10 +122,10 @@ function renderFila() {
     chip.className = 'fila-chip';
     const icone = document.createElement('span');
     icone.className = 'fila-icone';
-    icone.innerText = '⏳';
+    poeIcone(icone, m.content ? 'clock' : 'paperclip', 12);
     const texto = document.createElement('span');
     texto.className = 'fila-texto';
-    const resumo = m.content || (m.attachments && m.attachments.length ? '📎 ' + m.attachments[0].name : '(vazio)');
+    const resumo = m.content || (m.attachments && m.attachments.length ? m.attachments[0].name : '(vazio)');
     texto.innerText = resumo;
     texto.title = resumo;
     const rm = document.createElement('button');
@@ -141,6 +157,7 @@ function drenaFila(chat) {
 
 function stopAgent() {
   stopRequested = true;
+  sinalDeParada.dispara();
   if (pendingConfirm) resolveConfirm('reject'); // fecha o modal de confirmação, se aberto
   if (pendingQuestion) resolveQuestion(true);   // e o card de pergunta, que também segura o turno
   if (abortController) { try { abortController.abort(); } catch (e) { } }
@@ -214,7 +231,7 @@ function showConfirmModal(name, args) {
     cmd.innerText = '$ ' + commandLabel(args);
   } else if (name === 'delete_file') {
     label.innerText = 'Apagar arquivo?';
-    cmd.innerText = '🗑 ' + (args.filename || '');
+    cmd.innerText = args.filename || '';
   } else if (name === 'http_request') {
     label.innerText = 'Enviar requisição que altera dados?';
     cmd.innerText = `${String(args.method || 'GET').toUpperCase()} ${args.url || ''}` +
@@ -224,7 +241,7 @@ function showConfirmModal(name, args) {
     cmd.innerText = summarizeToolCall(name, args);
   } else if (mcpRota.has(name)) {
     label.innerText = 'Executar ferramenta de servidor MCP?';
-    cmd.innerText = `🧩 ${TOOL_META[name]?.label || name}\n${JSON.stringify(args)}`;
+    cmd.innerText = `${TOOL_META[name]?.label || name}\n${JSON.stringify(args)}`;
   } else {
     label.innerText = 'Confirmar ação?';
     cmd.innerText = JSON.stringify(args);
@@ -1118,6 +1135,7 @@ async function loadPersisted() {
       ? data.activeChatId
       : Object.keys(data.chats)[0];
     state.settings = migraSettings(data.settings);
+    for (const chat of Object.values(state.chats)) reparaChamadasSemResposta(chat);
     // Store antigo não tem recentPaths: semeia com as pastas que os chats já usam, senão
     // o menu de troca rápida nasceria vazio para quem já tem projetos abertos.
     if (!state.recentPaths.length) {
@@ -1370,7 +1388,9 @@ async function renderActiveChat() {
 
   for (let i = 0; i < chat.messages.length; i++) {
     const msg = chat.messages[i];
-    if (msg.role === 'user') {
+    if (msg.role === 'user' && msg.continuacao) {
+      renderMarcadorContinuacao();
+    } else if (msg.role === 'user') {
       renderUserMessage(msg.content, msg.attachments, i);
     } else if (msg.role === 'assistant') {
       if (msg.content) {
@@ -1391,6 +1411,7 @@ async function renderActiveChat() {
     // mensagens 'tool' são renderizadas junto com sua chamada (acima) — nada a fazer aqui
   }
 
+  if (!isRunning && precisaContinuar(chat)) mostraBarraContinuar();
   updateInputState();
   atualizarBotaoCompactar();
 }
@@ -1606,7 +1627,11 @@ function renderUserMessage(text, attachments, index) {
         nm.innerText = a.name;
         chip.appendChild(nm);
       } else {
-        chip.innerText = `${a.mention ? '@' : (a.binary ? '🗎' : '📄')} ${a.name}`;
+        chip.innerHTML = iconeSvg(a.mention ? 'at-sign' : (a.binary ? 'file' : 'file-text'), 12);
+        const nm = document.createElement('span');
+        nm.className = 'msg-attach-name';
+        nm.innerText = a.name;
+        chip.appendChild(nm);
       }
       chip.title = a.name;
       wrap.appendChild(chip);
@@ -1667,6 +1692,7 @@ function editUserMessage(index) {
   pendingAttachments = (msg.attachments || []).map(a => ({ ...a }));
   renderAttachments();
   truncaHistorico(chat, index); // remove esta solicitação e tudo depois
+  chat.interrompido = false;    // a tarefa interrompida era a que está sendo reescrita
   renderActiveChat();
   persist();
   input.focus();
@@ -1709,31 +1735,40 @@ function appendToolLog(text) {
 }
 
 // ---- Cards de ferramenta (exibição amigável, sem JSON cru) ----
-const TOOL_META = {
-  delegate_tasks: { icon: '👥', label: 'Subagentes' },
-  list_files: { icon: '📁', label: 'Listar arquivos' },
-  read_tool_result: { icon: '📑', label: 'Continuar resultado' },
-  read_file: { icon: '📄', label: 'Ler arquivo' },
-  write_file: { icon: '✏️', label: 'Escrever arquivo' },
-  edit_file: { icon: '🖊️', label: 'Editar arquivo' },
-  search_files: { icon: '🔍', label: 'Buscar no projeto' },
-  list_definitions: { icon: '🧭', label: 'Estrutura do código' },
-  create_directory: { icon: '📂', label: 'Criar pasta' },
-  delete_file: { icon: '🗑️', label: 'Apagar arquivo' },
-  http_request: { icon: '🔌', label: 'Requisição HTTP' },
-  capture_page: { icon: '📸', label: 'Print da página' },
-  view_image: { icon: '🖼️', label: 'Ver imagem' },
-  capture_screen: { icon: '🖥️', label: 'Ver tela do computador' },
-  computer_action: { icon: '🖱️', label: 'Controlar computador' },
-  execute_command: { icon: '⌘', label: 'Terminal' },
-  read_process_output: { icon: '📜', label: 'Saída do processo' },
-  wait_for_process: { icon: '⏳', label: 'Aguardar processo' },
-  list_processes: { icon: '📋', label: 'Processos' },
-  stop_process: { icon: '⛔', label: 'Parar processo' },
-  ask_user: { icon: '💬', label: 'Pergunta' },
-  web_search: { icon: '🔎', label: 'Buscar na web' },
-  fetch_url: { icon: '🌐', label: 'Ler página' }
+// `icon` é um nome de src/icons.ts; `tom` agrupa a cor do ícone pelo que a ação faz (ler,
+// alterar, apagar, terminal, rede, agente, computador), que é o que o usuário bate o olho
+// para conferir numa sequência longa de chamadas.
+type MetaFerramenta = { icon: string; label: string; tom?: string };
+const TOOL_META: Record<string, MetaFerramenta> = {
+  delegate_tasks: { icon: 'bot', label: 'Subagentes', tom: 'agente' },
+  list_files: { icon: 'folder', label: 'Listar arquivos', tom: 'leitura' },
+  read_tool_result: { icon: 'layers', label: 'Continuar resultado', tom: 'leitura' },
+  read_file: { icon: 'file-text', label: 'Ler arquivo', tom: 'leitura' },
+  write_file: { icon: 'file-plus', label: 'Escrever arquivo', tom: 'escrita' },
+  edit_file: { icon: 'pencil', label: 'Editar arquivo', tom: 'escrita' },
+  search_files: { icon: 'text-search', label: 'Buscar no projeto', tom: 'leitura' },
+  list_definitions: { icon: 'list-tree', label: 'Estrutura do código', tom: 'leitura' },
+  create_directory: { icon: 'folder-plus', label: 'Criar pasta', tom: 'escrita' },
+  delete_file: { icon: 'trash', label: 'Apagar arquivo', tom: 'perigo' },
+  http_request: { icon: 'plug', label: 'Requisição HTTP', tom: 'rede' },
+  capture_page: { icon: 'camera', label: 'Print da página', tom: 'rede' },
+  view_image: { icon: 'image', label: 'Ver imagem', tom: 'leitura' },
+  capture_screen: { icon: 'monitor', label: 'Ver tela do computador', tom: 'computador' },
+  computer_action: { icon: 'pointer', label: 'Controlar computador', tom: 'computador' },
+  execute_command: { icon: 'terminal', label: 'Terminal', tom: 'terminal' },
+  read_process_output: { icon: 'square-terminal', label: 'Saída do processo', tom: 'terminal' },
+  wait_for_process: { icon: 'hourglass', label: 'Aguardar processo', tom: 'terminal' },
+  list_processes: { icon: 'activity', label: 'Processos', tom: 'terminal' },
+  stop_process: { icon: 'circle-stop', label: 'Parar processo', tom: 'perigo' },
+  ask_user: { icon: 'message-question', label: 'Pergunta', tom: 'agente' },
+  web_search: { icon: 'search', label: 'Buscar na web', tom: 'rede' },
+  fetch_url: { icon: 'globe', label: 'Ler página', tom: 'rede' }
 };
+
+function poeIconeDaFerramenta(alvo: HTMLElement, meta: MetaFerramenta) {
+  poeIcone(alvo, meta.icon);
+  if (meta.tom) alvo.dataset.tom = meta.tom; else delete alvo.dataset.tom;
+}
 
 // Resumo legível dos argumentos da chamada
 function summarizeToolCall(name, args) {
@@ -1786,7 +1821,7 @@ function summarizeToolCall(name, args) {
     case 'wait_for_process':
     case 'stop_process': return 'PID ' + (args.pid ?? '?');
     case 'list_processes': return '';
-    case 'web_search': return '🔎 ' + (args.query || '');
+    case 'web_search': return args.query || '';
     case 'fetch_url': return args.url || '';
     default: {
       const keys = Object.keys(args);
@@ -1808,6 +1843,11 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^HTTP (401|403):/i, m => `⚠ O servidor recusou o acesso (HTTP ${m[1]}). Confira a chave e as permissões.`],
   [/^HTTP 404:/i, () => '⚠ Endereço ou modelo não encontrado. Confira a conexão.'],
   [/Subagent cancelled by the user/i, () => '↷ Análise interrompida pelo usuário.'],
+  [/^Stopped by the user before this tool returned/i, () => '↷ Interrompida pelo Parar antes de terminar.'],
+  [/^Not run: the user stopped the agent/i, () => '↷ Não executada: o agente foi parado antes.'],
+  [/^No result: the app closed or the run broke/i, () => '↷ Sem resultado: o app fechou ou a execução quebrou antes de a ferramenta voltar.'],
+  [/did not produce a frame to capture|capture_page did not finish/i, () => '⚠ A página travou e a captura foi interrompida (algum script dela ficou preso).'],
+  [/did not respond to text extraction/i, () => '⚠ A página travou antes de entregar o texto.'],
   [/Subagent turn limit reached/i, () => '↷ A análise chegou ao limite de etapas. Confira os resultados parciais.'],
   [/Subagent context limit reached/i, () => '↷ A análise ultrapassou o contexto. Peça uma tarefa menor.'],
   [/Subagent returned no text or tool calls|Subagent received no assistant message/i, () => '⚠ O subagente não enviou um resultado.'],
@@ -1936,7 +1976,7 @@ function summarizeToolResult(name, resultStr) {
     }
     case 'list_files':
       return Array.isArray(data)
-        ? (data.map(f => (f.isDirectory ? '📁 ' : '📄 ') + f.name + (f.size != null ? `  (${fmtSize(f.size)})` : '')).join('\n') || '(pasta vazia)')
+        ? (data.map(f => f.name + (f.isDirectory ? '/' : '') + (f.size != null ? `  (${fmtSize(f.size)})` : '')).join('\n') || '(pasta vazia)')
         : resultStr;
     case 'write_file': {
       if (!data.success) return erroParaTela(data.error || resultStr);
@@ -2007,7 +2047,7 @@ function summarizeToolResult(name, resultStr) {
       const lista = data.results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n\n');
       // O texto extraído das páginas é longo; na tela vai só o começo, mas o modelo
       // recebe tudo (o corte aqui é apresentação, não conteúdo).
-      const trechos = paginas.map(p => `📄 ${p.url}\n${(p.text || '').slice(0, 400)}…`).join('\n\n');
+      const trechos = paginas.map(p => `${p.url}\n${(p.text || '').slice(0, 400)}…`).join('\n\n');
       return [cabec, lista, trechos].filter(Boolean).join('\n\n');
     }
     case 'fetch_url':
@@ -2041,7 +2081,7 @@ function summarizeToolResult(name, resultStr) {
 // stream (ver criaCardFerramentaViva): reaproveitá-lo evita o card piscar — sumir e
 // reaparecer no mesmo lugar — no instante em que os argumentos terminam de chegar.
 function appendToolCall(name, args, cardVivo: HTMLElement = null) {
-  const meta = TOOL_META[name] || { icon: '🔧', label: name };
+  const meta = TOOL_META[name] || { icon: 'wrench', label: name };
   const chatBox = el('chat-box');
   const card = cardVivo || document.createElement('div');
   card.className = 'tool-card'; // tira o 'viva': os argumentos pararam de chegar
@@ -2053,7 +2093,7 @@ function appendToolCall(name, args, cardVivo: HTMLElement = null) {
     head.innerHTML = `<span class="tool-icon"></span><span class="tool-title"></span>`;
     card.appendChild(head);
   }
-  q('.tool-icon', head).innerText = meta.icon;
+  poeIconeDaFerramenta(q('.tool-icon', head), meta);
   q('.tool-title', head).innerText = meta.label;
 
   // Progresso e prévia serviam enquanto o conteúdo chegava picado; agora vale o argumento
@@ -2159,7 +2199,7 @@ function criaCardFerramentaViva() {
   const head = document.createElement('div');
   head.className = 'tool-head';
   head.innerHTML = `<span class="tool-icon"></span><span class="tool-title"></span>`;
-  q('.tool-icon', head).innerText = '🔧';
+  poeIcone(q('.tool-icon', head), 'wrench');
   q('.tool-title', head).innerText = 'Preparando chamada…';
   card.appendChild(head);
 
@@ -2186,7 +2226,7 @@ function criaCardFerramentaViva() {
     quadro = 0;
     const meta = TOOL_META[nome];
     if (meta) {
-      q('.tool-icon', head).innerText = meta.icon;
+      poeIconeDaFerramenta(q('.tool-icon', head), meta);
       q('.tool-title', head).innerText = meta.label;
     }
 
@@ -2284,17 +2324,23 @@ function updateSubagentPanel(card: HTMLElement, worker) {
   if (!row) {
     row = document.createElement('div'); row.className = 'subagent-row'; row.dataset.workerId = worker.id;
     const heading = document.createElement('div'); heading.className = 'subagent-heading';
+    const avatar = document.createElement('span'); avatar.className = 'subagent-avatar'; poeIcone(avatar, 'bot', 15);
     const name = document.createElement('strong'); name.className = 'subagent-name';
     const status = document.createElement('span'); status.className = 'subagent-status'; status.setAttribute('role', 'status');
-    heading.append(name, status);
+    const statusIcone = document.createElement('span'); statusIcone.className = 'subagent-status-icone';
+    const statusTexto = document.createElement('span'); statusTexto.className = 'subagent-status-texto';
+    status.append(statusIcone, statusTexto);
+    heading.append(avatar, name, status);
     const task = document.createElement('p'); task.className = 'subagent-task';
     const steps = document.createElement('span'); steps.className = 'subagent-steps';
     row.append(heading, task, steps); panel.appendChild(row);
   }
-  row.dataset.status = worker.status;
+  row.dataset.status = worker.retryAt ? 'retry' : worker.status;
   q('.subagent-name', row).textContent = worker.name;
   const labels = { running: 'Analisando', completed: 'Concluído', failed: 'Falhou', cancelled: 'Interrompido' };
-  q('.subagent-status', row).textContent = worker.retryAt
+  const icones = { running: 'loader', completed: 'check', failed: 'x', cancelled: 'pause', retry: 'rotate-cw' };
+  poeIcone(q('.subagent-status-icone', row), icones[row.dataset.status] || 'clock', 12);
+  q('.subagent-status-texto', row).textContent = worker.retryAt
     ? `Reconectando em ${Math.max(0, Math.ceil((worker.retryAt - Date.now()) / 1000))}s`
     : labels[worker.status] || 'Aguardando';
   q('.subagent-task', row).textContent = worker.task;
@@ -2317,8 +2363,8 @@ function updateSubagentPanel(card: HTMLElement, worker) {
   scrollChat();
 }
 
-async function subagentReconnect(signal: AbortSignal, update: (deadline: number) => void) {
-  const deadline = Date.now() + REQUEST_RETRY_DELAY_MS;
+async function subagentReconnect(signal: AbortSignal, esperaMs: number, update: (deadline: number) => void) {
+  const deadline = Date.now() + esperaMs;
   update(deadline);
   const ticker = window.setInterval(() => update(deadline), 200);
   let timer;
@@ -2326,7 +2372,7 @@ async function subagentReconnect(signal: AbortSignal, update: (deadline: number)
   try {
     await new Promise<void>(resolve => {
       cancel = () => resolve();
-      timer = window.setTimeout(resolve, REQUEST_RETRY_DELAY_MS);
+      timer = window.setTimeout(resolve, esperaMs);
       signal.addEventListener('abort', cancel, { once: true });
       if (signal.aborted) resolve();
     });
@@ -2385,8 +2431,11 @@ async function delegateTasks(args, workspace: string, toolCallId: string) {
           thinking.set(worker.id, { payload: thinkRecusado ? null : level.payload, noThink: level.semRaciocinio || settings.noThink, adapted: false });
         }
         const level = thinking.get(worker.id);
-        let lastError;
-        for (let attempt = 1; attempt <= MAX_REQUEST_RETRIES; attempt++) {
+        const politica = new RetryPolicy();
+        let vazias = 0;
+        // Cada `continue` abaixo tem limite próprio: vazias, o nível de raciocínio (no máximo
+        // duas recusas) e o return_progress (sai uma vez só). A política encerra o resto.
+        while (true) {
           if (signal.aborted) return { aborted: true };
           try {
             const result = await streamChatCompletion({
@@ -2395,26 +2444,25 @@ async function delegateTasks(args, workspace: string, toolCallId: string) {
                 tools, tool_choice: 'auto', temperature: settings.temperature, top_p: settings.topP, max_tokens: maxTokens, ...(level.payload || {}) },
               onContent: () => {}, onReasoning: () => {}
             });
-            if (respostaVazia(result) && attempt < MAX_REQUEST_RETRIES && !signal.aborted) {
+            if (respostaVazia(result) && vazias < MAX_EMPTY_RETRIES && !signal.aborted) {
+              vazias++;
               if (result.usage) trackUsage(result.usage, true, usageProvider);
               continue;
             }
             return result;
           } catch (error) {
-            lastError = error;
             if (signal.aborted) return { aborted: true };
             if (level.payload && recusouRaciocinio(error)) {
               level.payload = level.adapted ? null : adaptaNivelRaciocinio(level.payload, String(error.message));
               level.adapted = true;
-              attempt--;
               continue;
             }
-            const diag = classificaErroDeRequisicao(error, settings.apiUrl, settings.model);
-            if (!diag.transitorio || attempt === MAX_REQUEST_RETRIES || (/^Servidor parado/.test(String(error.message)) && attempt >= 2)) throw error;
-            await subagentReconnect(signal, retryAt => update({ ...(statuses.get(worker.id) || worker), retryAt }));
+            if (error?.progressoRecusado) continue;
+            const espera = esperaParaRepetir(error, politica, settings.apiUrl, settings.model);
+            if (espera === null) throw error;
+            await subagentReconnect(signal, espera, retryAt => update({ ...(statuses.get(worker.id) || worker), retryAt }));
           }
         }
-        throw lastError || new Error('Subagent request failed.');
       }
     }, { signal: controller.signal, systemPrompt: system, maxTurns: MAX_SUBAGENT_TURNS, maxContextChars });
   } finally { controller.abort(); subagentControllers.delete(controller); scopes.clear(); }
@@ -2462,7 +2510,8 @@ function attachDiff(card, alteracao, diffPronto) {
 
   const rotulo = document.createElement('span');
   rotulo.className = 'diff-file';
-  rotulo.innerText = alteracao.apagado ? `🗑 ${alteracao.arquivo}` : alteracao.arquivo;
+  if (alteracao.apagado) rotulo.innerHTML = iconeSvg('trash', 12);
+  rotulo.append(alteracao.arquivo);
 
   const contagem = document.createElement('span');
   contagem.className = 'diff-counts';
@@ -2635,7 +2684,7 @@ function appendError(text) {
 }
 
 // Erro com causa provável e passos para resolver, em vez de uma linha de exceção crua.
-function appendErrorCard({ titulo, detalhe, passos }) {
+function appendErrorCard({ titulo, detalhe, passos, icone = 'alert' }: { titulo: string; detalhe?: string; passos?: string[]; icone?: string }) {
   const chatBox = el('chat-box');
   const card = document.createElement('div');
   card.className = 'error-card';
@@ -2643,7 +2692,10 @@ function appendErrorCard({ titulo, detalhe, passos }) {
 
   const h = document.createElement('div');
   h.className = 'error-card-title';
-  h.innerText = `⚠ ${titulo}`;
+  h.innerHTML = iconeSvg(icone, 15);
+  const texto = document.createElement('span');
+  texto.innerText = titulo;
+  h.appendChild(texto);
   card.appendChild(h);
 
   if (detalhe) {
@@ -2670,27 +2722,56 @@ function appendErrorCard({ titulo, detalhe, passos }) {
   return card;
 }
 
-async function waitForReconnect(diag, attempt) {
+// `proxima` é o número da tentativa que vem depois da espera (a primeira falhou: 2).
+async function waitForReconnect(diag, proxima: number, esperaMs: number, teto = MAX_REQUEST_RETRIES) {
   hideTyping();
-  const card = appendErrorCard({ titulo: diag.titulo, detalhe: diag.detalhe, passos: [] });
+  const card = appendErrorCard({ titulo: diag.titulo, detalhe: diag.detalhe, passos: [], icone: 'rotate-cw' });
   card.classList.add('retry-card'); card.setAttribute('role', 'status');
   const countdown = document.createElement('p'); countdown.className = 'retry-countdown';
   const bar = document.createElement('div'); bar.className = 'retry-progress';
   const fill = document.createElement('span'); bar.appendChild(fill);
-  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'Cancelar tentativa'; cancel.addEventListener('click', stopAgent);
-  card.append(countdown, bar, cancel);
-  const deadline = Date.now() + REQUEST_RETRY_DELAY_MS;
+  const acoes = document.createElement('div'); acoes.className = 'retry-acoes';
+  // A espera chega a 30 s nas últimas tentativas: quem acabou de reiniciar o servidor não
+  // precisa ficar olhando a contagem.
+  const agora = document.createElement('button'); agora.type = 'button'; agora.className = 'retry-agora'; agora.textContent = 'Tentar agora';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'retry-cancelar'; cancel.textContent = 'Cancelar tentativa'; cancel.addEventListener('click', stopAgent);
+  acoes.append(agora, cancel);
+  card.append(countdown, bar, acoes);
+  const deadline = Date.now() + esperaMs;
   const controller = new AbortController(); abortController = controller;
   let timer;
   const update = () => {
     const remaining = Math.max(0, deadline - Date.now());
-    countdown.textContent = `Nova tentativa em ${Math.ceil(remaining / 1000)}s · ${attempt + 1}/${MAX_REQUEST_RETRIES}`;
-    fill.style.width = `${remaining / REQUEST_RETRY_DELAY_MS * 100}%`;
+    countdown.textContent = `Nova tentativa em ${Math.ceil(remaining / 1000)}s · tentativa ${proxima} de ${teto}`;
+    fill.style.width = `${remaining / esperaMs * 100}%`;
   };
   update(); const ticker = setInterval(update, 200);
-  try { await new Promise<void>(resolve => { timer = setTimeout(resolve, REQUEST_RETRY_DELAY_MS); controller.signal.addEventListener('abort', () => resolve(), { once: true }); if (stopRequested) resolve(); }); }
+  try {
+    await new Promise<void>(resolve => {
+      timer = setTimeout(resolve, esperaMs);
+      agora.addEventListener('click', () => resolve(), { once: true });
+      controller.signal.addEventListener('abort', () => resolve(), { once: true });
+      if (stopRequested) resolve();
+    });
+  }
   finally { clearTimeout(timer); clearInterval(ticker); if (abortController === controller) abortController = null; card.remove(); }
   return !stopRequested;
+}
+
+// Um travamento já custou o prazo inteiro (três minutos), e servidor travado não volta
+// sozinho: uma repetição separa soluço de rede de servidor que precisa reiniciar.
+function tetoDeTentativas(err) {
+  return /^Servidor parado/.test(String((err && err.message) || err || '')) ? 2 : MAX_REQUEST_RETRIES;
+}
+
+// Depois de uma falha: a espera até a próxima tentativa, ou null para desistir. A mesma regra
+// serve ao agente principal e aos subagentes.
+function esperaParaRepetir(err, politica: RetryPolicy, apiUrl: string, model: string): number | null {
+  if (!classificaErroDeRequisicao(err, apiUrl, model).transitorio) return null;
+  return politica.proxima(String((err && err.message) || err || ''), {
+    retryAfter: Number(err && err.retryAfterMs) || 0,
+    maxTentativas: tetoDeTentativas(err)
+  });
 }
 
 // O servidor pode demorar antes do primeiro token, mesmo com pouco histórico.
@@ -3147,7 +3228,7 @@ function aplicaEstadoMcp(estado: McpEstado[]) {
       // Vai em TODA requisição: descrição de servidor MCP chega a ter páginas.
       const desc = String(f.description || f.annotations?.title || f.name);
       mcpFerramentas.push({ type: 'function', function: { name: nome, description: desc.length > 1024 ? desc.slice(0, 1023) + '…' : desc, parameters: params } });
-      TOOL_META[nome] = { icon: '🧩', label: `${s.name} · ${f.annotations?.title || f.name}` };
+      TOOL_META[nome] = { icon: 'puzzle', label: `${s.name} · ${f.annotations?.title || f.name}`, tom: 'agente' };
     }
   }
   renderMcpStatus();
@@ -3578,7 +3659,17 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
         selector: args.selector, script: args.script, fullPage: !!args.full_page,
         cropSelector: args.crop_selector
       });
-      if (!res.success) return JSON.stringify({ error: res.error, hint: res.hint });
+      if (!res.success) {
+        // Página que travou: o console, a rede e o texto que ela já mostrava são a pista
+        // do motivo, e sem eles o agente tentaria a mesma captura de novo às cegas.
+        const falha: Record<string, any> = { error: res.error, hint: res.hint };
+        const pistas = (res.console || []).filter(c => c.level === 'error').map(c => c.text).slice(0, 15);
+        if (pistas.length) falha.console_errors = pistas;
+        if ((res.netErrors || []).length) falha.network_failures = res.netErrors.slice(0, 10);
+        if (res.title) falha.title = res.title;
+        if (res.text) falha.visible_text = clipMiddle(res.text, 3000);
+        return JSON.stringify(falha);
+      }
 
       // O dataUrl NÃO entra no texto do resultado: ele vai como imagem, à parte, e
       // colado aqui (centenas de KB de base64) estouraria o contexto sozinho.
@@ -3646,6 +3737,7 @@ async function submitUserMessage(userPrompt, attachments) {
     return;
   }
 
+  removeBarraContinuar();
   // O que sobrou na fila (a run anterior foi interrompida antes da virada de turno)
   // entra antes da mensagem nova, para a ordem na tela bater com a do histórico.
   drenaFila(chat);
@@ -3660,6 +3752,65 @@ async function submitUserMessage(userPrompt, attachments) {
   await runAgent();
 }
 
+// A tarefa parou antes da resposta final: a marca da última execução, ou um histórico que
+// termina sem resposta do agente (pedido ou resultado de ferramenta sem continuação — chats
+// salvos antes da marca existir também caem aqui).
+function precisaContinuar(chat: Chat) {
+  const ultima = chat && chat.messages[chat.messages.length - 1];
+  return !!ultima && (!!chat.interrompido || ultima.role === 'user' || ultima.role === 'tool');
+}
+
+function removeBarraContinuar() {
+  el('continuar-barra')?.remove();
+}
+
+function mostraBarraContinuar() {
+  removeBarraContinuar();
+  const barra = document.createElement('div');
+  barra.className = 'continuar-barra';
+  barra.id = 'continuar-barra';
+  const texto = document.createElement('span');
+  texto.className = 'continuar-texto';
+  texto.innerText = 'A tarefa parou antes do fim.';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'continuar-btn';
+  btn.innerHTML = iconeSvg('play', 13);
+  btn.append('Continuar de onde parou');
+  btn.addEventListener('click', () => { void continuarDeOndeParou(); });
+  barra.append(texto, btn);
+  el('chat-box').appendChild(barra);
+  scrollChat();
+}
+
+function renderMarcadorContinuacao() {
+  const marcador = document.createElement('div');
+  marcador.className = 'continuacao-marcador';
+  marcador.innerHTML = iconeSvg('play', 11);
+  const texto = document.createElement('span');
+  texto.innerText = 'Continuar de onde parou';
+  marcador.appendChild(texto);
+  el('chat-box').appendChild(marcador);
+  scrollChat();
+}
+
+// Pedido, resultado de ferramenta ou mensagem da fila sem resposta: basta rodar o agente,
+// que vê o histórico e segue. Só quando o modelo parou numa resposta de texto (cortada,
+// Parar no meio) é preciso pedir que continue — sem isso ele daria o turno por encerrado.
+async function continuarDeOndeParou() {
+  const chat = activeChat();
+  if (isRunning || !chat || !chat.messages.length) return;
+  if (!state.settings.model) return runAgent(); // ele mostra o aviso, sem deixar pedido pendurado
+  removeBarraContinuar();
+  const ultima = chat.messages[chat.messages.length - 1];
+  if (ultima.role === 'assistant' && !(ultima.tool_calls && ultima.tool_calls.length)) {
+    chat.messages.push({ role: 'user', content: CONTINUE_PROMPT, continuacao: true });
+    renderMarcadorContinuacao();
+  }
+  forceScrollBottom();
+  await runAgent();
+}
+
 // Roda o loop do agente sobre o histórico atual (usado por envio novo e por regeneração)
 async function runAgent() {
   if (isRunning) return;
@@ -3669,8 +3820,10 @@ async function runAgent() {
     return;
   }
 
+  removeBarraContinuar();
   isRunning = true;
   stopRequested = false;
+  sinalDeParada = criaSinalDeParada();
   updateInputState();
   const preparation = new AbortController();
   abortController = preparation;
@@ -3711,6 +3864,7 @@ async function runAgent() {
     }
     // Um envio pode chegar depois da última virada de turno, enquanto o histórico é salvo.
     if (filaMensagens.length && !stopRequested && activeChat() === chat) await runAgent();
+    else if (activeChat() === chat && precisaContinuar(chat)) mostraBarraContinuar();
   }
 }
 
@@ -3791,29 +3945,29 @@ function estourouContexto(err) {
   };
 }
 
-// O servidor recusou um campo da requisição (tipicamente o return_progress, que mandamos
-// por padrão para manter o túnel vivo durante o prefill). Diferente do estouro de
-// contexto, isto NÃO é falha da conversa: a correção é reenviar a MESMA mensagem sem o
-// campo. progressRecusado (definido em streamChatCompletion) já garante que o reenvio
-// sai limpo; aqui só detectamos para acionar o reenvio imediato sem gastar tentativa.
-function recusouProgresso(err) {
-  const msg = String((err && err.message) || err || '');
-  const status = Number((msg.match(/^HTTP (\d{3})/) || [])[1]) || 0;
-  return status >= 400 && status < 500 &&
-    /return_progress|unrecognized|unknown field|invalid field|unsupported field|extra field|unexpected field|invalid argument/i.test(msg);
-}
+// Endpoints que já responderam alguma coisa (qualquer status HTTP) desde que o app abriu.
+// O fetch do Chromium devolve o mesmo "Failed to fetch" para porta errada e para conexão
+// derrubada no meio (túnel que caiu, servidor que reiniciou o slot), e só o segundo caso
+// passa ao repetir. Servidor que nunca respondeu falha na hora, com o diagnóstico de
+// conexão; o que já respondeu nesta sessão ganha as tentativas, como no opencode, que trata
+// erro de transporte como recuperável.
+const enderecosQueResponderam = new Set<string>();
 
 function classificaErroDeRequisicao(err, apiUrl, model) {
   const msg = String((err && err.message) || err || '');
   const status = Number((msg.match(/^HTTP (\d{3})/) || [])[1]) || 0;
   const nomeCurto = model ? model.split(/[\\/]/).pop() : '(nenhum)';
 
-  if (/failed to fetch|fetch failed|networkerror|ERR_CONNECTION|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/i.test(msg)) {
+  if (/failed to fetch|fetch failed|networkerror|network error|ERR_CONNECTION|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH/i.test(msg)) {
+    const jaRespondeu = enderecosQueResponderam.has(apiUrl);
     return {
-      transitorio: false,
-      titulo: 'Não consegui falar com o servidor do modelo',
-      detalhe: `Nenhuma resposta de ${apiUrl}.`,
-      passos: [
+      transitorio: jaRespondeu,
+      titulo: jaRespondeu ? 'A conexão com o servidor do modelo caiu' : 'Não consegui falar com o servidor do modelo',
+      detalhe: `Nenhuma resposta de ${apiUrl}. (${msg.slice(0, 120)})`,
+      passos: jaRespondeu ? [
+        'O servidor respondia antes: costuma ser o túnel ou a rede oscilando, ou o servidor reiniciando.',
+        'Se não voltar, confira se o servidor do modelo continua de pé e clique em "Continuar de onde parou".'
+      ] : [
         'Confirme que o servidor do modelo (llama.cpp, Ollama, vLLM…) está de pé.',
         'Confira a URL e principalmente a PORTA em Configurações → Conexão.',
         `Teste no navegador: ${apiUrl}/models deve devolver JSON.`
@@ -3850,7 +4004,10 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
       passos: ['Configurações → "Recarregar" e selecione um modelo da lista do servidor.']
     };
   }
-  if (status === 413 || /context|too long|exceeds/i.test(msg)) {
+  // Só 4xx: o corpo de um 500 do llama.cpp despeja trecho do template Jinja, que cita
+  // "context" à toa — e a falha passageira virava "conversa grande demais", sem nenhuma
+  // nova tentativa.
+  if (status === 413 || estourouContexto(err) || (status >= 400 && status < 500 && /context|too long|exceeds/i.test(msg))) {
     return {
       transitorio: false,
       titulo: 'A conversa passou do que o modelo aguenta',
@@ -3861,6 +4018,18 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
       ]
     };
   }
+  if (status === 429) {
+    // A OpenAI responde 429 também para cota esgotada, que nenhuma espera resolve.
+    const cota = /insufficient_quota|quota|billing|credit/i.test(msg);
+    return {
+      transitorio: !cota,
+      titulo: cota ? 'A cota ou o crédito da API acabou' : 'O servidor pediu para esperar (limite de requisições)',
+      detalhe: msg.slice(0, 250),
+      passos: cota
+        ? ['Confira o saldo e o plano no painel do provedor da API.']
+        : ['O app espera o tempo pedido pelo servidor e tenta de novo sozinho.']
+    };
+  }
   if (/^Servidor parado/.test(msg)) {
     return {
       transitorio: true,
@@ -3868,18 +4037,33 @@ function classificaErroDeRequisicao(err, apiUrl, model) {
       detalhe: msg.slice(0, 250),
       passos: [
         'O servidor aceitou o pedido e travou no meio: nem o prompt nem a resposta avançam.',
-        'Reinicie o servidor do modelo (llama.cpp, Ollama…) e mande "continue".'
+        'Reinicie o servidor do modelo (llama.cpp, Ollama…) e clique em "Continuar de onde parou".'
       ]
     };
   }
   if (/^Stream interrompido/.test(msg)) {
+    const noMeio = /chamada de ferramenta/.test(msg);
     return {
       transitorio: true,
-      titulo: 'A conexão caiu antes da resposta',
-      detalhe: `O stream de ${apiUrl} fechou sem enviar nada.`,
+      titulo: noMeio ? 'A conexão caiu no meio da resposta' : 'A conexão caiu antes da resposta',
+      detalhe: noMeio ? `O stream de ${apiUrl} fechou no meio de uma chamada de ferramenta.` : `O stream de ${apiUrl} fechou sem enviar nada.`,
       passos: [
         'Costuma ser um proxy ou túnel encerrando a conexão enquanto o servidor processa um prompt longo.',
         'Se repetir, veja o terminal do servidor do modelo.'
+      ]
+    };
+  }
+  // Requisição recusada é determinística (o opencode também não repete InvalidRequest):
+  // seis tentativas com espera só adiariam o cartão com a resposta do servidor. Ficam de
+  // fora os 4xx que significam "agora não" (timeout, conflito, cedo demais).
+  if (status >= 400 && status < 500 && ![408, 409, 425].includes(status)) {
+    return {
+      transitorio: false,
+      titulo: `O servidor recusou a requisição (HTTP ${status})`,
+      detalhe: msg.slice(0, 400),
+      passos: [
+        'Os detalhes técnicos mostram o que o servidor recusou.',
+        'Se começou depois de mudar uma configuração (nível de raciocínio, servidor MCP, modelo), desfaça a mudança e clique em "Continuar de onde parou".'
       ]
     };
   }
@@ -3948,19 +4132,25 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
     throw err;
   }
   ultimoByte = Date.now();
+  enderecosQueResponderam.add(apiUrl);
   if (!response.ok) {
     const body = await response.text();
-    // O servidor não aceita o return_progress (alguns gateways estritos): para de
-    // enviá-lo para este endpoint+modelo. A próxima tentativa sai sem o campo e o
-    // prefill segue — a troca é transparente para o resto do fluxo.
-    if (enviarProgress && response.status >= 400 && response.status < 500 &&
-      /return_progress|unrecognized|unknown field|invalid field|unsupported field|extra field|unexpected field|invalid argument/i.test(body)) {
-      progressRecusado = chaveProgress;
-    }
     // 600, e não 300: o llama.cpp responde erro de template despejando ANTES o trecho do
     // Jinja, e a frase que diz o que ele recusou (e o que aceita) só vem no fim — cortar
     // curto demais escondia justamente a parte que o recusouRaciocinio procura.
-    throw new Error(`HTTP ${response.status}: ${truncate(body, 600)}`);
+    const erro: Error & { retryAfterMs?: number; progressoRecusado?: boolean } = new Error(`HTTP ${response.status}: ${truncate(body, 600)}`);
+    erro.retryAfterMs = retryAfterMs(response.headers.get('retry-after'), body);
+    // O servidor não aceita o return_progress (alguns gateways estritos): para de
+    // enviá-lo para este endpoint+modelo e o reenvio sai sem o campo, sem gastar tentativa.
+    // A marca vai no ERRO, e só quando o campo foi de fato enviado nesta requisição: o
+    // teste antigo olhava só o texto, e um 4xx com "invalid argument" por OUTRO motivo,
+    // depois de o campo já ter saído, reenviava em looping sem fim e sem espera.
+    if (enviarProgress && response.status >= 400 && response.status < 500 &&
+      /return_progress|unrecognized|unknown field|invalid field|unsupported field|extra field|unexpected field|invalid argument/i.test(body)) {
+      progressRecusado = chaveProgress;
+      erro.progressoRecusado = true;
+    }
+    throw erro;
   }
   if (onConnected) onConnected();
 
@@ -3976,9 +4166,14 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-      ultimoByte = Date.now(); recebeuAlgo = true;
-      buffer += decoder.decode(value, { stream: true });
+      if (!done) {
+        ultimoByte = Date.now(); recebeuAlgo = true;
+        buffer += decoder.decode(value, { stream: true });
+      } else {
+        // A última linha também conta: servidor que fecha sem o "\n" final perderia
+        // justamente o chunk do finish_reason, e a resposta pareceria cortada.
+        buffer += decoder.decode() + '\n';
+      }
       const lines = buffer.split('\n');
       buffer = lines.pop(); // guarda a última linha (possivelmente incompleta)
       for (const raw of lines) {
@@ -4014,6 +4209,7 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
         }
         if (choice.finish_reason) finishReason = choice.finish_reason;
       }
+      if (done) break;
     }
   } catch (err) {
     if (travou) throw servidorParado();
@@ -4025,8 +4221,17 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   // Proxy/túnel que derruba a conexão ociosa (prompt longo processando) ou servidor que
   // reinicia o slot fecham o stream sem finish_reason nem [DONE]. Sem isto a queda chegava
   // ao loop como "o modelo não respondeu nada" e o turno morria sem nova tentativa.
-  if (!aborted && !apiError && !finishReason && !viuDone && !content.trim() && !tool_calls.length)
+  const semFim = !aborted && !apiError && !finishReason && !viuDone;
+  if (semFim && !content.trim() && !tool_calls.length)
     throw new Error('Stream interrompido: a conexão fechou antes de qualquer resposta.');
+  // O usage vem no último chunk (include_usage): sem ele também, a conexão caiu no meio.
+  // Com uma chamada pela metade, executar o JSON quebrado devolveria ao modelo um erro que
+  // ele não cometeu; repetir a requisição é barato com o cache de prefixo. Texto pela metade
+  // não é repetido — servidor que omita os três marcadores existe e continuaria funcionando
+  // —, mas volta marcado como `cortado` para a tela avisar e oferecer o "Continuar".
+  const caiuNoMeio = semFim && !usage;
+  if (caiuNoMeio && tool_calls.some(tc => !jsonCompleto(tc.function.arguments)))
+    throw new Error('Stream interrompido: a conexão fechou no meio de uma chamada de ferramenta.');
   const endedAt = performance.now();
   const timing = {
     totalMs: endedAt - startedAt,
@@ -4035,9 +4240,13 @@ async function streamChatCompletion({ apiUrl, apiKey, payload, signal, onContent
   };
   return {
     message: { role: 'assistant', content, reasoning_content: reasoning, tool_calls: tool_calls.length ? tool_calls : undefined },
-    usage, finishReason, aborted, apiError, timing, timings
+    usage, finishReason, aborted, apiError, timing, timings, cortado: caiuNoMeio && !tool_calls.length
   };
   } finally { clearInterval(vigia); signal.removeEventListener('abort', repassaAbort); }
+}
+
+function jsonCompleto(texto: string) {
+  try { JSON.parse(texto || '{}'); return true; } catch { return false; }
 }
 
 // Calcula as métricas exibidas abaixo da resposta (velocidade, tokens, tempo)
@@ -4212,6 +4421,13 @@ async function agentTurns(chat) {
   ultimoToolsChars = JSON.stringify(toolset).length;
   const trava = new LoopGuard();
   apertoPoda = 1;
+  // Pessimista de propósito: só a resposta final completa desliga a marca. Qualquer outra
+  // saída — erro, Parar, trava de iterações e até o app fechado no meio — deixa o botão
+  // "Continuar de onde parou" no fim do chat, inclusive depois de reabrir.
+  chat.interrompido = true;
+  // Turno anterior que quebrou no meio das ferramentas (exceção, app fechado) deixa chamada
+  // sem resposta, e o servidor recusaria esta requisição e todas as seguintes.
+  if (reparaChamadasSemResposta(chat)) await renderActiveChat();
 
   await persist();
 
@@ -4292,7 +4508,15 @@ async function agentTurns(chat) {
       if (liveBody) { escritorBody.descarta(); liveBody.parentElement.remove(); liveBody = null; escritorBody = null; }
       limpaCardsVivos();
     };
-    for (let attempt = 1; attempt <= MAX_REQUEST_RETRIES; attempt++) {
+    const politica = new RetryPolicy();
+    let vazias = 0;
+    // Cada `continue` abaixo tem limite próprio — respostas vazias, recusa do raciocínio (no
+    // máximo duas), return_progress (uma vez) e estouro de contexto (duas) —, e a política
+    // de tentativas encerra o resto.
+    while (true) {
+      // Zerado a cada volta: uma resposta vazia seguida de uma queda deixava o resultado
+      // VAZIO aqui, e o erro de rede aparecia como "o modelo não enviou uma resposta".
+      result = null;
       abortController = new AbortController();
       try {
         result = await streamChatCompletion({
@@ -4313,9 +4537,10 @@ async function agentTurns(chat) {
         // Fim de turno sem texto nem ferramenta é geração estocástica (o Qwen fecha depois
         // do <think>, ou escreve o tool_call DENTRO dele) e passa ao repetir. Sem espera: o
         // servidor está de pé e o cache de prefixo deixa o reenvio barato.
-        if (respostaVazia(result) && attempt < MAX_REQUEST_RETRIES && !stopRequested) {
+        if (respostaVazia(result) && vazias < MAX_EMPTY_RETRIES && !stopRequested) {
+          vazias++;
           descartaParcial();
-          logSystem(`O modelo terminou sem texto nem ferramenta. Tentando de novo (${attempt}/${MAX_REQUEST_RETRIES - 1}).`);
+          logSystem(`O modelo terminou sem texto nem ferramenta. Tentando de novo (${vazias}/${MAX_EMPTY_RETRIES}).`);
           showTyping();
           continue;
         }
@@ -4349,17 +4574,15 @@ async function agentTurns(chat) {
           nivelThink = { ...nivelThink, payload: null };
         }
         showTyping();
-        attempt--; // o reenvio corrige a requisição: não gasta uma das tentativas de erro
-        continue;
+        continue; // o reenvio corrige a requisição: não gasta uma das tentativas de erro
       }
       // O servidor recusou o return_progress (gateway estrito): a conversa não falhou,
-      // só o campo. Reenvia a MESMA mensagem sem ele (progressRecusado já está definido)
-      // sem gastar uma das tentativas — o prefill segue e o túnel recebe o stream.
-      if (recusouProgresso(lastErr) && progressRecusado) {
+      // só o campo. Reenvia a MESMA mensagem sem ele, sem gastar tentativa — o prefill
+      // segue e o túnel recebe o stream.
+      if (lastErr && lastErr.progressoRecusado) {
         descartaParcial();
         logSystem('O servidor recusou o progresso do prompt; reenviando sem o campo.');
         showTyping();
-        attempt--;
         continue;
       }
       // Estouro de contexto: a estimativa errou para menos. Em vez de encerrar o turno
@@ -4376,21 +4599,15 @@ async function agentTurns(chat) {
         mensagensApi = [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)];
         logSystem(`Contexto excedido. Compactando e reenviando (${apertos}/2).`);
         showTyping();
-        attempt--;
         continue;
       }
       // Repetir só faz sentido para falha transitória; servidor fora do ar ou modelo
-      // inexistente falham igual nas três tentativas e atrasam o diagnóstico.
-      const diag = classificaErroDeRequisicao(lastErr, apiUrl, model);
-      if (!diag.transitorio) break;
-      // Um travamento já custou três minutos; servidor travado não volta sozinho, então uma
-      // nova tentativa basta para separar soluço de rede de servidor que precisa reiniciar.
-      if (/^Servidor parado/.test(String(lastErr?.message)) && attempt >= 2) break;
-      if (attempt < MAX_REQUEST_RETRIES) {
-        descartaParcial();
-        if (!await waitForReconnect(diag, attempt)) { lastErr = null; break; }
-        showTyping();
-      }
+      // inexistente falham igual em todas as tentativas e só atrasam o diagnóstico.
+      const espera = esperaParaRepetir(lastErr, politica, apiUrl, model);
+      if (espera === null) break;
+      descartaParcial();
+      if (!await waitForReconnect(classificaErroDeRequisicao(lastErr, apiUrl, model), politica.falhasAteAgora + 1, espera, tetoDeTentativas(lastErr))) { lastErr = null; break; }
+      showTyping();
     }
 
     // O stream acabou (ou foi abortado): joga na tela o que ficou no buffer do último
@@ -4400,7 +4617,9 @@ async function agentTurns(chat) {
 
     if (!result) {
       hideTyping();
-      limpaCardsVivos();
+      // O pedaço que a tentativa perdida desenhou não entra no histórico: deixá-lo na tela
+      // mostraria um texto que o modelo não vai enxergar ao continuar.
+      descartaParcial();
       if (lastErr) appendErrorCard(classificaErroDeRequisicao(lastErr, apiUrl, model));
       else appendError('Requisição interrompida.');
       break;
@@ -4427,6 +4646,9 @@ async function agentTurns(chat) {
     // passa silencioso (e um tool_call cortado chega como JSON inválido logo abaixo).
     if (result.finishReason === 'length' && !aborted) {
       logSystem(`Resposta cortada no limite de ${maxTokens} tokens. Aumente "Máximo de tokens por resposta" nas configurações se isso se repetir.`);
+    }
+    if (result.cortado && !aborted) {
+      logSystem('A conexão fechou antes do fim da resposta (sem o sinal de término do servidor): o texto pode estar incompleto.');
     }
 
     // Recolhe o bloco de raciocínio ao terminar
@@ -4474,11 +4696,11 @@ async function agentTurns(chat) {
       appendErrorCard({
         titulo: 'O modelo não enviou uma resposta',
         detalhe: result.finishReason === 'length' ? 'O orçamento de tokens terminou antes da resposta.'
-          : soPensou ? `O modelo só raciocinou e parou, sem texto nem ferramenta, em ${MAX_REQUEST_RETRIES} tentativas.`
-          : `A requisição terminou sem texto nem ferramentas, em ${MAX_REQUEST_RETRIES} tentativas.`,
+          : soPensou ? `O modelo só raciocinou e parou, sem texto nem ferramenta, em ${MAX_EMPTY_RETRIES + 1} tentativas.`
+          : `A requisição terminou sem texto nem ferramentas, em ${MAX_EMPTY_RETRIES + 1} tentativas.`,
         passos: result.finishReason === 'length' ? ['Aumente o limite de tokens ou reduza o raciocínio.']
-          : soPensou ? ['Mande "continue" para ele seguir de onde parou.', 'Se repetir, baixe o nível de raciocínio no compositor.']
-          : ['Mande "continue" para tentar de novo. Se repetir, confira o servidor do modelo.']
+          : soPensou ? ['Clique em "Continuar de onde parou" para ele seguir.', 'Se repetir, baixe o nível de raciocínio no compositor.']
+          : ['Clique em "Continuar de onde parou" para tentar de novo. Se repetir, confira o servidor do modelo.']
       });
     }
 
@@ -4489,6 +4711,9 @@ async function agentTurns(chat) {
       // entregue no topo do while e a conversa continua, em vez de encerrar a run e
       // obrigar o usuário a mandar de novo.
       if (filaMensagens.length && !stopRequested) { await persist(); continue; }
+      // Só a resposta inteira encerra a tarefa; vazia ou cortada (no limite de tokens ou na
+      // conexão) deixa o "Continuar de onde parou" à mão.
+      chat.interrompido = !hasContent || result.finishReason === 'length' || !!result.cortado;
       break;
     }
 
@@ -4534,8 +4759,14 @@ async function agentTurns(chat) {
           const chaveLoop = chaveDaChamada(name, args);
           const repetida = name === 'ask_user' ? 0 : trava.bloqueia(chaveLoop);
           // Modo manual: pede confirmação para ações que executam/apagam
-          const decision = repetida ? 'loop' : await maybeConfirmTool(name, args);
-          if (decision === 'loop') {
+          const decision = repetida ? 'loop' : stopRequested ? 'parado' : await maybeConfirmTool(name, args);
+          if (decision === 'parado') {
+            // Parar no meio de uma resposta com várias chamadas: as que faltam não rodam, mas
+            // cada uma precisa de um resultado (tool_call sem resposta derruba a requisição
+            // seguinte). "Rejeitada" ensinaria o modelo a não repeti-la ao continuar.
+            result = JSON.stringify({ success: false, cancelled: true, error: 'Not run: the user stopped the agent before this call. Run it again if it is still needed.' });
+            fillToolResult(card, name, result);
+          } else if (decision === 'loop') {
             // Nem pede confirmação: a resposta seria a mesma das duas vezes anteriores.
             result = JSON.stringify({ error: `Loop detected: this exact ${name} call already returned the same result ${repetida} times in a row, with nothing that has side effects in between. It was not run again — the result would be identical. Use the earlier result, change the approach, or ask the user.` });
             fillToolResult(card, name, result);
@@ -4545,10 +4776,14 @@ async function agentTurns(chat) {
             logSystem(`Ação rejeitada pelo usuário: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
           } else {
             setAppTitle(`executando: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
-            const saida = await runTool(name, args, chat.path, toolCall && toolCall.id);
+            const execucao = runTool(name, args, chat.path, toolCall && toolCall.id);
+            // Subagentes e pergunta tratam o Parar por conta própria e devolvem o parcial.
+            const saida = TRATAM_PARADA.has(name) ? await execucao : await Promise.race([execucao, sinalDeParada.promessa]);
             // Ferramentas que produzem algo além de texto (print, diff) devolvem objeto;
             // as demais devolvem a string que vai direto para o modelo.
-            if (saida && typeof saida === 'object') {
+            if (saida === PAROU) {
+              result = JSON.stringify({ success: false, cancelled: true, error: 'Stopped by the user before this tool returned. Its effects, if any, are unknown: check them before relying on them.' });
+            } else if (saida && typeof saida === 'object') {
               result = saida.text;
               if (saida.image) {
                 guardaNoCacheDeImagens(saida.image.path, saida.image.dataUrl);
@@ -4591,7 +4826,7 @@ async function agentTurns(chat) {
     await persist();
   }
 
-  if (iterations >= MAX_LOOP_ITERATIONS && state.settings.safetyInteractions) appendError(`Trava de segurança: ${MAX_LOOP_ITERATIONS} iterações seguidas. Se ainda precisava continuar, envie "continue".`);
+  if (iterations >= MAX_LOOP_ITERATIONS && state.settings.safetyInteractions) appendError(`Trava de segurança: ${MAX_LOOP_ITERATIONS} iterações seguidas. Se ainda precisava continuar, clique em "Continuar de onde parou".`);
 }
 
 // O servidor reparseia os arguments de TODO tool_call do histórico a cada requisição.
@@ -5073,7 +5308,7 @@ function renderAttachments() {
       im.draggable = false;
       icon.appendChild(im);
     } else {
-      icon.innerText = a.mention ? '@' : (a.binary ? '🗎' : '📄');
+      poeIcone(icon, a.mention ? 'at-sign' : (a.binary ? 'file' : 'file-text'), 13);
     }
     const name = document.createElement('span');
     name.className = 'attach-name';
@@ -5112,7 +5347,7 @@ function maybeRenameChat(chat) {
     if (firstUser) {
       let base = (firstUser.content || '').trim();
       if (!base && firstUser.attachments && firstUser.attachments.length) {
-        base = '📎 ' + firstUser.attachments[0].name;
+        base = firstUser.attachments[0].name;
       }
       if (!base) return;
       chat.name = base.slice(0, 30) + (base.length > 30 ? '…' : '');
@@ -5678,7 +5913,8 @@ function abreMenuPastas() {
 
   const escolher = document.createElement('div');
   escolher.className = 'folder-item acao';
-  escolher.innerText = '📂  Escolher outra pasta…';
+  escolher.innerHTML = iconeSvg('folder', 13);
+  escolher.append('Escolher outra pasta…');
   escolher.addEventListener('click', async () => {
     menu.hidden = true;
     defineWorkspace(await window.electronAPI.selectFolder());

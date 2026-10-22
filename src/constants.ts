@@ -232,6 +232,16 @@ export const COMPUTER_INPUT_TIMEOUT_MS = 12000;
 // Preserva texto e alvos de clique melhor que uma miniatura, com custo de visão limitado.
 export const COMPUTER_IMAGE_MAX_SIDE = 1600;
 
+// Prazos das etapas do capture_page que dependem da página responder. Sem eles, um script
+// que espera algo que nunca chega, um laço infinito na página ou um alert() deixavam a
+// ferramenta pendurada para sempre — e o turno junto, até fechar o app. O script do agente
+// ganha mais tempo porque costuma clicar e esperar a interface reagir; o quadro, porque uma
+// página inteira de 6000 px demora a pintar. O teto geral pega o que escapar das etapas.
+export const CAPTURE_SCRIPT_MS = 20000;
+export const CAPTURE_STEP_MS = 5000;
+export const CAPTURE_FRAME_MS = 15000;
+export const CAPTURE_TOTAL_MS = 120000;
+
 // Trava de segurança ALTA apenas contra loop verdadeiramente infinito; o controle
 // real é o botão "Parar". Tarefas longas e legítimas rodam sem serem bloqueadas.
 export const MAX_LOOP_ITERATIONS = 100;
@@ -239,12 +249,32 @@ export const MAX_LOOP_ITERATIONS = 100;
 // Cada análise tem escopo curto; este teto limita custo e loops sem desativar a proteção do pai.
 export const MAX_SUBAGENT_TURNS = 12;
 
-// Tentativas por requisição. Um tool_call malformado faz o llama.cpp responder 500 e é
-// transitório (a geração é estocástica) — repetir costuma resolver, e sem isso a run
-// inteira do agente morre por causa de uma única resposta ruim.
-export const MAX_REQUEST_RETRIES = 3;
-// Dez segundos dão tempo para o servidor recuperar e permitem cancelar durante a espera.
-export const REQUEST_RETRY_DELAY_MS = 10000;
+// Tentativas por requisição (a primeira incluída) quando a falha é passageira: 500 de um
+// tool_call malformado no llama.cpp, conexão que caiu, túnel que fechou o stream. Eram 3
+// com espera fixa de 10 s, e duas quedas seguidas de túnel matavam a tarefa. A espera
+// cresce como no opencode (2 s dobrando) e no Hermes: o soluço de rede passa na primeira
+// repetição, e servidor reiniciando (carregar o modelo leva de 20 a 60 s) ainda é
+// alcançado pelas últimas. O mesmo 500 três vezes seguidas é determinístico e encerra antes
+// (ver RetryPolicy), para não esperar um minuto por um erro de template que volta igual.
+export const MAX_REQUEST_RETRIES = 6;
+export const RETRY_DELAYS_MS = [2000, 4000, 8000, 15000, 30000];
+// Retry-After do servidor (429/503) vale mais que a escala acima, até este teto: um valor
+// absurdo não pode prender a tarefa — o cartão mostra a contagem e o usuário cancela.
+export const RETRY_AFTER_MAX_MS = 120000;
+// Resposta vazia (só raciocínio, sem texto nem ferramenta) é repetida sem espera e tem
+// contagem PRÓPRIA: dividir a das falhas fazia duas respostas vazias seguidas de um 500
+// encerrarem o turno sem nenhuma nova tentativa.
+export const MAX_EMPTY_RETRIES = 2;
+
+// Mensagem do botão "Continuar de onde parou" quando o modelo parou numa resposta de
+// texto (cortada no limite de tokens, conexão fechada no meio, Parar). Vai ao MODELO, por
+// isso em inglês; na tela aparece como um marcador em pt-BR, não como bolha do usuário.
+// O colchete com "System" é o formato do Hermes para esse mesmo pedido: separa a nota do
+// app de algo que o usuário escreveu, e a última frase existe porque uma mensagem em
+// inglês no meio da conversa fazia o modelo trocar de idioma.
+export const CONTINUE_PROMPT = '[System: Your previous response was interrupted before it finished. ' +
+  'Continue the task exactly where it stopped, without restarting or repeating what is already done. ' +
+  'Keep replying in the language the user has been using.]';
 
 // Silêncio que caracteriza servidor travado. Com o progresso do llama.cpp (return_progress)
 // chega um pedaço a cada lote do prompt, em segundos; na geração, token a token. Três minutos
