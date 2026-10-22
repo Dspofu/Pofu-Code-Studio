@@ -35,8 +35,12 @@ jobs:
             so: ubuntu-latest
             script: dist:linux
             arquivos: dist/*.deb
+          # Fixo no 24.04: quando o ubuntu-latest virou 26.04 (rpm 6.0.1), o fpm 1.9.3 do
+          # electron-builder passou a gerar um .spec que o rpmbuild recusa ("rpmbuild
+          # failed", sem mais detalhe). O v1.10.0 saiu sem .rpm por isso; no 24.04 (rpm
+          # 4.18.2) o mesmo código empacota. Só volte para o latest com o .rpm testado lá.
           - nome: Linux (.rpm Fedora)
-            so: ubuntu-latest
+            so: ubuntu-24.04
             script: dist:fedora
             arquivos: dist/*.rpm
           - nome: Windows (.exe)

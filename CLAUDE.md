@@ -454,6 +454,10 @@ que a ausência dele.
   (`libatspi.so.0`, `libuuid.so.1`); sem eles o `dnf install` conclui e o app não abre num
   Fedora enxuto (Server, spin, toolbox) — no Workstation passa despercebido porque já vêm
   instalados. Compare com o default antes de mexer nessa lista.
+- **O .rpm não sai no Ubuntu 26.04**: o runner `ubuntu-latest` passou a ser 26.04, com rpm
+  6.0.1, e o fpm 1.9.3 que o electron-builder usa gera um `.spec` que esse rpmbuild recusa
+  (só "rpmbuild failed" no log). O job do .rpm no `release.yml` fica fixo em `ubuntu-24.04`
+  (rpm 4.18.2). Não volte para o latest sem ver o .rpm sair lá.
 - **Atalho em branco no Windows = `description` longa demais**: o NSIS do electron-builder
   grava o `description` do package.json no atalho do Menu Iniciar, e o campo do `.lnk` guarda
   até 260 caracteres (`MAX_PATH`). Com 412, o excedente invadiu os campos seguintes: a pasta
