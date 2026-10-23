@@ -130,3 +130,29 @@ test('Streamable HTTP recusa uma resposta JSON que pertence a outra chamada', as
   assert.equal(s.estado, 'erro');
   assert.match(s.erro, /no response/);
 });
+
+test('config: chave repetida é recusada em vez de apagar os servidores de antes', async () => {
+  const { parseMcpConfig, chaveRepetida } = await import('../out/mcp-config.js');
+  // O JSON que motivou a regra: dois "mcpServers" e só o último sobrevivia ao JSON.parse.
+  const repetido = '{ "mcpServers": { "arquivos": { "command": "npx", "args": ["-y", "pkg"] }, "blender": { "command": "uvx" } }, "mcpServers": { "higgsfield": { "type": "http", "url": "https://x/mcp" } } }';
+  assert.throws(() => parseMcpConfig(repetido), /"mcpServers" aparece duas vezes/);
+  const junto = '{ "mcpServers": { "arquivos": { "command": "npx", "args": ["-y", "\\"mcpServers\\":"] }, "higgsfield": { "url": "https://x/mcp", "headers": { "url": "a" } } } }';
+  assert.deepEqual(Object.keys(parseMcpConfig(junto)), ['arquivos', 'higgsfield']);
+  assert.equal(chaveRepetida('{"a":{"b":1},"c":{"b":2}}'), null, 'mesma chave em objetos diferentes vale');
+  assert.equal(chaveRepetida('{"a":[{"b":1},{"b":2}]}'), null, 'itens de array são objetos diferentes');
+  assert.equal(chaveRepetida('{"a":{"b":1,"b":2}}'), 'b');
+});
+
+test('Streamable HTTP: 401 do login OAuth do MCP vira explicação, não "Unauthorized" cru', async () => {
+  const server = createServer((req, res) => {
+    req.resume(); res.statusCode = 401;
+    res.setHeader('WWW-Authenticate', 'Bearer resource_metadata="http://127.0.0.1/.well-known/oauth-protected-resource/mcp", scope="openid"');
+    res.setHeader('Content-Type', 'application/json'); res.end('{"error":"Unauthorized"}');
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const s = new McpServidor('oauth', { url: `http://127.0.0.1:${server.address().port}/mcp` }, '1', matar);
+  await s.conectar();
+  assert.notEqual(s.estado, 'ok');
+  assert.match(s.erro, /login OAuth pelo navegador/); assert.match(s.erro, /"headers": \{ "Authorization": "Bearer SUA_CHAVE" \}/);
+  s.fechar(); server.close();
+});

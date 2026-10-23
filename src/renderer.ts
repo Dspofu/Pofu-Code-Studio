@@ -7,6 +7,7 @@ import { activateProvider, migrateProviders, rememberProvider, validateProvider,
 import { consumptionKind, consumptionNames, type ConsumptionPeriod, type ConsumptionReport } from './consumption.js';
 import { mountSlashCommands } from './slash-commands.js';
 import { RemoteHistory } from './remote-history.js';
+import { parseMcpConfig } from './mcp-config.js';
 import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
 import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
 import { LoopGuard, chaveDaChamada, temEfeito } from './loop-guard.js';
@@ -3214,21 +3215,6 @@ const webTools = [
 let mcpEstado: McpEstado[] = [];
 let mcpFerramentas = [];
 const mcpRota = new Map<string, { server: string; tool: string; readOnly: boolean }>();
-
-// Aceita o JSON como vem no README dos servidores ({ "mcpServers": {…} }) ou só o objeto
-// interno. Erro em pt-BR porque aparece no formulário, para quem está configurando.
-function parseMcpConfig(texto): Record<string, any> {
-  const t = String(texto || '').trim();
-  if (!t) return {};
-  let j;
-  try { j = JSON.parse(t); } catch (e) { throw new Error(`MCP: o JSON não é válido — ${e.message}`); }
-  const servers = j && typeof j === 'object' && j.mcpServers && typeof j.mcpServers === 'object' ? j.mcpServers : j;
-  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('MCP: esperado { "mcpServers": { "nome": { "command": … } } }.');
-  for (const [nome, cfg] of Object.entries<any>(servers)) {
-    if (!cfg || typeof cfg !== 'object' || (!cfg.command && !cfg.url)) throw new Error(`MCP: o servidor "${nome}" precisa de "command" (local) ou "url" (remoto).`);
-  }
-  return servers;
-}
 
 const slugMcp = (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
 function aplicaEstadoMcp(estado: McpEstado[]) {

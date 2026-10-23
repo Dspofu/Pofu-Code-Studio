@@ -234,7 +234,7 @@ Em **Configurações → Ajustes → Ferramentas → Servidores MCP**, cole a co
 }
 ```
 
-O estado e o custo estimado das definições de ferramentas aparecem na configuração. `"disabled": true` desliga um servidor sem removê-lo; processos locais precisam ter seu comando disponível no sistema.
+O estado e o custo estimado das definições de ferramentas aparecem na configuração. `"disabled": true` desliga um servidor sem removê-lo; processos locais precisam ter seu comando disponível no sistema. Todos os servidores ficam dentro de um único `"mcpServers"`: com a chave repetida, a configuração é recusada, porque só a última valeria. Servidores remotos que exigem login OAuth pelo navegador (os que respondem 401 com `resource_metadata`) ainda não são suportados; se o serviço oferecer uma chave de API, use `"headers": { "Authorization": "Bearer SUA_CHAVE" }`.
 
 Em **Instruções do agente**, acrescente regras próprias ao prompt ou importe arquivos de skills. Skills ativas são enviadas em cada requisição, com o custo estimado mostrado na lista. Substituir o prompt padrão também substitui as orientações de fábrica.
 

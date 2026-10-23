@@ -186,6 +186,9 @@ class Http implements Transporte {
     });
     const sid = r.headers.get('mcp-session-id');
     if (sid) this.sessao = sid;
+    // 401 com resource_metadata no WWW-Authenticate é o login OAuth da especificação MCP (navegador), que o
+    // Studio ainda não faz: dizer isso evita a caça à chave errada que o "Unauthorized" cru provocava.
+    if (r.status === 401 && /resource_metadata=/i.test(r.headers.get('www-authenticate') || '')) { await r.text().catch(() => ''); this.ultimoErro = 'HTTP 401: este servidor pede login OAuth pelo navegador, que o Studio ainda não faz. Se o serviço oferecer uma chave de API, use "headers": { "Authorization": "Bearer SUA_CHAVE" }.'; throw new Error(this.ultimoErro); }
     if (!r.ok) { this.ultimoErro = `HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`; throw new Error(this.ultimoErro); }
     let msg = null;
     if ((r.headers.get('content-type') || '').includes('text/event-stream')) {
