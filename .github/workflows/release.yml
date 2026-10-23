@@ -49,11 +49,12 @@ jobs:
             arquivos: dist/*.exe
 
     steps:
-      - uses: actions/checkout@v4
+      # v7: a v4 roda em Node 20, que o GitHub está descontinuando nos runners.
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
