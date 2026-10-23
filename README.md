@@ -20,7 +20,7 @@ O Studio conecta-se a **APIs compatíveis com OpenAI**, incluindo servidores loc
 | Edição de código | Leia e pesquise arquivos, consulte funções e classes, aplique alterações e revise o diff com opção de desfazer. |
 | Terminal e processos | Execute testes, acompanhe servidores e watchers e consulte a saída de tarefas demoradas. |
 | Pesquisa e páginas web | Busque informações, leia páginas e capture a interface para conferir o resultado. |
-| Imagens e arquivos | Cole ou arraste anexos; use `@` para mencionar arquivos do projeto. |
+| Imagens e arquivos | Cole ou arraste anexos; use `@` para mencionar arquivos do projeto. Clique na miniatura de uma imagem anexada para abri-la em tela cheia. |
 | Provedores e raciocínio | Salve conexões independentes e ajuste o modelo e o raciocínio pelo compositor. |
 | Consumo | Veja tokens e, quando a API informa, cota ou saldo ao lado do uso de contexto. |
 | Controle remoto | Continue a conversa e controle tarefas pela área Code do site, com as ferramentas executando no computador. |
@@ -107,7 +107,7 @@ O agente principal recebe os resultados e aplica as alterações. Os subagentes 
 - **Parar** continua acessível quando você escreve outro pedido, sem apagar o rascunho, e libera o turno na hora mesmo com uma ferramenta que não responde. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
 - Se a tarefa parar antes do fim — erro, **Parar**, resposta cortada pelo limite de tokens ou pela conexão —, o fim do chat mostra **Continuar de onde parou**. O agente retoma do ponto em que estava, sem você precisar escrever “continue”, e o botão continua lá ao reabrir o app.
 - Use **Últimas mensagens** para voltar ao fim depois de rolar para cima. As quebras de linha aparecem durante a geração.
-- Digite `@` para mencionar um arquivo. Caminhos com espaços usam aspas. O clipe, arrastar e colar adicionam anexos.
+- Digite `@` para mencionar um arquivo. Caminhos com espaços usam aspas. O clipe, arrastar e colar adicionam anexos. A miniatura de uma imagem, no compositor ou na mensagem enviada, abre a imagem em tela cheia com clique ou Enter; clique ou Esc fecham.
 - Ajuste **Auto/Manual** e **Raciocínio** junto ao compositor. A troca de provedor fica bloqueada durante a geração.
 
 Durante a geração, a troca de chat e projeto fica bloqueada. Ao terminar ou parar, a navegação volta a funcionar. Rascunhos, anexos e mensagens ainda na fila ficam separados por conversa enquanto o app está aberto. Sem modelo configurado, o envio mantém o pedido no compositor.

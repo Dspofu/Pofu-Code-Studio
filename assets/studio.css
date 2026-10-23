@@ -387,6 +387,9 @@ button.usage-meter { cursor: pointer; }
 .retry-card .retry-agora:hover { border-color: #eab859; background: #463c25; }
 .fila-chip .fila-icone { display: inline-flex; color: var(--accent-2); }
 .msg-attach-chip:not(.has-thumb) { display: inline-flex; align-items: center; gap: 5px; }
+.anexo-abrivel { cursor: zoom-in; transition: filter .15s; }
+.anexo-abrivel:hover { filter: brightness(1.12); }
+.anexo-abrivel:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .attach-icon .icone { color: var(--muted); }
 .diff-file .icone { display: inline-block; margin-right: 5px; vertical-align: -1px; color: #f2a49c; }
 .folder-item.acao .icone { color: var(--muted); }

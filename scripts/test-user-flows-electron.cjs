@@ -181,7 +181,7 @@ async function main() {
     assert.equal(require('node:fs').readFileSync(join(workspace, 'guard.txt'), 'utf8'), 'Arquivo do projeto.');
     await select('first'); assert.equal((await snapshot()).usage.contextUsed, 210);
   });
-  await check('imagem WebP arrastada do navegador vira PNG com os pixels para o modelo', async () => {
+  await check('imagem WebP arrastada do navegador vira PNG com os pixels para o modelo e abre em tela cheia', async () => {
     // O nativeImage do main só decodifica PNG/JPEG: o WebP chegava vazio e o modelo ouvia que "não recebe imagens".
     const pasta = join(profile, 'screenshots'), { readdirSync, readFileSync } = require('node:fs');
     const salvos = () => { try { return readdirSync(pasta).filter(n => n.includes('foto.webp')); } catch { return []; } };
@@ -191,8 +191,18 @@ async function main() {
     assert.equal(salvos().length, 1, 'os pixels do WebP não foram salvos');
     const png = readFileSync(join(pasta, salvos()[0]));
     assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG'); assert.equal(png.readUInt32BE(16), 64); assert.equal(png.readUInt32BE(20), 48);
-    await js("[...document.querySelectorAll('#attachments .attach-chip')].find(c=>c.textContent.includes('foto.webp')).querySelector('.attach-remove').click()");
-    await until("![...document.querySelectorAll('#attachments .attach-name')].some(n=>n.textContent==='foto.webp')");
+    // Clicar na miniatura abre a imagem salva (não a miniatura de 140 px) em tela cheia; Esc fecha; Enter abre pelo teclado.
+    await js("[...document.querySelectorAll('#attachments .attach-chip')].find(c=>c.textContent.includes('foto.webp')).querySelector('.attach-thumb').click()");
+    await until("document.querySelector('.shot-viewer img')?.complete && document.querySelector('.shot-viewer img').naturalWidth>0");
+    assert.deepEqual(await js("(() => { const i=document.querySelector('.shot-viewer img');return [i.src.startsWith('file:'), i.src.includes('foto.webp'), i.naturalWidth, i.naturalHeight, i.alt]; })()"), [true, true, 64, 48, 'foto.webp']);
+    await js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await until("!document.querySelector('.shot-viewer')");
+    await js("(() => { const t=[...document.querySelectorAll('#attachments .attach-thumb')].find(i=>i.alt==='foto.webp');t.focus();t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); })()");
+    await until("!!document.querySelector('.shot-viewer')"); await js("document.querySelector('.shot-viewer').click()"); await until("!document.querySelector('.shot-viewer')");
+    await send('Veja a imagem'); await until("!!document.querySelector('.message.user .msg-attach-thumb[alt=\"foto.webp\"]')"); await idle();
+    await js("document.querySelector('.message.user .msg-attach-thumb[alt=\"foto.webp\"]').click()");
+    await until("document.querySelector('.shot-viewer img')?.complete && document.querySelector('.shot-viewer img').naturalWidth>0");
+    assert.deepEqual(await js("(() => { const i=document.querySelector('.shot-viewer img');return [i.src.startsWith('file:'), i.naturalWidth]; })()"), [true, 64], 'a bolha enviada abre a imagem salva');
+    await js("document.querySelector('.shot-viewer').click()"); await until("!document.querySelector('.shot-viewer')");
   });
   await check('sem modelo a mensagem e os anexos continuam no compositor', async () => {
     await remote({ type: 'set-provider', providerId: 'empty' }); await until("document.getElementById('studio-model').textContent==='Configure seu modelo'");

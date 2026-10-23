@@ -1621,6 +1621,7 @@ function renderUserMessage(text, attachments, index) {
         im.src = a.thumb;
         im.alt = a.name;
         im.draggable = false;
+        tornaImagemAbrivel(im, a);
         chip.appendChild(im);
         const nm = document.createElement('span');
         nm.className = 'msg-attach-name';
@@ -2651,11 +2652,14 @@ function attachToolShot(card, image) {
   seguirAposCarregarImagens(wrap); // o print só ganha altura ao carregar
 }
 
-// Visualizador em tela cheia do print (fecha no clique ou no Esc)
-function openImageViewer(src) {
+// Visualizador em tela cheia do print e da imagem anexada (fecha no clique ou no Esc).
+// `reserva` é a miniatura: o arquivo salvo entra na poda dos prints e pode já ter sumido.
+function openImageViewer(src, alt = '', reserva = '') {
   const overlay = document.createElement('div');
   overlay.className = 'shot-viewer';
   const img = document.createElement('img');
+  img.alt = alt;
+  if (reserva) img.addEventListener('error', () => { if (img.src !== reserva) img.src = reserva; });
   img.src = src;
   overlay.appendChild(img);
   const fechar = () => { overlay.remove(); document.removeEventListener('keydown', aoTeclar); };
@@ -2663,6 +2667,15 @@ function openImageViewer(src) {
   overlay.addEventListener('click', fechar);
   document.addEventListener('keydown', aoTeclar);
   document.body.appendChild(overlay);
+}
+
+// A imagem salva (até 1024 px, a mesma que vai ao modelo) e não a miniatura de 140 px do chip.
+function tornaImagemAbrivel(im: HTMLImageElement, a: Attachment) {
+  const abrir = () => openImageViewer(a.imagemPath ? 'file://' + a.imagemPath : a.thumb, a.name, a.thumb);
+  im.classList.add('anexo-abrivel'); im.tabIndex = 0; im.setAttribute('role', 'button');
+  im.title = 'Abrir imagem'; im.setAttribute('aria-label', 'Abrir imagem ' + a.name);
+  im.addEventListener('click', (e) => { e.stopPropagation(); abrir(); });
+  im.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrir(); } });
 }
 
 // Card completo (chamada + resultado) — usado ao recarregar o histórico
@@ -5318,6 +5331,7 @@ function renderAttachments() {
       im.src = a.thumb;
       im.alt = a.name;
       im.draggable = false;
+      tornaImagemAbrivel(im, a);
       icon.appendChild(im);
     } else {
       poeIcone(icon, a.mention ? 'at-sign' : (a.binary ? 'file' : 'file-text'), 13);
