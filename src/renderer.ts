@@ -5010,6 +5010,7 @@ function buildAttachmentBlock(attachments, comPixels = new Set()) {
   return attachments.map(a => {
     if (a.imagemPath && comPixels.has(a.imagemPath)) return `[Attached image: ${a.name} — shown below]`;
     if (a.binary) {
+      if (a.imagemIlegivel && !a.imagemPath) return `[Attached image: ${a.name} (${fmtSize(a.size)}) — the app could not read this image file, so its pixels were not sent. Ask the user to attach it again as PNG or JPEG]`;
       const imagem = a.thumb || a.imagemPath;
       return imagem
         ? `[Attached image: ${a.name} (${fmtSize(a.size)}) — this model does not receive images, so only the name is available]`
@@ -5270,6 +5271,18 @@ async function handleFiles(fileList: FileList | File[]) {
   if (state.activeChatId === chatId) renderAttachments();
 }
 
+// O nativeImage do main (save-attachment-image) só decodifica PNG e JPEG. Imagem arrastada do
+// navegador costuma vir em WebP, e ela chegava vazia: a miniatura aparecia (o Chromium decodifica
+// WebP), os pixels não iam, e o modelo era avisado de que "não recebe imagens" — ele respondia que
+// WebP não era suportado. O Chromium do renderer lê WebP, AVIF, GIF e BMP; vira PNG aqui.
+async function emPngOuJpeg(dataUrl: string): Promise<string> {
+  if (/^data:image\/(png|jpeg);/i.test(dataUrl)) return dataUrl;
+  const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  const c = document.createElement('canvas'); c.width = bitmap.width; c.height = bitmap.height;
+  c.getContext('2d').drawImage(bitmap, 0, 0); bitmap.close();
+  return c.toDataURL('image/png');
+}
+
 // Salva a imagem anexada e deixa o caminho no anexo. A miniatura (140 px) serve para o
 // chip e NÃO serve para o modelo: nela não dá para ler nada.
 async function guardaImagemDoAnexo(file: File, att: Attachment) {
@@ -5280,13 +5293,12 @@ async function guardaImagemDoAnexo(file: File, att: Attachment) {
       fr.onerror = () => reject(new Error('falha ao ler o arquivo'));
       fr.readAsDataURL(file);
     });
-    const res = await window.electronAPI.saveAttachmentImage(dataUrl, file.name);
-    if (res && res.success) {
-      att.imagemPath = res.path;
-      guardaNoCacheDeImagens(res.path, res.dataUrl);
-      renderAttachments(); // o aviso de "este modelo não vê imagem" depende do anexo ter path
-    }
-  } catch (e) { /* sem os pixels o anexo continua valendo como nome + tamanho */ }
+    const res = await window.electronAPI.saveAttachmentImage(await emPngOuJpeg(dataUrl), file.name);
+    if (!res?.success) throw new Error(res?.error || 'imagem não salva');
+    att.imagemPath = res.path;
+    guardaNoCacheDeImagens(res.path, res.dataUrl);
+    renderAttachments(); // o aviso de "este modelo não vê imagem" depende do anexo ter path
+  } catch (e) { att.imagemIlegivel = true; renderAttachments(); }
 }
 
 function renderAttachments() {
@@ -6502,7 +6514,7 @@ async function executeRemoteCommand(c: any) {
       if (isRunning && c.chatId !== state.activeChatId) throw new Error('Outra conversa está em execução.');
       if (!isRunning && c.chatId !== state.activeChatId) { switchChat(c.chatId); await renderActiveChat(); }
       if (!activeChat().path || !state.settings.model) throw new Error('Escolha o projeto e o modelo no Studio.');
-      { const attachments: Attachment[] = []; if (c.images?.length) { if (!Array.isArray(c.images) || c.images.length > 3 || !visionEnabled() || c.images.reduce((bytes, image) => bytes + String(image?.dataUrl || '').length, 0) > 2000000) throw new Error('Selecione um modelo com visão ou reduza as imagens.'); for (const image of c.images) { if (typeof image?.dataUrl !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.dataUrl)) throw new Error('Imagem inválida.'); const saved = await window.electronAPI.saveAttachmentImage(image.dataUrl, String(image.name || 'imagem').slice(0, 100)); if (!saved?.success) throw new Error('Não foi possível salvar a imagem no Studio.'); guardaNoCacheDeImagens(saved.path, saved.dataUrl); attachments.push({ name: String(image.name || 'imagem').slice(0, 100), content: '', binary: true, imagemPath: saved.path, thumb: typeof image.thumb === 'string' && image.thumb.length <= 16000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.thumb) ? image.thumb : undefined }); } }
+      { const attachments: Attachment[] = []; if (c.images?.length) { if (!Array.isArray(c.images) || c.images.length > 3 || !visionEnabled() || c.images.reduce((bytes, image) => bytes + String(image?.dataUrl || '').length, 0) > 2000000) throw new Error('Selecione um modelo com visão ou reduza as imagens.'); for (const image of c.images) { if (typeof image?.dataUrl !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.dataUrl)) throw new Error('Imagem inválida.'); const saved = await window.electronAPI.saveAttachmentImage(await emPngOuJpeg(image.dataUrl), String(image.name || 'imagem').slice(0, 100)); if (!saved?.success) throw new Error('Não foi possível salvar a imagem no Studio.'); guardaNoCacheDeImagens(saved.path, saved.dataUrl); attachments.push({ name: String(image.name || 'imagem').slice(0, 100), content: '', binary: true, imagemPath: saved.path, thumb: typeof image.thumb === 'string' && image.thumb.length <= 16000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image.thumb) ? image.thumb : undefined }); } }
         if (isRunning) { if (filaMensagens.length >= 20) throw new Error('Aguarde as mensagens na fila.'); enfileiraMensagem(c.text, attachments); }
         else void submitUserMessage(c.text, attachments).catch(e => logSystem(String(e.message || 'Falha ao enviar mensagem remota.'))); }
       break;

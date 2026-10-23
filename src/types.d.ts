@@ -132,6 +132,8 @@ interface Attachment {
    *  NÃO reaproveite o `path` para isso: ele já é o caminho relativo da menção
    *  (@arquivo), e confundir os dois manda um .md rotulado como PNG ao servidor. */
   imagemPath?: string;
+  /** true quando a imagem não pôde ser lida pelo app: o modelo é avisado disso, e não de que "não vê imagens". */
+  imagemIlegivel?: boolean;
 }
 
 interface ToolCall {

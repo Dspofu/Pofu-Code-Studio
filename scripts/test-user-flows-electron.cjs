@@ -181,6 +181,19 @@ async function main() {
     assert.equal(require('node:fs').readFileSync(join(workspace, 'guard.txt'), 'utf8'), 'Arquivo do projeto.');
     await select('first'); assert.equal((await snapshot()).usage.contextUsed, 210);
   });
+  await check('imagem WebP arrastada do navegador vira PNG com os pixels para o modelo', async () => {
+    // O nativeImage do main só decodifica PNG/JPEG: o WebP chegava vazio e o modelo ouvia que "não recebe imagens".
+    const pasta = join(profile, 'screenshots'), { readdirSync, readFileSync } = require('node:fs');
+    const salvos = () => { try { return readdirSync(pasta).filter(n => n.includes('foto.webp')); } catch { return []; } };
+    await js("(async () => { const c=document.createElement('canvas');c.width=64;c.height=48;const g=c.getContext('2d');g.fillStyle='#e11';g.fillRect(0,0,64,48);const blob=await new Promise(r=>c.toBlob(r,'image/webp',0.9));const data=new DataTransfer();data.items.add(new File([blob],'foto.webp',{type:'image/webp'}));document.querySelector('.main-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data})); })()");
+    await until("[...document.querySelectorAll('#attachments .attach-name')].some(n=>n.textContent==='foto.webp')");
+    for (let i = 0; i < 50 && !salvos().length; i++) await new Promise(r => setTimeout(r, 100));
+    assert.equal(salvos().length, 1, 'os pixels do WebP não foram salvos');
+    const png = readFileSync(join(pasta, salvos()[0]));
+    assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG'); assert.equal(png.readUInt32BE(16), 64); assert.equal(png.readUInt32BE(20), 48);
+    await js("[...document.querySelectorAll('#attachments .attach-chip')].find(c=>c.textContent.includes('foto.webp')).querySelector('.attach-remove').click()");
+    await until("![...document.querySelectorAll('#attachments .attach-name')].some(n=>n.textContent==='foto.webp')");
+  });
   await check('sem modelo a mensagem e os anexos continuam no compositor', async () => {
     await remote({ type: 'set-provider', providerId: 'empty' }); await until("document.getElementById('studio-model').textContent==='Configure seu modelo'");
     await type('Mantenha meu pedido'); await attach('preservado.txt'); await until("document.querySelector('#attachments .attach-name')?.textContent==='preservado.txt'");
