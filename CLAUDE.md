@@ -35,6 +35,7 @@ são da INTERFACE e continuam em pt-BR.
 | [src/retry-policy.ts](src/retry-policy.ts) | Quando repetir uma requisição ao modelo e quanto esperar: escala de espera, `Retry-After`, erro idêntico que encerra. A classificação do erro fica no renderer. |
 | [src/icons.ts](src/icons.ts) | Ícones SVG de traço (estilo Lucide) dos cards de ferramenta, cartões e chips. `poeIcone` não recria o SVG quando o ícone não mudou. |
 | [src/mcp.ts](src/mcp.ts) | Cliente MCP no main: transportes stdio e Streamable HTTP, `initialize`/`tools/list`/`tools/call`. |
+| [src/mcp-oauth.ts](src/mcp-oauth.ts) | Login OAuth dos servidores MCP remotos: descoberta pelo 401 (`resource_metadata`), registro automático do app, PKCE S256 com callback em `127.0.0.1`, tokens cifrados por servidor em `userData/mcp-oauth.json` e renovação. Só abre `https` (ou loopback) no navegador. |
 | [src/mcp-config.ts](src/mcp-config.ts) | Leitura do JSON de servidores MCP do formulário (puro, testável em Node): recusa chave repetida, que o `JSON.parse` resolveria apagando a primeira. |
 | [src/updater.ts](src/updater.ts) | Atualização pelo app: escolhe o instalador do release, baixa conferindo o sha256 e instala (NSIS no Windows, `pkexec` no Linux). |
 | [src/atalho-windows.ts](src/atalho-windows.ts) | Repara, ao abrir, o ícone do atalho do Menu Iniciar que ficou apontando para um `.exe` que não existe (pasta movida). |

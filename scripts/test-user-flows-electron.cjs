@@ -2,7 +2,11 @@
 // Copyright 2026-present the Pofu Code Studio authors. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 
-const { app, BrowserWindow, Notification } = require('electron');
+const { app, BrowserWindow, Notification, shell } = require('electron');
+const { servidorOAuthFalso } = require('./fixtures/mcp-oauth-falso.cjs');
+// O "navegador" do login OAuth do MCP: segue o redirecionamento do servidor de autorização até o callback local.
+const abertosNoNavegador = [];
+shell.openExternal = async url => { abertosNoNavegador.push(url); await fetch(url); };
 const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
@@ -255,6 +259,30 @@ async function main() {
     assert.equal(await js("document.getElementById('btn-chat-bottom').hidden"), true);
     res.end(event({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n'); await idle(); hold = false;
   });
+  await check('MCP com login OAuth: Entrar abre o navegador, guarda o login cifrado e conecta; Sair apaga', async () => {
+    const falso = await servidorOAuthFalso();
+    const salvarMcp = async texto => { await js("document.getElementById('btn-open-settings').click()"); await js("(() => { const i=document.getElementById('input-mcp'); i.value=" + JSON.stringify(texto) + "; i.dispatchEvent(new Event('input',{bubbles:true})); document.getElementById('btn-save-settings').click(); })()"); await until("!document.getElementById('settings-modal').classList.contains('active')"); };
+    try {
+      await salvarMcp(JSON.stringify({ mcpServers: { oauth: { type: 'http', url: falso.url } } }));
+      await until("document.getElementById('mcp-status').textContent.includes('oauth — precisa entrar')", 10000);
+      assert.equal(abertosNoNavegador.length, 0, 'sincronizar não abre o navegador sozinho');
+      await js("document.getElementById('btn-open-settings').click()");
+      await js("[...document.querySelectorAll('#mcp-status .mcp-acao')].find(b=>b.textContent==='Entrar').click()");
+      await until("document.getElementById('mcp-status').textContent.includes('oauth — 1 ferramenta(s)')", 15000);
+      assert.equal(abertosNoNavegador.length, 1); assert.match(abertosNoNavegador[0], /code_challenge_method=S256/);
+      assert.ok(await js("[...document.querySelectorAll('#mcp-status .mcp-acao')].some(b=>b.textContent==='Sair')"));
+      assert.ok((await js("import('./out/renderer.js').then(m=>m.activeTools().map(t=>t.function.name))")).includes('mcp__oauth__gerar_video'));
+      const gravado = require('node:fs').readFileSync(join(profile, 'mcp-oauth.json'), 'utf8');
+      assert.doesNotMatch(gravado, /acesso-|renova-/, 'tokens só cifrados pelo safeStorage');
+      await js("document.getElementById('mcp-status').scrollIntoView({block:'center'})"); await capture('mcp-oauth', true);
+      await js("[...document.querySelectorAll('#mcp-status .mcp-acao')].find(b=>b.textContent==='Sair').click()");
+      await until("document.getElementById('mcp-status').textContent.includes('oauth — precisa entrar')", 10000);
+      await js("document.getElementById('btn-close-modal').click()");
+    } finally {
+      await salvarMcp('');
+      falso.server.closeAllConnections(); falso.server.close();
+    }
+  });
   await check('apagar conversa inativa mantém o rascunho; apagar a ativa restaura a próxima', async () => {
     await type('Rascunho após a tarefa');
     const spare = (await snapshot()).chats.find(c => !['first', 'second'].includes(c.id)).id;
@@ -269,4 +297,4 @@ async function main() {
 main().then(() => { server.closeAllConnections(); server.close(); app.exit(0); }, error => {
   console.error(error); server.closeAllConnections(); server.close(); app.exit(1);
 });
-setTimeout(() => { console.error('Tempo máximo da revisão dos fluxos excedido.'); app.exit(1); }, 45000);
+setTimeout(() => { console.error('Tempo máximo da revisão dos fluxos excedido.'); app.exit(1); }, 90000);

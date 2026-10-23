@@ -390,6 +390,12 @@ button.usage-meter { cursor: pointer; }
 .anexo-abrivel { cursor: zoom-in; transition: filter .15s; }
 .anexo-abrivel:hover { filter: brightness(1.12); }
 .anexo-abrivel:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.mcp-linha { display: flex; align-items: center; gap: 10px; min-height: 26px; }
+.mcp-linha > span { min-width: 0; overflow-wrap: anywhere; }
+.mcp-acao { flex: none; margin-left: auto; padding: 3px 11px; border: 1px solid var(--accent); border-radius: 7px; background: #2a3a1f; color: var(--accent-2); font: inherit; font-size: 11px; cursor: pointer; }
+.mcp-acao:hover:not(:disabled) { background: #33482a; }
+.mcp-acao:disabled { opacity: .6; cursor: default; }
+.mcp-acao:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .attach-icon .icone { color: var(--muted); }
 .diff-file .icone { display: inline-block; margin-right: 5px; vertical-align: -1px; color: #f2a49c; }
 .folder-item.acao .icone { color: var(--muted); }

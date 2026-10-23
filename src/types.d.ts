@@ -108,9 +108,11 @@ interface Settings {
 /** Estado de um servidor MCP no processo main. */
 interface McpEstado {
   name: string;
-  status: 'conectando' | 'ok' | 'erro' | 'desligado';
+  status: 'conectando' | 'ok' | 'erro' | 'desligado' | 'login';
   error?: string;
   tools: Array<{ name: string; description?: string; inputSchema?: any; annotations?: any }>;
+  /** Servidor remoto com login OAuth guardado (mostra "Sair"). */
+  oauth?: boolean;
 }
 
 /** Anexo de arquivo preso à mensagem do usuário. */
@@ -288,6 +290,8 @@ interface ElectronAPI {
   outline(target: string, opts?: any): Promise<any>;
   mcpSync(servers: Record<string, any>): Promise<McpEstado[]>;
   mcpStatus(): Promise<McpEstado[]>;
+  mcpLogin(server: string): Promise<{ success: boolean; error?: string; estado: McpEstado[] }>;
+  mcpLogout(server: string): Promise<{ success: boolean; estado: McpEstado[] }>;
   mcpCall(server: string, tool: string, args: any): Promise<{ success: boolean; isError?: boolean; text?: string; error?: string }>;
   readFile(filePath: string, opts?: any): Promise<any>;
   writeFile(filePath: string, content: string, opts?: any): Promise<any>;

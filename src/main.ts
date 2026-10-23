@@ -18,6 +18,7 @@ import { articleText, researchGate } from './research/researchReader.js';
 import { navigable } from './research/webpage.js';
 import packageJson from '../package.json' with { type: "json" };
 import { McpServidor, textoDoResultado, type McpConfig } from './mcp.js';
+import { McpOAuth } from './mcp-oauth.js';
 import { reparaIconeDoAtalho } from './atalho-windows.js';
 import { ConsumptionStore } from './consumption-store.js';
 import { queryConsumption, type ConsumptionConnection, type ConsumptionPeriod } from './consumption.js';
@@ -640,9 +641,11 @@ app.on('before-quit', () => {
 // ==========================================================================
 // Por nome, com a config serializada: sincronizar mantém conectado o que não mudou —
 // reconectar um servidor via npx custa segundos — e reinicia só o que mudou ou saiu.
-const mcp = new Map<string, { cfg: string; srv: McpServidor }>();
+const mcp = new Map<string, { cfg: string; srv: McpServidor; url?: string }>();
+let mcpOAuth: McpOAuth;
+const getMcpOAuth = () => mcpOAuth ||= new McpOAuth(join(app.getPath('userData'), 'mcp-oauth.json'), consumptionCipher, url => shell.openExternal(url));
 function estadoMcp() {
-  return [...mcp.values()].map(({ srv }) => ({ name: srv.nome, status: srv.estado, error: srv.erro || undefined, tools: srv.ferramentas }));
+  return [...mcp.values()].map(({ srv, url }) => ({ name: srv.nome, status: srv.estado, error: srv.erro || undefined, tools: srv.ferramentas, oauth: !!url && getMcpOAuth().temLogin(url) }));
 }
 ipcMain.handle('mcp-sync', async (event, servers: Record<string, McpConfig> = {}) => {
   const novos = servers && typeof servers === 'object' ? servers : {};
@@ -652,14 +655,33 @@ ipcMain.handle('mcp-sync', async (event, servers: Record<string, McpConfig> = {}
   const conexoes = [];
   for (const [nome, cfg] of Object.entries(novos)) {
     if (mcp.has(nome)) continue;
-    const srv = new McpServidor(nome, cfg, app.getVersion(), (pid) => killTree(pid, { force: true }));
-    mcp.set(nome, { cfg: JSON.stringify(cfg), srv });
+    const url = typeof cfg?.url === 'string' ? cfg.url : undefined;
+    const auth = url ? { cabecalho: () => getMcpOAuth().cabecalho(url), renovar: () => getMcpOAuth().renovar(url) } : undefined;
+    const srv = new McpServidor(nome, cfg, app.getVersion(), (pid) => killTree(pid, { force: true }), auth);
+    mcp.set(nome, { cfg: JSON.stringify(cfg), srv, url });
     conexoes.push(srv.conectar());
   }
   await Promise.all(conexoes);
   return estadoMcp();
 });
 ipcMain.handle('mcp-status', async () => estadoMcp());
+// Login e saída do OAuth são sempre pedidos pelo usuário (botão na lista de servidores): a sincronização
+// nunca abre o navegador sozinha, nem na partida do app.
+ipcMain.handle('mcp-login', async (event, nome: string) => {
+  if (!mainSender(event)) return { success: false, error: 'Pedido recusado.', estado: [] };
+  const e = mcp.get(String(nome));
+  if (!e?.url) return { success: false, error: 'Servidor MCP remoto não encontrado.', estado: estadoMcp() };
+  try { await getMcpOAuth().entrar(e.url); } catch (err) { return { success: false, error: String(err && err.message || err), estado: estadoMcp() }; }
+  await e.srv.conectar();
+  return { success: e.srv.estado === 'ok', error: e.srv.estado === 'ok' ? undefined : e.srv.erro, estado: estadoMcp() };
+});
+ipcMain.handle('mcp-logout', async (event, nome: string) => {
+  if (!mainSender(event)) return { success: false, estado: [] };
+  const e = mcp.get(String(nome));
+  if (!e?.url) return { success: false, estado: estadoMcp() };
+  getMcpOAuth().sair(e.url); await e.srv.conectar();
+  return { success: true, estado: estadoMcp() };
+});
 ipcMain.handle('mcp-call', async (event, server, tool, args) => {
   const e = mcp.get(server);
   if (!e) return { success: false, error: `Unknown MCP server: ${server}` };

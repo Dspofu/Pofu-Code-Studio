@@ -6,6 +6,7 @@
 // Dois transportes: stdio (processo local, JSON-RPC por linha) e Streamable HTTP. O SSE
 // antigo, separado em dois endpoints, foi descontinuado pela especificação e fica de fora.
 import { spawn, type ChildProcess } from 'child_process';
+import { pedeLoginOAuth } from './mcp-oauth.js';
 
 export type McpConfig = {
   command?: string; args?: string[]; env?: Record<string, string>; cwd?: string;
@@ -13,6 +14,9 @@ export type McpConfig = {
   disabled?: boolean; timeout?: number;
 };
 export type McpFerramenta = { name: string; description?: string; inputSchema?: any; annotations?: any };
+/** Login OAuth de um servidor remoto (src/mcp-oauth.ts), já amarrado ao endereço dele. */
+export type McpAuth = { cabecalho(): Promise<string | null>; renovar(): Promise<boolean> };
+export class PrecisaLogin extends Error {}
 
 const PROTOCOLO = '2025-06-18';
 // npx/uvx baixam o pacote na primeira vez: a inicialização pode levar bem mais que uma chamada.
@@ -131,13 +135,15 @@ class Http implements Transporte {
   private seq = 0;
   private sessao = '';
   private ultimoErro = '';
-  constructor(private cfg: McpConfig) {}
+  private autorizacao = '';
+  constructor(private cfg: McpConfig, private auth?: McpAuth) {}
 
   private cabecalhos() {
     return {
       'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
       'MCP-Protocol-Version': PROTOCOLO,
       ...(this.sessao ? { 'Mcp-Session-Id': this.sessao } : {}),
+      ...(this.autorizacao ? { Authorization: this.autorizacao } : {}),
       ...(this.cfg.headers || {})
     };
   }
@@ -178,17 +184,24 @@ class Http implements Transporte {
     }
   }
 
-  async request(method: string, params: any, timeoutMs: number) {
+  async request(method: string, params: any, timeoutMs: number, renovou = false) {
     const id = ++this.seq;
+    // Authorization escrito à mão em "headers" manda: o OAuth só entra quando ele não existe.
+    if (this.auth && !Object.keys(this.cfg.headers || {}).some(k => k.toLowerCase() === 'authorization')) this.autorizacao = (await this.auth.cabecalho()) || '';
     const r = await fetch(this.cfg.url, {
       method: 'POST', headers: this.cabecalhos(), signal: AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params })
     });
     const sid = r.headers.get('mcp-session-id');
     if (sid) this.sessao = sid;
-    // 401 com resource_metadata no WWW-Authenticate é o login OAuth da especificação MCP (navegador), que o
-    // Studio ainda não faz: dizer isso evita a caça à chave errada que o "Unauthorized" cru provocava.
-    if (r.status === 401 && /resource_metadata=/i.test(r.headers.get('www-authenticate') || '')) { await r.text().catch(() => ''); this.ultimoErro = 'HTTP 401: este servidor pede login OAuth pelo navegador, que o Studio ainda não faz. Se o serviço oferecer uma chave de API, use "headers": { "Authorization": "Bearer SUA_CHAVE" }.'; throw new Error(this.ultimoErro); }
+    // 401 com resource_metadata é o login OAuth da especificação MCP: renova uma vez se havia token; senão o
+    // servidor fica "precisa entrar", e o login só acontece quando o usuário pede (nunca abre navegador sozinho).
+    if (r.status === 401 && pedeLoginOAuth(r.headers.get('www-authenticate'))) {
+      await r.text().catch(() => '');
+      if (this.auth && this.autorizacao && !renovou && await this.auth.renovar()) return this.request(method, params, timeoutMs, true);
+      this.ultimoErro = this.auth ? 'Este servidor pede login. Clique em Entrar para autorizar pelo navegador.' : 'HTTP 401: este servidor pede login OAuth pelo navegador. Se o serviço oferecer uma chave de API, use "headers": { "Authorization": "Bearer SUA_CHAVE" }.';
+      throw new PrecisaLogin(this.ultimoErro);
+    }
     if (!r.ok) { this.ultimoErro = `HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`; throw new Error(this.ultimoErro); }
     let msg = null;
     if ((r.headers.get('content-type') || '').includes('text/event-stream')) {
@@ -215,18 +228,19 @@ class Http implements Transporte {
 }
 
 export class McpServidor {
-  estado: 'conectando' | 'ok' | 'erro' | 'desligado' = 'conectando';
+  estado: 'conectando' | 'ok' | 'erro' | 'desligado' | 'login' = 'conectando';
   erro = '';
   ferramentas: McpFerramenta[] = [];
   private t: Transporte | null = null;
 
-  constructor(public nome: string, private cfg: McpConfig, private versao: string, private matar: (pid: number) => void) {}
+  constructor(public nome: string, private cfg: McpConfig, private versao: string, private matar: (pid: number) => void, private auth?: McpAuth) {}
 
   async conectar() {
     if (this.cfg.disabled) { this.estado = 'desligado'; return; }
     try {
       if (!this.cfg.command && !this.cfg.url) throw new Error('Config needs "command" (local server) or "url" (remote server).');
-      this.t = this.cfg.url ? new Http(this.cfg) : new Stdio(this.cfg, this.matar, (m) => {
+      this.fechar(); this.erro = ''; this.estado = 'conectando';
+      this.t = this.cfg.url ? new Http(this.cfg, this.auth) : new Stdio(this.cfg, this.matar, (m) => {
         if (m === 'notifications/tools/list_changed') this.listar().catch(() => { /* fica a lista anterior */ });
       });
       await this.t.request('initialize', {
@@ -237,7 +251,7 @@ export class McpServidor {
       await this.listar();
       this.estado = 'ok';
     } catch (e) {
-      this.estado = 'erro';
+      this.estado = e instanceof PrecisaLogin ? 'login' : 'erro';
       this.erro = String(e && e.message || e);
       this.fechar();
     }

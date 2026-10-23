@@ -17,7 +17,7 @@
     "dist:win": "electron-builder --win nsis",
     "predist": "npm run build",
     "dist": "electron-builder --linux deb --win nsis",
-    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/fileworker.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/retry-policy.test.mjs scripts/reparo-historico.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs scripts/consumption.test.mjs scripts/remote-control.test.mjs scripts/remote-history.test.mjs scripts/model-vision.test.mjs scripts/computer.test.mjs scripts/updater.test.mjs scripts/subagents.test.mjs",
+    "test": "npm run build && node --test scripts/tool-results.test.mjs scripts/fileworker.test.mjs scripts/slash-commands.test.mjs scripts/mentions-paths.test.mjs scripts/providers.test.mjs scripts/edit-diagnostics.test.mjs scripts/edit-match.test.mjs scripts/tool-output.test.mjs scripts/package-metadata.test.mjs scripts/loop-guard.test.mjs scripts/retry-policy.test.mjs scripts/reparo-historico.test.mjs scripts/outline.test.mjs scripts/mcp.test.mjs scripts/mcp-oauth.test.mjs scripts/consumption.test.mjs scripts/remote-control.test.mjs scripts/remote-history.test.mjs scripts/model-vision.test.mjs scripts/computer.test.mjs scripts/updater.test.mjs scripts/subagents.test.mjs",
     "test:consumption": "npm run build && node scripts/run-consumption-tests.cjs",
     "test:integration": "npm run build && node scripts/run-electron-tests.cjs",
     "test:reconnect": "npm run build && node scripts/run-reconnect-tests.cjs",

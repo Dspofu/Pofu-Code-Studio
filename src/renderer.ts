@@ -3241,19 +3241,45 @@ function aplicaEstadoMcp(estado: McpEstado[]) {
   renderMcpStatus();
 }
 
+let mcpEntrando = '';
 function renderMcpStatus(conectando: string[] = []) {
   const box = el('mcp-status');
   if (!box) return;
-  const linhas = conectando.map(n => `… ${n} — conectando`);
+  const linha = (texto: string, acao?: { rotulo: string; titulo: string; fn: () => void; ocupado?: boolean }) => {
+    const div = document.createElement('div'); div.className = 'mcp-linha';
+    const span = document.createElement('span'); span.textContent = texto; div.appendChild(span);
+    if (acao) { const b = document.createElement('button'); b.type = 'button'; b.className = 'mcp-acao'; b.textContent = acao.rotulo; b.title = acao.titulo; b.disabled = !!acao.ocupado; b.addEventListener('click', acao.fn); div.appendChild(b); }
+    return div;
+  };
+  const linhas = conectando.map(n => linha(`… ${n} — conectando`));
   for (const s of mcpEstado) {
     if (conectando.includes(s.name)) continue;
     if (s.status === 'ok') {
       const chars = JSON.stringify(mcpFerramentas.filter(t => mcpRota.get(t.function.name)?.server === s.name)).length;
-      linhas.push(`● ${s.name} — ${s.tools.length} ferramenta(s), ~${Math.round(chars / charsPorToken()).toLocaleString('pt-BR')} tokens por mensagem`);
-    } else if (s.status === 'desligado') linhas.push(`○ ${s.name} — desligado`);
-    else linhas.push(`⚠ ${s.name} — ${String(s.error || 'falhou').split('\n')[0]}`);
+      linhas.push(linha(`● ${s.name} — ${s.tools.length} ferramenta(s), ~${Math.round(chars / charsPorToken()).toLocaleString('pt-BR')} tokens por mensagem`,
+        s.oauth ? { rotulo: 'Sair', titulo: `Apagar o login guardado de ${s.name}`, fn: () => sairMcp(s.name) } : undefined));
+    } else if (s.status === 'desligado') linhas.push(linha(`○ ${s.name} — desligado`));
+    else if (s.status === 'login') linhas.push(linha(mcpEntrando === s.name ? `… ${s.name} — aguardando o login no navegador` : `◇ ${s.name} — precisa entrar`,
+      { rotulo: mcpEntrando === s.name ? 'Entrando…' : 'Entrar', titulo: `Abrir o navegador para autorizar ${s.name}`, fn: () => entrarMcp(s.name), ocupado: !!mcpEntrando }));
+    else linhas.push(linha(`⚠ ${s.name} — ${String(s.error || 'falhou').split('\n')[0]}`));
   }
-  box.innerText = linhas.join('\n');
+  box.replaceChildren(...linhas);
+}
+
+async function entrarMcp(nome: string) {
+  if (mcpEntrando) return;
+  mcpEntrando = nome; renderMcpStatus();
+  try {
+    const r = await window.electronAPI.mcpLogin(nome);
+    mcpEntrando = ''; aplicaEstadoMcp(r.estado);
+    if (!r.success) logSystem(`MCP: o login em "${nome}" não foi concluído — ${String(r.error || 'erro desconhecido').split('\n')[0]}`);
+    else logSystem(`MCP: login em "${nome}" concluído.`);
+  } catch (e) { mcpEntrando = ''; renderMcpStatus(); logSystem(`MCP: o login em "${nome}" falhou — ${e.message}`); }
+}
+
+async function sairMcp(nome: string) {
+  const r = await window.electronAPI.mcpLogout(nome);
+  aplicaEstadoMcp(r.estado);
 }
 
 async function sincronizaMcp() {
@@ -3264,6 +3290,7 @@ async function sincronizaMcp() {
   renderMcpStatus(nomes.filter(n => !servers[n].disabled && !mcpEstado.some(s => s.name === n && s.status === 'ok')));
   aplicaEstadoMcp(await window.electronAPI.mcpSync(servers));
   for (const s of mcpEstado) if (s.status === 'erro') logSystem(`MCP: o servidor "${s.name}" não conectou — ${String(s.error || '').split('\n')[0]}`);
+  else if (s.status === 'login') logSystem(`MCP: o servidor "${s.name}" pede login. Em Configurações → Ajustes → Servidores MCP, clique em Entrar.`);
 }
 
 // Monta a lista de ferramentas disponíveis conforme as configurações
