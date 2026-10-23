@@ -264,6 +264,30 @@ async function main() {
     }
   });
 
+  await check('view_attachment lista e reabre a imagem anexada antes, com os pixels no resultado', async () => {
+    const salvo = await ipc('saveAttachmentImage', fixtureImage.toDataURL(), 'anexo-antigo.png');
+    assert.equal(salvo.success, true);
+    await js(`import('./out/renderer.js').then(m => { m.activeChat().messages.push({ role: 'user', content: 'Guarde esta imagem.', attachments: [{ name: 'anexo-antigo.png', size: 100, binary: true, content: '', imagemPath: ${JSON.stringify(salvo.path)} }] }, { role: 'assistant', content: 'Guardada.' }); })`);
+    const index = corpos.length;
+    await start([
+      { tool: 'view_attachment', id: 'lista-anexos', args: {} },
+      { tool: 'view_attachment', id: 'abre-anexo', args: { name: 'anexo-antigo.png' } },
+      { tool: 'view_attachment', id: 'anexo-errado', args: { name: 'nao-existe.png' } },
+      { content: 'FIM_ANEXO' }
+    ], 'Olhe de novo a imagem que mandei antes.');
+    await finish('FIM_ANEXO');
+    const tools = corpos[index + 3].messages.filter(m => m.role === 'tool');
+    const lista = tools.find(m => m.tool_call_id === 'lista-anexos'), aberto = tools.find(m => m.tool_call_id === 'abre-anexo'), errado = tools.find(m => m.tool_call_id === 'anexo-errado');
+    assert.match(typeof lista.content === 'string' ? lista.content : JSON.stringify(lista.content), /anexo-antigo\.png/);
+    assert.ok(aberto.content.some(c => c.type === 'image_url' && c.image_url.url.startsWith('data:image/png;base64,')), 'pixels do anexo no resultado');
+    const resumo = JSON.parse(aberto.content.find(c => c.type === 'text').text);
+    assert.deepEqual([resumo.success, resumo.name, resumo.width, resumo.height], [true, 'anexo-antigo.png', 96, 64]);
+    const falha = JSON.parse(errado.content); assert.equal(falha.success, false); assert.match(falha.error, /^No attached image named "nao-existe.png"/); assert.deepEqual(falha.attachments.map(a => a.name), ['anexo-antigo.png']);
+    assert.ok((await active()).includes('view_attachment'));
+    const history = await js(`import('./out/renderer.js').then(m=>m.activeChat().messages)`);
+    assert.equal(JSON.stringify(history).includes('data:image'), false);
+  });
+
   await check('revogar permissão fecha acesso direto ao IPC e remove ferramentas', async () => {
     await saveSettings({ computer: false });
     const before = captures;

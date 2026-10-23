@@ -201,6 +201,7 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `http_request` | Consulta APIs com status, cabeçalhos e corpo separados. |
 | `capture_page` | Renderiza uma página, captura a imagem e informa erros de console/rede. Cada etapa tem prazo: página travada, script que nunca termina ou `alert()` não prendem o agente. |
 | `view_image` | Abre imagens do projeto e envia os pixels ao modelo com visão. |
+| `view_attachment` | Lista as imagens anexadas na conversa e reabre uma delas para o modelo com visão. Só as imagens recentes vão a cada requisição; com ela o agente volta a olhar um anexo antigo sem pedir que você reenvie. |
 | `capture_screen` | Captura um monitor real e informa as dimensões para interação. |
 | `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
 | `web_search` / `fetch_url` | Pesquisa na web, lê as páginas encontradas e extrai o conteúdo. |

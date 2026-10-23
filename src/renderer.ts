@@ -1754,6 +1754,7 @@ const TOOL_META: Record<string, MetaFerramenta> = {
   http_request: { icon: 'plug', label: 'Requisição HTTP', tom: 'rede' },
   capture_page: { icon: 'camera', label: 'Print da página', tom: 'rede' },
   view_image: { icon: 'image', label: 'Ver imagem', tom: 'leitura' },
+  view_attachment: { icon: 'paperclip', label: 'Ver anexo', tom: 'leitura' },
   capture_screen: { icon: 'monitor', label: 'Ver tela do computador', tom: 'computador' },
   computer_action: { icon: 'pointer', label: 'Controlar computador', tom: 'computador' },
   execute_command: { icon: 'terminal', label: 'Terminal', tom: 'terminal' },
@@ -1782,6 +1783,7 @@ function summarizeToolCall(name, args) {
     case 'write_file':
     case 'view_image':
     case 'delete_file': return args.filename || '';
+    case 'view_attachment': return args.name || (args.index ? `${args.index}ª imagem mais recente` : 'Listar imagens anexadas');
     case 'capture_screen': return args.display_id ? 'Monitor ' + args.display_id : 'Monitor principal';
     case 'computer_action': {
       const labels = { click: 'Clique', double_click: 'Clique duplo', move: 'Mover ponteiro', scroll: 'Rolar', key: 'Atalho', type: 'Digitar' };
@@ -1879,6 +1881,8 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^Loop detected/i, () => '↷ Mesma chamada, mesmo resultado, de novo — bloqueada para o agente mudar de abordagem.'],
   [/does not support this file type/i, () => '↷ Sem estrutura para esse tipo de arquivo — o agente vai ler o arquivo.'],
   [/^Path not found/i, () => '⚠ Caminho não encontrado.'],
+  [/^No attached image/i, () => '↷ Nenhuma imagem anexada com esse nome nesta conversa — o agente recebeu a lista das que existem.'],
+  [/^The attached image ".*" is no longer available/i, () => '⚠ A imagem anexada não está mais no disco (saiu na limpeza automática).'],
   [/^WARNING: the file had (\d+) lines and now has (\d+)/i,
     m => `⚠ O arquivo tinha ${m[1]} linhas e agora tem ${m[2]} — confira se a redução foi intencional.`],
   [/^File not found/i, () => '⚠ Arquivo não encontrado.'],
@@ -2030,6 +2034,10 @@ function summarizeToolResult(name, resultStr) {
       }
       return partes.join('\n');
     }
+    case 'view_attachment':
+      if (!data.success) return erroParaTela(data.error || resultStr);
+      if (Array.isArray(data.attachments)) return data.attachments.length ? `${data.attachments.length} imagem(ns) anexada(s) nesta conversa\n` + data.attachments.map(a => `${a.index}. ${a.name}`).join('\n') : '(nenhuma imagem anexada nesta conversa)';
+      return `✓ Anexo aberto · ${data.name} · ${data.width} × ${data.height}`;
     case 'view_image':
     case 'capture_screen':
       return data.success ? '✓ ' + (name === 'view_image' ? 'Imagem aberta' : 'Tela capturada') + ' · ' + data.width + ' × ' + data.height : erroParaTela(data.error || resultStr);
@@ -3649,6 +3657,19 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
       return { text: JSON.stringify({ success: true, filename: args.filename, width: res.width, height: res.height, screenshot: 'The image is attached to this result. Inspect its pixels.' }),
         image: { path: res.path, dataUrl: res.dataUrl, width: res.width, height: res.height } };
     }
+    if (name === 'view_attachment') {
+      if (!visionEnabled()) return JSON.stringify({ success: false, error: 'view_attachment requires a vision model with image feedback enabled.' });
+      const anexos = (activeChat()?.messages || []).flatMap(m => m.role === 'user' ? (m.attachments || []).filter(a => a.imagemPath) : []).reverse();
+      if (!args.name && !args.index) return JSON.stringify({ success: true, attachments: anexos.map((a, i) => ({ index: i + 1, name: a.name })) });
+      const nome = String(args.name || '').trim().toLowerCase();
+      const alvo = nome ? anexos.find(a => a.name.toLowerCase() === nome) : anexos[Number(args.index) - 1];
+      if (!alvo) return JSON.stringify({ success: false, error: `No attached image ${nome ? `named "${args.name}"` : `at index ${args.index}`} in this conversation.`, attachments: anexos.map((a, i) => ({ index: i + 1, name: a.name })) });
+      const res = await window.electronAPI.readImage(alvo.imagemPath);
+      if (!res?.success) return JSON.stringify({ success: false, error: `The attached image "${alvo.name}" is no longer available on disk. Ask the user to attach it again.` });
+      const dims = await new Promise<{ width: number; height: number }>(resolve => { const im = new Image(); im.onload = () => resolve({ width: im.naturalWidth, height: im.naturalHeight }); im.onerror = () => resolve({ width: 0, height: 0 }); im.src = res.dataUrl; });
+      return { text: JSON.stringify({ success: true, name: alvo.name, ...dims, screenshot: 'The image is attached to this result. Inspect its pixels.' }),
+        image: { path: alvo.imagemPath, dataUrl: res.dataUrl, ...dims } };
+    }
     if (name === 'capture_screen' || name === 'computer_action') {
       if (stopRequested) return JSON.stringify({ success: false, error: 'Computer action cancelled by the user.' });
       if (state.settings.computerUse !== true) return JSON.stringify({ success: false, error: 'Computer use is disabled. The user can enable it in settings.' });
@@ -5024,6 +5045,7 @@ function buildAttachmentBlock(attachments, comPixels = new Set()) {
     if (a.imagemPath && comPixels.has(a.imagemPath)) return `[Attached image: ${a.name} — shown below]`;
     if (a.binary) {
       if (a.imagemIlegivel && !a.imagemPath) return `[Attached image: ${a.name} (${fmtSize(a.size)}) — the app could not read this image file, so its pixels were not sent. Ask the user to attach it again as PNG or JPEG]`;
+      if (a.imagemPath && visionEnabled()) return `[Attached image: ${a.name} (${fmtSize(a.size)}) — not resent with this request to save context; call view_attachment with this name to look at it again]`;
       const imagem = a.thumb || a.imagemPath;
       return imagem
         ? `[Attached image: ${a.name} (${fmtSize(a.size)}) — this model does not receive images, so only the name is available]`

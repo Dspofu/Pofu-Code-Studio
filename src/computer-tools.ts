@@ -7,6 +7,13 @@ export const imageTools = [{
     description: 'Opens a local image inside the workspace and attaches its pixels. Use it to inspect screenshots, icons and design references; read_file does not decode images.',
     parameters: { type: 'object', properties: { filename: { type: 'string' } }, required: ['filename'] }
   }
+}, {
+  type: 'function',
+  function: {
+    name: 'view_attachment',
+    description: 'Re-opens an image the user attached earlier in this conversation and attaches its pixels. Only recent attachments are resent with each request; use this to look at an older one again. Call without arguments to list them.',
+    parameters: { type: 'object', properties: { name: { type: 'string', description: 'File name as in "[Attached image: NAME]". The most recent match is used.' }, index: { type: 'number', description: '1 = most recent attached image. Use instead of name.' } } }
+  }
 }];
 
 export const computerTools = [{

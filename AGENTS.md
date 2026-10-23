@@ -140,6 +140,7 @@ no macOS). A consulta é compartilhada com o card de configurações e reaprovei
 | execute_command / read_process_output / wait_for_process / list_processes / stop_process | execute-command / read-process-output / wait-for-process / list-processes / stop-process |
 | http_request / capture_page / web_search / fetch_url | http-request / capture-page / web-search / fetch-url |
 | view_image / capture_screen / computer_action | view-image / capture-screen / computer-action (visão; desktop requer computerUse) |
+| view_attachment | read-image (visão; sem IPC próprio: lê os `imagemPath` dos anexos do chat ativo) |
 
 Para adicionar uma: **quatro pontos** (main → preload+types.d.ts → `tools` → `runTool`+`TOOL_META`+
 resumos+`CONFIRM_TOOLS` se destrutiva). Detalhes em CLAUDE.md.
