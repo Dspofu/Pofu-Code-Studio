@@ -162,7 +162,7 @@ Pelo site você pode conversar, enviar mensagens à fila, interromper a geraçã
 
 Chaves das APIs não são enviadas ao site. A credencial de pareamento é protegida pelo cofre do sistema. **Desligar** no desktop pausa a ponte; **Desconectar** no site revoga a conexão.
 
-Na área Code, o site também edita/apaga/regenera mensagens, duplica/limpa conversas, recebe imagens e mostra diferenças/desfaz alterações por snapshots. O menu `/` inclui processos e compactação. Até três PNG/JPEG/WebP chegam ao modelo com visão e permanecem anexadas no desktop. Ações respeitam execução, histórico atual e permissões do plano; editar/regenerar não desfaz ferramentas anteriores.
+Na área Code, o site também edita/apaga/regenera mensagens, duplica/limpa conversas, recebe imagens e mostra diferenças/desfaz alterações por snapshots. O menu `/` inclui processos e compactação. Até três PNG/JPEG/WebP chegam ao modelo com visão e permanecem anexadas no desktop. Clicar na miniatura de uma imagem enviada abre a imagem em tamanho real, pedida ao Studio na hora. Ações respeitam execução, histórico atual e permissões do plano; editar/regenerar não desfaz ferramentas anteriores.
 
 O espelho inclui os últimos 80 blocos/60 mil caracteres, nomes e miniaturas; o histórico completo permanece no desktop. Exportação baixa somente esse trecho. Arquivos gerais e abertura de pastas novas continuam no PC. API, site e desktop precisam oferecer recursos compatíveis.
 

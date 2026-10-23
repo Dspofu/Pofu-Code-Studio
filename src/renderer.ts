@@ -6492,6 +6492,22 @@ let remoteEnabled = false;
 const remoteHistory = new RemoteHistory();
 let remoteProcesses: any[] = [], remoteProcessOutput = '';
 let remoteDiff: { snapshotId: string; file: string; text: string } = null;
+let remoteImage: { messageId: string; index: number; name: string; dataUrl: string } = null;
+// O espelho inteiro tem teto de 200 KB (studioRemoteSnapshot) e ainda leva as mensagens: a imagem
+// pedida pelo site vai em JPEG reduzido até caber em ~100 mil caracteres.
+async function imagemParaRemoto(dataUrl: string): Promise<string> {
+  const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+  try {
+    for (const [largura, qualidade] of [[1024, 0.8], [800, 0.72], [640, 0.65], [480, 0.6], [320, 0.55]]) {
+      const escala = Math.min(1, largura / bitmap.width), c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(bitmap.width * escala)); c.height = Math.max(1, Math.round(bitmap.height * escala));
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(bitmap, 0, 0, c.width, c.height);
+      const saida = c.toDataURL('image/jpeg', qualidade);
+      if (saida.length <= 100000) return saida;
+    }
+  } finally { bitmap.close(); }
+  throw new Error('Imagem grande demais para o controle remoto.');
+}
 function remoteChatMessages() {
   const messages: { role: string; text: string; id?: string; sourceText?: string; editable?: boolean; change?: { snapshotId: string; file: string }; images?: { name: string; thumb: string }[] }[] = [];
   let budget = 60000;
@@ -6518,7 +6534,7 @@ function studioRemoteSnapshot() {
   const chats = Object.values(state.chats), providers = state.settings.providers || [];
   const snapshot = {
     activeChatId: state.activeChatId, running: isRunning, queued: filaMensagens.length,
-    capabilities: ['history-v1', 'processes-v1', 'compact-v1', 'diff-v1', 'images-v1'], historyRevision: activeChat() ? remoteHistory.revision(activeChat()) : '', processes: remoteProcesses, processOutput: remoteProcessOutput, diff: remoteDiff, vision: visionEnabled(),
+    capabilities: ['history-v1', 'processes-v1', 'compact-v1', 'diff-v1', 'images-v1', 'image-view-v1'], historyRevision: activeChat() ? remoteHistory.revision(activeChat()) : '', processes: remoteProcesses, processOutput: remoteProcessOutput, diff: remoteDiff, image: remoteImage, vision: visionEnabled(),
     chats: [activeChat(), ...chats.filter(c => c.id !== state.activeChatId)].filter(Boolean).slice(0, 100).map(c => ({ id: c.id, name: c.name.slice(0, 200), path: c.path.slice(0, 500) })),
     messages: remoteChatMessages(),
     providers: [...providers.filter(p => p.id === state.settings.activeProviderId), ...providers.filter(p => p.id !== state.settings.activeProviderId)].slice(0, 50).map(p => ({ id: p.id.slice(0, 200), name: p.name.slice(0, 200), model: p.model.slice(0, 200) })),
@@ -6534,12 +6550,13 @@ function studioRemoteSnapshot() {
   };
   const oversized = () => new TextEncoder().encode(JSON.stringify(snapshot)).length > 200000;
   for (const group of [snapshot.chats, snapshot.providers, snapshot.workspaces, snapshot.processes]) while (group.length > 1 && oversized()) { group.pop(); snapshot.limited = true; }
+  if (snapshot.image && oversized()) { snapshot.image = null; snapshot.limited = true; }
   while (snapshot.messages.length > 1 && oversized()) { snapshot.messages.shift(); snapshot.limited = true; }
   while (oversized() && (snapshot.processOutput.length > 100 || (snapshot.diff?.text.length || 0) > 100)) { if (snapshot.processOutput.length > 100) snapshot.processOutput = snapshot.processOutput.slice(0, Math.floor(snapshot.processOutput.length / 2)); if ((snapshot.diff?.text.length || 0) > 100) snapshot.diff = { ...snapshot.diff, text: snapshot.diff.text.slice(0, Math.floor(snapshot.diff.text.length / 2)) + '\n[Diff abreviado. Conteúdo completo no Studio.]' }; snapshot.limited = true; }
   return snapshot;
 }
 async function executeRemoteCommand(c: any) {
-  const idleOnly = !['send', 'stop', 'approve', 'answer', 'consumption-refresh', 'processes-refresh', 'process-output', 'stop-process'].includes(c.type);
+  const idleOnly = !['send', 'stop', 'approve', 'answer', 'consumption-refresh', 'processes-refresh', 'process-output', 'stop-process', 'get-image'].includes(c.type);
   if (idleOnly && isRunning) throw new Error('Aguarde a tarefa terminar ou interrompa-a antes de trocar a sessão.');
   const chat = () => { const found = state.chats[c.chatId]; if (!found) throw new Error('Chat não encontrado.'); return found; };
   const editableChat = () => { const found = chat(); if (c.chatId !== state.activeChatId) throw new Error('Selecione novamente esta conversa antes de alterar mensagens.'); remoteHistory.check(found, c.revision); return found; };
@@ -6581,6 +6598,16 @@ async function executeRemoteCommand(c: any) {
       if (!message || !/^[a-zA-Z0-9_-]{1,100}$/.test(c.snapshotId)) throw new Error('Alteração não encontrada nesta conversa.');
       if (c.type === 'get-diff') { const diff = await window.electronAPI.getDiff(c.snapshotId); remoteDiff = { snapshotId: c.snapshotId, file: message.alteracao.arquivo, text: diff?.indisponivel ? 'O ponto de restauração não existe mais.' : (diff?.linhas || []).slice(0, 1000).map(line => line.tipo === 'pulo' ? '... ' + line.quantas + ' linhas de contexto omitidas ...' : (line.tipo === 'adicao' || line.tipo === 'add' ? '+ ' : line.tipo === 'remocao' || line.tipo === 'del' ? '− ' : '  ') + line.texto).join('\n').slice(0, 24000) }; }
       else { const result = await window.electronAPI.undoChange(c.snapshotId); if (!result?.success) throw new Error(result?.error || 'Não foi possível desfazer.'); message.alteracao.snapshotId = result.refazerId; remoteDiff = null; await renderActiveChat(); await persist(); logSystem('Alteração revertida em ' + message.alteracao.arquivo + '. Avise ao agente antes de continuar.'); }
+      break;
+    }
+    case 'get-image': {
+      const found = chat(); if (found.id !== state.activeChatId) throw new Error('Selecione novamente esta conversa.');
+      const message = found.messages.find(m => m.role === 'user' && remoteHistory.reference(m) === c.messageId);
+      const anexo = Number.isInteger(c.index) ? (message?.attachments || []).filter(a => a.imagemPath)[c.index] : null;
+      if (!anexo) throw new Error('Imagem não encontrada nesta conversa.');
+      const res = await window.electronAPI.readImage(anexo.imagemPath);
+      if (!res?.success) throw new Error('A imagem não está mais guardada no Studio.');
+      remoteImage = { messageId: c.messageId, index: c.index, name: String(anexo.name).slice(0, 100), dataUrl: await imagemParaRemoto(res.dataUrl) };
       break;
     }
     case 'processes-refresh': { const result = await window.electronAPI.listProcesses(); remoteProcesses = (Array.isArray(result) ? result : result?.processes || []).slice(0, 50).map(p => ({ pid: p.pid, command: String(p.command || '').slice(0, 500), running: p.status === 'running', exitCode: p.exitCode ?? null })); break; }

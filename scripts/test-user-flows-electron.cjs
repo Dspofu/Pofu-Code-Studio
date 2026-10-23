@@ -203,6 +203,13 @@ async function main() {
     await until("document.querySelector('.shot-viewer img')?.complete && document.querySelector('.shot-viewer img').naturalWidth>0");
     assert.deepEqual(await js("(() => { const i=document.querySelector('.shot-viewer img');return [i.src.startsWith('file:'), i.naturalWidth]; })()"), [true, 64], 'a bolha enviada abre a imagem salva');
     await js("document.querySelector('.shot-viewer').click()"); await until("!document.querySelector('.shot-viewer')");
+    // O painel Code do site pede a imagem inteira pelo controle remoto (get-image): volta no espelho, em JPEG que cabe nele.
+    const espelho = await snapshot(), comImagem = espelho.messages.find(m => m.role === 'user' && m.images?.some(i => i.name === 'foto.webp'));
+    assert.ok(espelho.capabilities.includes('image-view-v1') && comImagem?.id);
+    await remote({ type: 'get-image', chatId: espelho.activeChatId, messageId: comImagem.id, index: 0 });
+    const imagem = (await snapshot()).image;
+    assert.equal(imagem.name, 'foto.webp'); assert.equal(imagem.messageId, comImagem.id); assert.match(imagem.dataUrl, /^data:image\/jpeg;base64,/); assert.ok(imagem.dataUrl.length <= 100000);
+    await assert.rejects(remote({ type: 'get-image', chatId: espelho.activeChatId, messageId: comImagem.id, index: 2 }), /não encontrada/);
   });
   await check('sem modelo a mensagem e os anexos continuam no compositor', async () => {
     await remote({ type: 'set-provider', providerId: 'empty' }); await until("document.getElementById('studio-model').textContent==='Configure seu modelo'");
