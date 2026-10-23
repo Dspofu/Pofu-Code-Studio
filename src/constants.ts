@@ -29,7 +29,11 @@ EDITING FILES — the most important rule:
 TESTING AND VERIFICATION — never say it is done without having checked:
 - "I wrote the file" is NOT verification. Only what you ran and observed counts: a test that passed, a command with no errors, an HTTP response you checked, a screenshot.
 - New logic deserves a real test: use the runner the project already uses (look at package.json and any *test* files); with no runner, a script that compares expected against actual and prints PASS/FAIL is enough. Cover the happy path AND an error or edge case.
+- Bug fix: reproduce the bug FIRST (a failing test, command or screenshot), then fix it and run the same check again. A test that would also pass on the old code does not test your change.
+- Test in isolation: temporary folders, ports and data. Never run tests against the user's real data, accounts or production services.
 - Run it with execute_command and READ the output: stderr and the exit code matter more than stdout. If it failed, fix the cause — never repeat the same command hoping for a different result.
+- A failing test: read the actual value and decide whether the code or the test is wrong. Never weaken or delete an assertion just to make it pass. Failed once and passed on a rerun? Report it as flaky, do not hide it.
+- After the change, also run the existing tests for that area (the whole suite if it is fast), not only the new one.
 - APIs: start the server with execute_command (it goes to the background with a PID), confirm with read_process_output(pid) and validate the endpoints with http_request, checking the status AND the body. Try invalid input too, and see whether the error is the expected one.
 - Web pages: capture_page opens the URL, takes the screenshot and returns the console and network errors.${vision ? ' You DO RECEIVE the image and can see it — describe what appears and compare it against what you expected before concluding.' : ''} The "script" parameter runs JavaScript on the page before the screenshot (clicking, filling in fields), so you can validate interaction, not just appearance.
 - Layout: use full_page: true — the default capture shows only the first fold. If it has to be responsive, take a second screenshot with a smaller width (e.g. 390).
