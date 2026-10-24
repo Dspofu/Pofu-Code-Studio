@@ -227,6 +227,10 @@ export const CLIP_MIN_CHARS = 1024;
 // então só as capturas mais recentes voltam — as antigas continuam visíveis para o usuário.
 export const MAX_VISION_IMAGES = 2;
 
+// Acima disto as definições de um servidor MCP pesam como uma conversa inteira em CADA requisição (o Higgsfield
+// remoto expõe 184 ferramentas, ~100 mil tokens): a lista avisa e sugere escolher as ferramentas com "tools".
+export const MCP_TOKENS_ALERTA = 15000;
+
 // A tela pode mudar entre turnos; após dois minutos, agir exige outra observação.
 export const COMPUTER_OBSERVATION_MS = 120000;
 // Permissão de captura ou compositor travado não pode prender a chamada indefinidamente.

@@ -31,6 +31,7 @@ export function parseMcpConfig(texto: unknown): Record<string, any> {
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('MCP: esperado { "mcpServers": { "nome": { "command": … } } }.');
   for (const [nome, cfg] of Object.entries<any>(servers)) {
     if (!cfg || typeof cfg !== 'object' || (!cfg.command && !cfg.url)) throw new Error(`MCP: o servidor "${nome}" precisa de "command" (local) ou "url" (remoto).`);
+    if (cfg.tools !== undefined && (!Array.isArray(cfg.tools) || cfg.tools.some(t => typeof t !== 'string' || !t.trim()))) throw new Error(`MCP: "tools" do servidor "${nome}" precisa ser uma lista de nomes, ex.: ["generate_image", "job_status"].`);
   }
   return servers;
 }

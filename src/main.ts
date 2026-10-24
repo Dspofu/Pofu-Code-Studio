@@ -645,7 +645,7 @@ const mcp = new Map<string, { cfg: string; srv: McpServidor; url?: string }>();
 let mcpOAuth: McpOAuth;
 const getMcpOAuth = () => mcpOAuth ||= new McpOAuth(join(app.getPath('userData'), 'mcp-oauth.json'), consumptionCipher, url => shell.openExternal(url));
 function estadoMcp() {
-  return [...mcp.values()].map(({ srv, url }) => ({ name: srv.nome, status: srv.estado, error: srv.erro || undefined, tools: srv.ferramentas, oauth: !!url && getMcpOAuth().temLogin(url) }));
+  return [...mcp.values()].map(({ srv, url }) => ({ name: srv.nome, status: srv.estado, error: srv.erro || undefined, tools: srv.ferramentas, total: srv.total, missing: srv.ausentes, oauth: !!url && getMcpOAuth().temLogin(url) }));
 }
 ipcMain.handle('mcp-sync', async (event, servers: Record<string, McpConfig> = {}) => {
   const novos = servers && typeof servers === 'object' ? servers : {};

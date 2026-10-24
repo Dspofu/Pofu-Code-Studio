@@ -12,6 +12,9 @@ export type McpConfig = {
   command?: string; args?: string[]; env?: Record<string, string>; cwd?: string;
   url?: string; headers?: Record<string, string>;
   disabled?: boolean; timeout?: number;
+  /** Só estas ferramentas do servidor entram. Cada definição vai em TODA requisição ao modelo, e há servidor
+   *  remoto com 184 ferramentas (~100 mil tokens); sem a lista, entram todas. */
+  tools?: string[];
 };
 export type McpFerramenta = { name: string; description?: string; inputSchema?: any; annotations?: any };
 /** Login OAuth de um servidor remoto (src/mcp-oauth.ts), já amarrado ao endereço dele. */
@@ -231,6 +234,9 @@ export class McpServidor {
   estado: 'conectando' | 'ok' | 'erro' | 'desligado' | 'login' = 'conectando';
   erro = '';
   ferramentas: McpFerramenta[] = [];
+  /** Quantas o servidor oferece e quais nomes da lista "tools" ele não tem (erro de digitação, ferramenta renomeada). */
+  total = 0;
+  ausentes: string[] = [];
   private t: Transporte | null = null;
 
   constructor(public nome: string, private cfg: McpConfig, private versao: string, private matar: (pid: number) => void, private auth?: McpAuth) {}
@@ -266,11 +272,15 @@ export class McpServidor {
       cursor = r?.nextCursor;
       if (!cursor) break;
     }
-    this.ferramentas = todas;
+    const lista = Array.isArray(this.cfg.tools) ? this.cfg.tools : null;
+    this.total = todas.length;
+    this.ferramentas = lista ? todas.filter(f => lista.includes(f.name)) : todas;
+    this.ausentes = lista ? lista.filter(n => !todas.some(f => f.name === n)) : [];
   }
 
   async chamar(ferramenta: string, args: any) {
     if (this.estado !== 'ok' || !this.t) throw new Error(`MCP server "${this.nome}" is not connected${this.erro ? ': ' + this.erro : ''}.`);
+    if (Array.isArray(this.cfg.tools) && !this.cfg.tools.includes(ferramenta)) throw new Error(`Tool "${ferramenta}" is not enabled for MCP server "${this.nome}".`);
     return this.t.request('tools/call', { name: ferramenta, arguments: args || {} }, this.cfg.timeout || CHAMADA_MS);
   }
 

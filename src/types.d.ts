@@ -113,6 +113,9 @@ interface McpEstado {
   tools: Array<{ name: string; description?: string; inputSchema?: any; annotations?: any }>;
   /** Servidor remoto com login OAuth guardado (mostra "Sair"). */
   oauth?: boolean;
+  /** Quantas ferramentas o servidor oferece antes da lista "tools", e os nomes da lista que ele não tem. */
+  total?: number;
+  missing?: string[];
 }
 
 /** Anexo de arquivo preso à mensagem do usuário. */

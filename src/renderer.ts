@@ -20,7 +20,7 @@ import { iconeSvg, poeIcone } from './icons.js';
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CONTINUE_PROMPT, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_EMPTY_RETRIES, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, MCP_TOKENS_ALERTA, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CONTINUE_PROMPT, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_EMPTY_RETRIES, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -3256,7 +3256,9 @@ function renderMcpStatus(conectando: string[] = []) {
     if (conectando.includes(s.name)) continue;
     if (s.status === 'ok') {
       const chars = JSON.stringify(mcpFerramentas.filter(t => mcpRota.get(t.function.name)?.server === s.name)).length;
-      linhas.push(linha(`● ${s.name} — ${s.tools.length} ferramenta(s), ~${Math.round(chars / charsPorToken()).toLocaleString('pt-BR')} tokens por mensagem`,
+      const tokens = Math.round(chars / charsPorToken()), qtd = s.total && s.total !== s.tools.length ? `${s.tools.length} de ${s.total} ferramenta(s)` : `${s.tools.length} ferramenta(s)`;
+      const alerta = (tokens > MCP_TOKENS_ALERTA ? ' — caro: escolha só as que usa em "tools"' : '') + (s.missing?.length ? ` · não encontradas: ${s.missing.join(', ')}` : '');
+      linhas.push(linha(`● ${s.name} — ${qtd}, ~${tokens.toLocaleString('pt-BR')} tokens por mensagem${alerta}`,
         s.oauth ? { rotulo: 'Sair', titulo: `Apagar o login guardado de ${s.name}`, fn: () => sairMcp(s.name) } : undefined));
     } else if (s.status === 'desligado') linhas.push(linha(`○ ${s.name} — desligado`));
     else if (s.status === 'login') linhas.push(linha(mcpEntrando === s.name ? `… ${s.name} — aguardando o login no navegador` : `◇ ${s.name} — precisa entrar`,

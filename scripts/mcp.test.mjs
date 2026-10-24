@@ -156,3 +156,29 @@ test('Streamable HTTP: 401 do login OAuth do MCP vira explicação, não "Unauth
   assert.match(s.erro, /login OAuth pelo navegador/); assert.match(s.erro, /"headers": \{ "Authorization": "Bearer SUA_CHAVE" \}/);
   s.fechar(); server.close();
 });
+
+test('"tools" limita as ferramentas que vão ao modelo, aponta nomes inexistentes e recusa chamar as de fora', async () => {
+  const server = createServer((req, res) => {
+    let raw = ''; req.on('data', c => raw += c); req.on('end', () => {
+      if (req.method !== 'POST') { res.statusCode = 204; return res.end(); }
+      const msg = JSON.parse(raw);
+      if (msg.id == null) { res.statusCode = 202; return res.end(); }
+      res.setHeader('Content-Type', 'application/json');
+      const result = msg.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'muitas' } }
+        : msg.method === 'tools/list' ? { tools: ['models_explore', 'generate_3d', 'generate_video', 'publish_katana_preset'].map(name => ({ name, inputSchema: { type: 'object' } })) }
+        : { content: [{ type: 'text', text: 'chamou ' + msg.params.name }] };
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
+    });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const s = new McpServidor('muitas', { url: `http://127.0.0.1:${server.address().port}/mcp`, tools: ['models_explore', 'generate_3d', 'gerar_tudo'] }, '1', matar);
+  await s.conectar();
+  assert.equal(s.estado, 'ok', s.erro);
+  assert.deepEqual(s.ferramentas.map(f => f.name), ['models_explore', 'generate_3d']); assert.equal(s.total, 4); assert.deepEqual(s.ausentes, ['gerar_tudo']);
+  assert.equal(textoDoResultado(await s.chamar('generate_3d', {})), 'chamou generate_3d');
+  await assert.rejects(s.chamar('publish_katana_preset', {}), /not enabled/);
+  s.fechar(); server.close();
+  const { parseMcpConfig } = await import('../out/mcp-config.js');
+  assert.throws(() => parseMcpConfig('{"mcpServers":{"h":{"url":"https://x/mcp","tools":"generate_3d"}}}'), /precisa ser uma lista de nomes/);
+  assert.deepEqual(parseMcpConfig('{"mcpServers":{"h":{"url":"https://x/mcp","tools":["generate_3d"]}}}').h.tools, ['generate_3d']);
+});
