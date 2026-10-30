@@ -1021,13 +1021,41 @@ function scrollChat() {
   const cb = el('chat-box');
   cb.scrollTop = cb.scrollHeight;
   el('btn-chat-bottom').hidden = true;
+  agendaPedidoTopo();
 }
+// Numa resposta longa o pedido que a originou sobe e some, e para relê-lo era preciso caçá-lo
+// rolando. A barra mostra o pedido do trecho que está na tela e leva até ele.
+let pedidoNoTopo: HTMLElement | null = null;
+function atualizaPedidoTopo() {
+  const chatBox = el('chat-box'), btn = el('pedido-topo-btn');
+  const topo = chatBox.getBoundingClientRect().top + 12;
+  let atual: HTMLElement | null = null;
+  for (const m of chatBox.querySelectorAll<HTMLElement>('.message.user')) {
+    if (m.getBoundingClientRect().top < topo) atual = m; else break;
+  }
+  // ainda visível: a barra só repetiria o que está à vista
+  if (!atual || atual.getBoundingClientRect().bottom > topo + 24) { btn.hidden = true; pedidoNoTopo = null; return; }
+  const texto = (q('.user-message-text', atual)?.textContent ||
+    [...atual.querySelectorAll('.msg-attach-name')].map(n => n.textContent).join(', ')).replace(/\s+/g, ' ').trim();
+  pedidoNoTopo = atual;
+  el('pedido-topo-texto').textContent = texto || '(pedido sem texto)';
+  btn.title = texto.slice(0, 400) + (texto.length > 400 ? '…' : '') + '\n\nClique para ir até o pedido';
+  btn.hidden = false;
+}
+// Um cálculo por rajada de rolagem. setTimeout e não requestAnimationFrame: com a janela
+// oculta (teste, app minimizado) o quadro não vem e a barra ficava parada no estado antigo.
+let pedidoAgendado: ReturnType<typeof setTimeout> | 0 = 0;
+function agendaPedidoTopo() {
+  if (!pedidoAgendado) pedidoAgendado = setTimeout(() => { pedidoAgendado = 0; atualizaPedidoTopo(); }, 60);
+}
+
 // Força ir ao fim e reativa o acompanhamento (ex.: ao enviar mensagem ou trocar de chat)
 function forceScrollBottom() {
   stickToBottom = true;
   const cb = el('chat-box');
   if (cb) cb.scrollTop = cb.scrollHeight;
   el('btn-chat-bottom').hidden = true;
+  agendaPedidoTopo();
 }
 
 // Imagem entra no DOM com altura ZERO e só empurra o conteúdo quando termina de carregar
@@ -1239,10 +1267,10 @@ function renderChatList() {
     const del = document.createElement('button');
     del.className = 'chat-action chat-delete';
     del.title = 'Apagar chat';
-    del.innerText = '×';
+    del.innerHTML = iconeSvg('trash');
     del.addEventListener('click', (e) => {
       e.stopPropagation();
-      deleteChat(id);
+      confirmaApagarChat(id);
     });
     actions.appendChild(del);
     item.appendChild(actions);
@@ -1341,6 +1369,30 @@ function switchChat(id) {
   persist();
 }
 
+// Apagar não tem desfazer e o × fica colado no nome: um clique errado levava a conversa inteira.
+// O foco começa em Cancelar para um Enter distraído não confirmar.
+function confirmaApagarChat(id: string) {
+  const chat = state.chats[id];
+  if (isRunning || !chat) return;
+  const modal = el('delete-chat-modal'), cancelar = el('delete-chat-cancel'), apagar = el('delete-chat-confirm');
+  const mensagens = chat.messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
+  el('delete-chat-sub').innerText = `O chat "${chat.name}"` +
+    (mensagens ? ` e ${mensagens === 1 ? 'a única mensagem dele' : `as ${mensagens} mensagens dele`} serão apagados` : ' será apagado') +
+    '. Não dá para desfazer.';
+  const fecha = () => {
+    modal.classList.remove('active');
+    cancelar.removeEventListener('click', fecha); apagar.removeEventListener('click', confirma);
+    modal.removeEventListener('click', foraDaCaixa); document.removeEventListener('keydown', tecla, true);
+  };
+  const confirma = () => { fecha(); deleteChat(id); };
+  const foraDaCaixa = (e: Event) => { if (e.target === modal) fecha(); };
+  const tecla = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); fecha(); } };
+  cancelar.addEventListener('click', fecha); apagar.addEventListener('click', confirma);
+  modal.addEventListener('click', foraDaCaixa); document.addEventListener('keydown', tecla, true);
+  modal.classList.add('active');
+  cancelar.focus();
+}
+
 function deleteChat(id) {
   if (isRunning || !state.chats[id]) return;
   const wasActive = state.activeChatId === id;
@@ -1366,6 +1418,7 @@ async function renderActiveChat() {
 
   const chatBox = el('chat-box');
   chatBox.innerHTML = '';
+  el('pedido-topo-btn').hidden = true; pedidoNoTopo = null;
   stickToBottom = true; // ao (re)carregar/trocar de chat, começa acompanhando o fim
 
   // A montagem é síncrona e trava o renderer enquanto dura (medido: ~4s em 1733 mensagens),
@@ -2681,9 +2734,20 @@ function openImageViewer(src, alt = '', reserva = '') {
   const img = document.createElement('img');
   img.alt = alt;
   if (reserva) img.addEventListener('error', () => { if (img.src !== reserva) img.src = reserva; });
+  // No tamanho natural, um recorte de 300 px abria como um selo no meio da tela escura.
+  // Amplia até ocupar a área, sem passar de 4x: acima disso um ícone vira borrão.
+  const ajusta = () => {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) return;
+    const escala = Math.min((innerWidth - 48) / w, (innerHeight - 48) / h, 4);
+    img.style.width = Math.round(w * escala) + 'px';
+    img.style.height = Math.round(h * escala) + 'px';
+  };
+  img.addEventListener('load', ajusta);
+  window.addEventListener('resize', ajusta);
   img.src = src;
   overlay.appendChild(img);
-  const fechar = () => { overlay.remove(); document.removeEventListener('keydown', aoTeclar); };
+  const fechar = () => { overlay.remove(); document.removeEventListener('keydown', aoTeclar); window.removeEventListener('resize', ajusta); };
   const aoTeclar = (e) => { if (e.key === 'Escape') fechar(); };
   overlay.addEventListener('click', fechar);
   document.addEventListener('keydown', aoTeclar);
@@ -6057,6 +6121,12 @@ function wireEvents() {
     if (topo < topoAnterior && falta > 2) soltaDoFim();
     else if (topo > topoAnterior && falta < 80) { stickToBottom = true; el('btn-chat-bottom').hidden = true; }
     topoAnterior = topo;
+    agendaPedidoTopo();
+  });
+  el('pedido-topo-btn').addEventListener('click', () => {
+    if (!pedidoNoTopo) return;
+    soltaDoFim(); // senão o próximo pedaço do stream puxaria de volta para o fim
+    pedidoNoTopo.scrollIntoView({ block: 'start', behavior: 'smooth' });
   });
   el('btn-chat-bottom').addEventListener('click', () => { forceScrollBottom(); el('user-input').focus(); });
 

@@ -172,6 +172,22 @@
       color: #fca5a5;
     }
 
+    .delete-chat-box { width: 420px; }
+    .delete-chat-box .confirm-sub { overflow-wrap: anywhere; }
+    .btn-danger {
+      background: #b91c1c;
+      color: #fff;
+      border: 1px solid #dc2626;
+      padding: 9px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: background 0.15s ease;
+    }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
     .chat-rename-input {
       flex: 1;
       min-width: 0;
@@ -307,6 +323,33 @@
       min-width: 0;
       overflow-x: hidden;
     }
+
+    /* Altura zero: a barra fica por cima do chat e aparecer/sumir não desloca as mensagens. */
+    .pedido-topo { position: relative; height: 0; z-index: 5; }
+    .pedido-topo-btn {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(900px, calc(100% - 48px));
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      background: rgba(32, 39, 28, 0.94);
+      backdrop-filter: blur(6px);
+      border: 1px solid var(--border, #3f3f46);
+      border-radius: 10px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      color: var(--text, #f4f4f5);
+      font-size: 0.85rem;
+      text-align: left;
+      cursor: pointer;
+    }
+    .pedido-topo-btn[hidden] { display: none; }
+    .pedido-topo-btn:hover { border-color: var(--accent, #6a9f3d); }
+    .pedido-topo-texto { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d4d4d8; }
+    #chat-box .message.user { scroll-margin-top: 14px; }
 
     #chat-box::-webkit-scrollbar, .modal-body::-webkit-scrollbar {
       width: 6px;
@@ -2415,6 +2458,11 @@
         </div>
       </header>
 
+      <div class="pedido-topo">
+        <button type="button" id="pedido-topo-btn" class="pedido-topo-btn" hidden>
+          <span id="pedido-topo-texto" class="pedido-topo-texto"></span>
+        </button>
+      </div>
       <div id="chat-box"></div>
 
       <div class="input-area">
@@ -2755,6 +2803,17 @@
         <button id="confirm-reject" class="btn-secondary">Rejeitar</button>
         <button id="confirm-always" class="btn-secondary">Sempre permitir</button>
         <button id="confirm-approve" class="btn-primary">Executar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete-chat-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="delete-chat-title">
+    <div class="confirm-box delete-chat-box">
+      <div class="confirm-title" id="delete-chat-title">Apagar chat?</div>
+      <p class="confirm-sub" id="delete-chat-sub"></p>
+      <div class="confirm-actions">
+        <button id="delete-chat-cancel" class="btn-secondary">Cancelar</button>
+        <button id="delete-chat-confirm" class="btn-danger">Apagar</button>
       </div>
     </div>
   </div>

@@ -199,6 +199,7 @@ async function main() {
     await js("[...document.querySelectorAll('#attachments .attach-chip')].find(c=>c.textContent.includes('foto.webp')).querySelector('.attach-thumb').click()");
     await until("document.querySelector('.shot-viewer img')?.complete && document.querySelector('.shot-viewer img').naturalWidth>0");
     assert.deepEqual(await js("(() => { const i=document.querySelector('.shot-viewer img');return [i.src.startsWith('file:'), i.src.includes('foto.webp'), i.naturalWidth, i.naturalHeight, i.alt]; })()"), [true, true, 64, 48, 'foto.webp']);
+    assert.deepEqual(await js("(() => { const i=document.querySelector('.shot-viewer img');return [i.clientWidth, i.clientHeight]; })()"), [256, 192], 'imagem pequena abre ampliada, até 4x');
     await js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))"); await until("!document.querySelector('.shot-viewer')");
     await js("(() => { const t=[...document.querySelectorAll('#attachments .attach-thumb')].find(i=>i.alt==='foto.webp');t.focus();t.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); })()");
     await until("!!document.querySelector('.shot-viewer')"); await js("document.querySelector('.shot-viewer').click()"); await until("!document.querySelector('.shot-viewer')");

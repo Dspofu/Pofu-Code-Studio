@@ -192,6 +192,51 @@ async function main() {
     await js(`document.querySelector('.chat-item').click()`);
     await typeSlash('');
   });
+  await check('apagar chat pede confirmação no popup; Cancelar, Esc e clique fora mantêm a conversa', async () => {
+    const total = () => js(`document.querySelectorAll('.chat-item').length`);
+    const aberto = () => js(`document.getElementById('delete-chat-modal').classList.contains('active')`);
+    const antes = await total(), id = await js(`document.querySelector('.chat-item:last-child').dataset.chatId`);
+    const pede = () => js(`document.querySelector('[data-chat-id="${id}"] .chat-delete').click()`);
+    assert.equal(await js(`!!document.querySelector('[data-chat-id="${id}"] .chat-delete svg')`), true, 'botão é a lixeira');
+    await pede();
+    assert.equal(await aberto(), true);
+    assert.match(await js(`document.getElementById('delete-chat-sub').textContent`), /será apagado\. Não dá para desfazer\.$/);
+    assert.equal(await js(`document.activeElement.id`), 'delete-chat-cancel');
+    await js(`document.getElementById('delete-chat-cancel').click()`);
+    assert.equal(await aberto(), false); assert.equal(await total(), antes);
+    await pede(); await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+    assert.equal(await aberto(), false); assert.equal(await total(), antes);
+    await pede(); await js(`document.getElementById('delete-chat-modal').click()`);
+    assert.equal(await aberto(), false); assert.equal(await total(), antes);
+    await pede(); await js(`document.getElementById('delete-chat-confirm').click()`);
+    assert.equal(await aberto(), false); assert.equal(await total(), antes - 1);
+    assert.equal(await js(`!!document.querySelector('[data-chat-id="${id}"]')`), false);
+  });
+  await check('pedido do usuário fica no topo ao rolar a resposta e o clique leva até ele', async () => {
+    const espera = ms => js(`new Promise(r => setTimeout(r, ${ms}))`);
+    const barra = () => js(`(() => { const b = document.getElementById('pedido-topo-btn'); return b.hidden ? null : document.getElementById('pedido-topo-texto').textContent; })()`);
+    const ids = await js(`[...document.querySelectorAll('.chat-item')].map(i => i.dataset.chatId)`);
+    const resposta = 'Parágrafo da resposta longa.\\n\\n'.repeat(120);
+    await js(`document.querySelector('[data-chat-id="${ids.at(-1)}"]').click()`);
+    await js(`import('./out/renderer.js').then(m => { m.activeChat().messages = [
+      { role: 'user', content: 'PEDIDO_UM explique o projeto' }, { role: 'assistant', content: '${resposta}' },
+      { role: 'user', content: 'PEDIDO_DOIS agora   corrija o bug' }, { role: 'assistant', content: '${resposta}' }]; })`);
+    await js(`document.querySelector('[data-chat-id="${ids[0]}"]').click()`);
+    await js(`document.querySelector('[data-chat-id="${ids.at(-1)}"]').click()`);
+    await espera(300);
+    assert.equal(await barra(), 'PEDIDO_DOIS agora corrija o bug');
+    await js(`(() => { const b = document.getElementById('chat-box'), um = document.querySelectorAll('.message.user')[0]; b.scrollTop = um.offsetTop + 600; })()`);
+    await espera(200);
+    assert.equal(await barra(), 'PEDIDO_UM explique o projeto');
+    win.showInactive(); // a rolagem suave só anima com a janela visível
+    await js(`document.getElementById('pedido-topo-btn').click()`);
+    await espera(900);
+    win.hide();
+    assert.equal(await barra(), null, 'com o pedido à vista a barra some');
+    assert.equal(await js(`(() => { const b = document.getElementById('chat-box').getBoundingClientRect(), u = document.querySelectorAll('.message.user')[0].getBoundingClientRect(); return u.top >= b.top - 1 && u.top < b.top + 60; })()`), true);
+    await js(`document.querySelector('[data-chat-id="${ids[0]}"]').click()`);
+    assert.equal(await barra(), null, 'trocar de chat esconde a barra');
+  });
   await check('comandos /: menções e botão de comandos preservam o rascunho', async () => {
     await typeSlash('@');
     await js(`new Promise(r=>setTimeout(r,80))`);

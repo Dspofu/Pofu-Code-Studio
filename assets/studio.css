@@ -71,7 +71,7 @@ header { height: 72px; flex-shrink: 0; background: #171c15; border-color: var(--
 .studio-heading small { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted-2); }
 header h2 { background: none; -webkit-text-fill-color: initial; color: var(--text); font-size: 14px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-actions { min-width: 0; gap: 12px; }
-.folder-picker { background: #20271c; border: 1px solid var(--border); border-radius: 8px; }
+.folder-picker { background: #20271c; border: 1px solid var(--border); border-radius: 8px; padding-left: 10px; }
 #selected-path { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #chat-box { padding: 34px max(30px, calc((100% - 900px) / 2)); gap: 22px; scroll-behavior: auto; }
 #chat-box.is-empty { justify-content: center; }
@@ -152,6 +152,9 @@ input[type="range"] { accent-color: var(--accent); }
   .studio-welcome { padding: 10px 0; }
   .welcome-action span { display: none; }
   .welcome-action b { font-size: 12px; }
+}
+@media (max-width: 560px) {
+  .folder-picker { padding-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

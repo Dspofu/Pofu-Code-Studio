@@ -107,7 +107,9 @@ O agente principal recebe os resultados e aplica as alterações. Os subagentes 
 - **Parar** continua acessível quando você escreve outro pedido, sem apagar o rascunho, e libera o turno na hora mesmo com uma ferramenta que não responde. O painel de processos permite acompanhar ou encerrar tarefas em segundo plano.
 - Se a tarefa parar antes do fim — erro, **Parar**, resposta cortada pelo limite de tokens ou pela conexão —, o fim do chat mostra **Continuar de onde parou**. O agente retoma do ponto em que estava, sem você precisar escrever “continue”, e o botão continua lá ao reabrir o app.
 - Use **Últimas mensagens** para voltar ao fim depois de rolar para cima. As quebras de linha aparecem durante a geração.
-- Digite `@` para mencionar um arquivo. Caminhos com espaços usam aspas. O clipe, arrastar e colar adicionam anexos. A miniatura de uma imagem, no compositor ou na mensagem enviada, abre a imagem em tela cheia com clique ou Enter; clique ou Esc fecham.
+- Numa resposta longa, o pedido que a originou fica fixo no topo do chat quando sai da tela; clique nele para voltar até a mensagem.
+- Digite `@` para mencionar um arquivo. Caminhos com espaços usam aspas. O clipe, arrastar e colar adicionam anexos. A miniatura de uma imagem, no compositor ou na mensagem enviada, abre a imagem em tela cheia com clique ou Enter, ampliada até ocupar a tela (no máximo 4x); clique ou Esc fecham.
+- A lixeira ao lado de cada conversa pede confirmação antes de apagá-la, porque não dá para desfazer.
 - Ajuste **Auto/Manual** e **Raciocínio** junto ao compositor. A troca de provedor fica bloqueada durante a geração.
 
 Durante a geração, a troca de chat e projeto fica bloqueada. Ao terminar ou parar, a navegação volta a funcionar. Rascunhos, anexos e mensagens ainda na fila ficam separados por conversa enquanto o app está aberto. Sem modelo configurado, o envio mantém o pedido no compositor.
