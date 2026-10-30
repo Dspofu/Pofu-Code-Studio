@@ -234,6 +234,21 @@ que a ausência dele.
   fim antes do print é o que dispara o `IntersectionObserver` das seções reveladas e as imagens
   lazy. O recorte (`crop_selector`) usa o mesmo caminho, em coordenadas do documento: elemento
   maior que a janela sai inteiro.
+- **Captura de UMA janela** (`capture_screen` com `window`): o print do monitor inteiro trazia o
+  que o usuário estava fazendo, e o programa testado precisava ficar na frente dele. A fonte
+  `window:<HWND>:0` do `desktopCapturer` desenha a janela mesmo coberta e mesmo FORA da tela
+  (medido com um formulário de outro processo: visível, coberto e em x = -4000 saíram iguais);
+  minimizada não tem pixels, por isso é restaurada sem ativar antes. Três armadilhas medidas:
+  (1) a miniatura é AMPLIADA até o `thumbnailSize` pedido (586 px viravam 1600) — pede-se o
+  tamanho real da janela, que vem do retângulo do DWM (`DWMWA_EXTENDED_FRAME_BOUNDS`, sem as
+  bordas invisíveis); (2) o `execute_command` devolve o PID do `cmd.exe`, e a janela é de um
+  filho — a busca por PID sobe a árvore de processos (`Process32`), e um pai que já saiu continua
+  valendo porque o Windows guarda o PID dele; (3) com o usuário em outro programa o
+  `SetForegroundWindow` é recusado, e o clique caía no programa errado — o helper solta um ALT
+  antes de tentar de novo. `offscreen` só move janela de processo do agente (`ownPids`, os PIDs de
+  `procs`): sem isso o agente podia esconder o editor do usuário. O deslocamento fica guardado
+  para `offscreen: false` devolver a janela ao mesmo lugar. A ação numa janela confere no helper
+  que o retângulo não mudou (`Same`), senão o clique cairia no ponto errado.
 - **`capture_page` espera a página ASSENTAR**, não um tempo fixo: os 700 ms de antes fotografavam
   "Loading..." e animação de entrada pela metade — num chat real o agente subiu o `wait_ms` até
   8 s e o dashboard continuou em "loading...". Assentou = nenhuma requisição aberta (rastreada

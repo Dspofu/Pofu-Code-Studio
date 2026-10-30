@@ -202,7 +202,7 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `capture_page` | Renderiza uma página (URL ou arquivo HTML do projeto) numa janela oculta, espera ela terminar de carregar (requisições, "Loading...", animações; até 8 s), captura a imagem e informa erros de console/rede. A página inteira inclui painéis com rolagem interna sem esticar seções de `100vh`, e cada captura começa sem cache. Cada etapa tem prazo: página travada, script que nunca termina ou `alert()` não prendem o agente. |
 | `view_image` | Abre imagens do projeto e envia os pixels ao modelo com visão. |
 | `view_attachment` | Lista as imagens anexadas na conversa e reabre uma delas para o modelo com visão. Só as imagens recentes vão a cada requisição; com ela o agente volta a olhar um anexo antigo sem pedir que você reenvie. |
-| `capture_screen` | Captura um monitor real e informa as dimensões para interação. |
+| `capture_screen` | Captura um monitor real, ou só a janela de um programa (pelo título ou pelo PID), e informa as dimensões para interação. A janela de um programa aberto pelo agente pode rodar fora da tela, sem cobrir o seu trabalho. |
 | `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
 | `web_search` / `fetch_url` | Pesquisa na web, lê as páginas encontradas e extrai o conteúdo. |
 | `ask_user` | Pede uma escolha ou esclarecimento e aguarda sua resposta. |
@@ -213,6 +213,8 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 O envio de imagens reconhece tanto `capabilities` quanto as modalidades de entrada anunciadas pelo endpoint, incluindo `architecture.input_modalities` do llama.cpp. `view_image` abre imagens dentro do projeto e guarda uma cópia da versão observada; os pixels seguem pelo mesmo fluxo dos anexos e prints de páginas. O mesmo vale para a imagem que uma ferramenta MCP devolve (o print da janela de um servidor do Blender, por exemplo): ela aparece no card da ferramenta e, com um modelo de visão, vai ao agente como pixels.
 
 Para interagir com programas do PC, ative **Configurações → Ajustes → Ferramentas → Controle do computador**, com **Enviar prints para o modelo** ligado e um modelo que anuncie visão. A opção começa desligada. `capture_screen` informa os monitores e um `screenshot_id`; o agente usa as coordenadas da imagem para clicar, mover o ponteiro, rolar, digitar texto Unicode ou acionar atalhos. Mouse e teclado estão implementados para **Windows**; a captura depende das permissões de tela do sistema.
+
+Para testar um programa de desktop que ele mesmo criou, o agente captura **só a janela dele**, mesmo atrás de outras janelas, em vez do monitor inteiro. No Windows, com `offscreen`, a janela vai para fora da área visível: o programa continua rodando e sendo capturado, mas não aparece na sua tela. Só a janela de um programa que o agente abriu com `execute_command` pode sair da tela. Lá fora ela não recebe cliques, então o agente a traz de volta antes de interagir. Uma janela minimizada é restaurada antes da captura, porque o Windows não a desenha.
 
 Cada captura autoriza uma ação durante dois minutos. Depois, a ferramenta devolve outra imagem para conferir o resultado. No modo **Manual**, ações de mouse e teclado pedem aprovação; no **Auto**, executam diretamente. Use **Parar** ou **Ctrl+Alt+Esc** para interromper uma ação pendente. O controle do computador alcança programas fora da pasta do projeto.
 

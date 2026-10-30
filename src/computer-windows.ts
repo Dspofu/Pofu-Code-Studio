@@ -11,8 +11,11 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
+public class PofuJanela { public string handle { get; set; } public uint pid { get; set; } public string title { get; set; } public int x { get; set; } public int y { get; set; } public int width { get; set; } public int height { get; set; } public bool minimized { get; set; } }
 public static class PofuInput {
   [StructLayout(LayoutKind.Sequential)] public struct Mouse { public int x, y; public uint data, flags, time; public UIntPtr extra; }
   [StructLayout(LayoutKind.Sequential)] public struct Key { public ushort code, scan; public uint flags, time; public UIntPtr extra; }
@@ -27,6 +30,21 @@ public static class PofuInput {
   [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  [StructLayout(LayoutKind.Sequential)] public struct Rect { public int left, top, right, bottom; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct Processo { public uint size, usage, pid; public IntPtr heap; public uint module, threads, parent; public int priority; public uint flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string exe; }
+  public delegate bool EnumProc(IntPtr window, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc proc, IntPtr data);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out Rect value, int size);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+  [DllImport("kernel32.dll")] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern bool Process32FirstW(IntPtr snapshot, ref Processo entry);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern bool Process32NextW(IntPtr snapshot, ref Processo entry);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   public static void Dpi() { try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (EntryPointNotFoundException) { SetProcessDPIAware(); } }
   public static string Observe() { uint pid; IntPtr w = GetForegroundWindow(); GetWindowThreadProcessId(w, out pid); return w.ToInt64().ToString() + ":" + pid.ToString(); }
   public static void Focus(string handle, uint expectedPid) {
@@ -34,7 +52,46 @@ public static class PofuInput {
     GetWindowThreadProcessId(w, out pid);
     if (!IsWindow(w) || !IsWindowVisible(w) || pid != expectedPid) throw new Exception("The observed window is no longer available. Capture the screen again.");
     if (GetForegroundWindow() != w) { SetForegroundWindow(w); Thread.Sleep(80); }
+    // O Windows só entrega o foco a quem recebeu input por último: com o usuário em outro
+    // programa, a janela capturada pelo título ficava atrás e o clique caía no programa errado.
+    if (GetForegroundWindow() != w) { Send(new Input[] { KeyEvent(18,0,0), KeyEvent(18,0,2) }); SetForegroundWindow(w); Thread.Sleep(80); }
     if (GetForegroundWindow() != w) throw new Exception("Could not focus the observed window. Focus it manually and capture the screen again.");
+  }
+  // Retângulo VISÍVEL (sem as bordas invisíveis de redimensionar): é o que a captura da janela mostra.
+  static Rect Bounds(IntPtr w) { Rect r; if (DwmGetWindowAttribute(w, 9, out r, Marshal.SizeOf(typeof(Rect))) != 0) GetWindowRect(w, out r); return r; }
+  static PofuJanela Info(IntPtr w) {
+    StringBuilder text = new StringBuilder(512); GetWindowText(w, text, 512); uint pid; GetWindowThreadProcessId(w, out pid); Rect r = Bounds(w);
+    return new PofuJanela { handle = w.ToInt64().ToString(), pid = pid, title = text.ToString(), x = r.left, y = r.top, width = r.right - r.left, height = r.bottom - r.top, minimized = IsIconic(w) };
+  }
+  // Janela "cloaked" é a que o DWM não desenha (outra área de trabalho virtual, app UWP suspenso): não sai em captura.
+  public static PofuJanela[] Windows() {
+    List<PofuJanela> lista = new List<PofuJanela>();
+    EnumWindows(delegate (IntPtr w, IntPtr d) {
+      int cloaked;
+      if (!IsWindowVisible(w) || GetWindowTextLength(w) == 0 || (DwmGetWindowAttribute(w, 14, out cloaked, 4) == 0 && cloaked != 0)) return true;
+      lista.Add(Info(w)); return true;
+    }, IntPtr.Zero);
+    return lista.ToArray();
+  }
+  [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr window);
+  public static uint[][] Processes() {
+    List<uint[]> lista = new List<uint[]>(); IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
+    try { Processo p = new Processo(); p.size = (uint)Marshal.SizeOf(typeof(Processo));
+      if (Process32FirstW(snapshot, ref p)) do { lista.Add(new uint[] { p.pid, p.parent }); } while (Process32NextW(snapshot, ref p));
+    } finally { CloseHandle(snapshot); }
+    return lista.ToArray();
+  }
+  // Restaura sem ativar (minimizada não é desenhada, então não sai em captura) e desloca sem mudar o tamanho.
+  public static PofuJanela Place(string handle, bool restore, int dx, int dy) {
+    IntPtr w = new IntPtr(Int64.Parse(handle));
+    if (!IsWindow(w)) throw new Exception("The window is no longer open. Capture the screen again.");
+    if (restore && IsIconic(w)) { ShowWindow(w, 4); Thread.Sleep(200); }
+    if (dx != 0 || dy != 0) { Rect r; GetWindowRect(w, out r); SetWindowPos(w, IntPtr.Zero, r.left + dx, r.top + dy, 0, 0, 0x15); Thread.Sleep(150); }
+    return Info(w);
+  }
+  public static void Same(string handle, int x, int y, int width, int height) {
+    Rect r = Bounds(new IntPtr(Int64.Parse(handle)));
+    if (r.left != x || r.top != y || r.right - r.left != width || r.bottom - r.top != height) throw new Exception("The window moved or was resized. Capture it again.");
   }
   static void Send(Input[] input) {
     if (SendInput((uint)input.Length, input, Marshal.SizeOf(typeof(Input))) != input.Length)
@@ -81,7 +138,17 @@ try {
     @{success=$true; handle=$observed[0]; pid=[uint32]$observed[1]} | ConvertTo-Json -Compress
     exit 0
   }
+  if ($request.action -eq 'windows') {
+    $observed = [PofuInput]::Observe().Split(':')
+    @{success=$true; handle=$observed[0]; pid=[uint32]$observed[1]; windows=@([PofuInput]::Windows()); processes=@([PofuInput]::Processes())} | ConvertTo-Json -Compress -Depth 4
+    exit 0
+  }
+  if ($request.action -eq 'place') {
+    @{success=$true; window=[PofuInput]::Place([string]$request.handle, [bool]$request.restore, [int]$request.dx, [int]$request.dy)} | ConvertTo-Json -Compress -Depth 4
+    exit 0
+  }
   [PofuInput]::Focus([string]$request.target.handle, [uint32]$request.target.pid)
+  if ($null -ne $request.bounds) { [PofuInput]::Same([string]$request.target.handle, [int]$request.bounds.x, [int]$request.bounds.y, [int]$request.bounds.width, [int]$request.bounds.height) }
   if ($null -ne $request.x) { [PofuInput]::Move([int]$request.x, [int]$request.y) }
   switch ($request.action) {
     'move' { }

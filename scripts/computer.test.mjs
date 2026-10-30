@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { DesktopComputer, computerKeys, prepareComputerAction } from '../out/computer.js';
+import { DesktopComputer, chooseWindow, computerKeys, prepareComputerAction } from '../out/computer.js';
 
 const display = { id: 'secondary', label: 'Monitor 2', bounds: { x: -1280, y: 0, width: 1280, height: 720 },
   physicalBounds: { x: -1920, y: 0, width: 1920, height: 1080 }, scaleFactor: 1.5, rotation: 0 };
@@ -122,6 +122,82 @@ test('Parar cancela input em andamento e invalida o ID observado', async () => {
   await new Promise(r => setImmediate(r)); f.computer.cancel();
   assert.equal((await action).success, false);
   assert.equal((await f.computer.action({ action: 'type', text: 'teste', screenshot_id: shot.screenshot_id })).success, false);
+});
+
+const tela = { id: 'p', label: 'Principal', bounds: { x: 0, y: 0, width: 1920, height: 1080 }, physicalBounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1, rotation: 0 };
+const calculadora = { handle: '500', pid: 30, title: 'Minha Calculadora', x: 100, y: 100, width: 800, height: 600, minimized: false };
+const dica = { handle: '501', pid: 30, title: 'Minha Calculadora - dica', x: 120, y: 120, width: 200, height: 80, minimized: false };
+const editor = { handle: '600', pid: 77, title: 'Visual Studio Code', x: 0, y: 0, width: 1920, height: 1040, minimized: false };
+// O cmd.exe (10) abriu o python (30): o PID que o execute_command devolve é o do cmd.
+const arvore = [[10, 5], [30, 10], [77, 4]];
+function comJanelas({ windows, processes = arvore, own = [] }) {
+  const calls = [], pedidos = [], lista = structuredClone(windows);
+  const computer = new DesktopComputer({ platform: 'win32', displays: () => [tela], primaryDisplay: () => 'p', sources: async () => [], ownPids: () => own,
+    windowSources: async size => { pedidos.push(size); return lista.map(w => ({ id: `window:${w.handle}:0`, name: w.title, thumbnail: { isEmpty: () => false, getSize: () => size, toPNG: () => Buffer.from('janela') } })); },
+    save: (bytes, id) => '/shots/' + id + '.png',
+    input: async request => {
+      calls.push(request);
+      if (request.action === 'windows') return { success: true, windows: structuredClone(lista), processes };
+      if (request.action !== 'place') return { success: true };
+      const w = lista.find(j => j.handle === request.handle);
+      if (request.restore && w.minimized) Object.assign(w, w.normal, { minimized: false });
+      w.x += request.dx; w.y += request.dy;
+      return { success: true, window: structuredClone(w) };
+    } });
+  computer.setEnabled(true);
+  return { computer, calls, pedidos, janela: handle => lista.find(w => w.handle === handle) };
+}
+
+test('janela é achada por título, PID do processo pai ou window_id, a maior primeiro', () => {
+  const todas = [dica, editor, calculadora];
+  assert.deepEqual(chooseWindow('calculadora', todas, arvore).map(w => w.handle), ['500', '501']);
+  assert.deepEqual(chooseWindow('Minha Calculadora - Dica', todas, arvore).map(w => w.handle), ['501']);
+  assert.deepEqual(chooseWindow('10', todas, arvore).map(w => w.handle), ['500', '501']);
+  assert.deepEqual(chooseWindow('window:600', todas, arvore).map(w => w.handle), ['600']);
+  assert.deepEqual(chooseWindow('11', todas, arvore), []);
+  assert.deepEqual(chooseWindow('3', [{ ...calculadora, pid: 1 }], [[1, 2], [2, 1]]), [], 'ciclo de PIDs reaproveitados não trava');
+  assert.deepEqual(chooseWindow('x', [{ ...calculadora, title: 'x1', minimized: true }, { ...dica, title: 'x2' }], arvore).map(w => w.handle), ['501', '500']);
+});
+
+test('captura só a janela pedida, no tamanho real, e o clique cai nas coordenadas dela', async () => {
+  const f = comJanelas({ windows: [editor, calculadora] });
+  const shot = await f.computer.capture({ window: 'Calculadora' });
+  assert.equal(shot.window_id, 'window:500'); assert.equal(shot.offscreen, false); assert.equal(shot.input_supported, true);
+  assert.deepEqual(f.pedidos, [{ width: 800, height: 600 }]);
+  assert.equal((await f.computer.action({ action: 'click', x: 0, y: 599, screenshot_id: shot.screenshot_id })).window_id, 'window:500');
+  const clique = f.calls.at(-1);
+  assert.deepEqual([clique.x, clique.y, clique.target, clique.bounds], [100, 699, { handle: '500', pid: 30 }, { x: 100, y: 100, width: 800, height: 600 }]);
+  const grande = comJanelas({ windows: [{ ...calculadora, width: 3200, height: 1800 }] });
+  await grande.computer.capture({ window: 'window:500' });
+  assert.deepEqual(grande.pedidos, [{ width: 1600, height: 900 }]);
+});
+
+test('offscreen tira da tela só programa do agente, devolve ao lugar e recusa clique lá fora', async () => {
+  const f = comJanelas({ windows: [editor, calculadora], own: [10] });
+  assert.match((await f.computer.capture({ window: 'Visual Studio Code', offscreen: true })).error, /only moves windows of programs you started/);
+  assert.ok(!f.calls.some(c => c.action === 'place'));
+  const fora = await f.computer.capture({ window: 'Calculadora', offscreen: true });
+  assert.equal(fora.offscreen, true); assert.equal(fora.input_supported, false); assert.match(fora.note, /bring it back with offscreen: false/);
+  assert.ok(f.janela('500').x + 800 <= 0, JSON.stringify(f.janela('500')));
+  assert.match((await f.computer.action({ action: 'click', x: 5, y: 5, screenshot_id: fora.screenshot_id })).error, /outside the visible screen/);
+  assert.ok(!f.calls.some(c => c.action === 'click'));
+  const volta = await f.computer.capture({ window: 'window:500', offscreen: false });
+  assert.equal(volta.offscreen, false); assert.deepEqual([f.janela('500').x, f.janela('500').y], [100, 100]);
+});
+
+test('janela minimizada é restaurada antes do print, porque minimizada não tem pixels', async () => {
+  const f = comJanelas({ windows: [{ ...calculadora, minimized: true, x: -32000, y: -32000, width: 160, height: 28, normal: { x: 100, y: 100, width: 800, height: 600 } }] });
+  const shot = await f.computer.capture({ window: '30' });
+  assert.match(shot.note, /was minimized/);
+  assert.deepEqual(f.calls.filter(c => c.action === 'place').map(c => [c.restore, c.dx, c.dy]), [[true, 0, 0]]);
+  assert.deepEqual(f.pedidos, [{ width: 800, height: 600 }]);
+});
+
+test('sem janela correspondente o erro lista as abertas; offscreen exige window', async () => {
+  const f = comJanelas({ windows: [editor] });
+  assert.match((await f.computer.capture({ window: 'Calculadora' })).error, /No open window matches "Calculadora"\. Open windows: "Visual Studio Code"/);
+  assert.match((await f.computer.capture({ offscreen: true })).error, /requires window/);
+  assert.ok(f.calls.every(c => c.action === 'windows'));
 });
 
 test('a parte em PowerShell do helper roda no Windows PowerShell 5.1', async () => {

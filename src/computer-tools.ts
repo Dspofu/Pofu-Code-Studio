@@ -20,8 +20,12 @@ export const computerTools = [{
   type: 'function',
   function: {
     name: 'capture_screen',
-    description: 'Captures a real monitor and attaches its image. Returns monitors and a screenshot_id needed for computer_action. Coordinates refer to this image, with (0,0) at its top left.',
-    parameters: { type: 'object', properties: { display_id: { type: 'string', description: 'Monitor ID from an earlier capture, or "primary". Omit for the primary monitor.' } } }
+    description: 'Captures a real monitor, or only one program window, and attaches its image. Returns a screenshot_id needed for computer_action. Coordinates refer to this image, with (0,0) at its top left.',
+    parameters: { type: 'object', properties: {
+      display_id: { type: 'string', description: 'Monitor ID from an earlier capture, or "primary". Omit for the primary monitor.' },
+      window: { type: 'string', description: 'Capture only this program window instead of the monitor, even behind other windows: part of its title, the PID returned by execute_command, or a window_id from an earlier capture.' },
+      offscreen: { type: 'boolean', description: 'With window: true moves a program you started outside the visible screen, so it runs without covering the user\'s work (it still renders, but takes no clicks); false brings it back.' }
+    } }
   }
 }, {
   type: 'function',

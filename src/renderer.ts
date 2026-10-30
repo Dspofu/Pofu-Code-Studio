@@ -1785,7 +1785,9 @@ function summarizeToolCall(name, args) {
     case 'view_image':
     case 'delete_file': return args.filename || '';
     case 'view_attachment': return args.name || (args.index ? `${args.index}ª imagem mais recente` : 'Listar imagens anexadas');
-    case 'capture_screen': return args.display_id ? 'Monitor ' + args.display_id : 'Monitor principal';
+    case 'capture_screen':
+      if (args.window) return 'Janela: ' + args.window + (args.offscreen === true ? '   (fora da tela)' : args.offscreen === false ? '   (de volta à tela)' : '');
+      return args.display_id ? 'Monitor ' + args.display_id : 'Monitor principal';
     case 'computer_action': {
       const labels = { click: 'Clique', double_click: 'Clique duplo', move: 'Mover ponteiro', scroll: 'Rolar', key: 'Atalho', type: 'Digitar' };
       const action = labels[args.action] || args.action;
@@ -1864,6 +1866,12 @@ const ERROS_NA_TELA: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/Computer (?:use|access) is disabled/i, () => '↷ Ative o controle do computador nas configurações.'],
   [/requires a vision model/i, () => '↷ Selecione um modelo com visão e ative o envio de prints.'],
   [/screenshot.*(expired|stale|invalid|not found|already used)|capture_screen.*first/i, () => '↷ A tela precisa ser capturada novamente antes desta ação.'],
+  [/^No open window matches/i, () => '↷ Nenhuma janela aberta com esse nome; o agente vai procurar outra.'],
+  [/^offscreen only moves windows of programs you started/i, () => '⚠ Só a janela de um programa aberto pelo agente pode sair da tela.'],
+  [/point of the window is outside the visible screen/i, () => '↷ A janela está fora da tela; o agente precisa trazê-la de volta antes de clicar.'],
+  [/The window moved or was resized/i, () => '↷ A janela mudou de lugar; o agente vai capturá-la de novo.'],
+  [/The window is no longer open/i, () => '↷ A janela foi fechada.'],
+  [/The window could not be captured/i, () => '⚠ Não foi possível capturar a janela (outra área de trabalho ou programa elevado).'],
   [/only supported on Windows|supported on Windows only/i, () => '↷ O controle de mouse e teclado está disponível no Windows.'],
   [/outside.*workspace|outside.*project|inside the active workspace/i, () => '↷ O arquivo precisa estar dentro do projeto.'],
   [/not a decodable image|did not decode as an image|could not be decoded as an image|Unsupported image format/i, () => '↷ O arquivo não pôde ser aberto como imagem.'],
@@ -2043,7 +2051,9 @@ function summarizeToolResult(name, resultStr) {
       return `✓ Anexo aberto · ${data.name} · ${data.width} × ${data.height}`;
     case 'view_image':
     case 'capture_screen':
-      return data.success ? '✓ ' + (name === 'view_image' ? 'Imagem aberta' : 'Tela capturada') + ' · ' + data.width + ' × ' + data.height : erroParaTela(data.error || resultStr);
+      if (!data.success) return erroParaTela(data.error || resultStr);
+      if (data.window_id) return `✓ Janela capturada · ${data.title} · ${data.width} × ${data.height}` + (data.offscreen ? '\nFora da tela: o programa roda sem cobrir o seu trabalho.' : '');
+      return '✓ ' + (name === 'view_image' ? 'Imagem aberta' : 'Tela capturada') + ' · ' + data.width + ' × ' + data.height;
     case 'computer_action':
       return data.success ? '✓ Ação executada' + (data.observation_error ? '\n⚠ Não foi possível capturar a tela após a ação.' : '') : erroParaTela(data.error || resultStr);
     case 'create_directory': return data.success ? '✓ Pasta criada' : erroParaTela(data.error || resultStr);
@@ -3698,11 +3708,14 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
         if (!action.success) return JSON.stringify(action);
         if (stopRequested) return JSON.stringify({ ...action, note: 'Run stopped after the action. No follow-up screenshot was taken.' });
       }
-      const res = await window.electronAPI.captureScreen({ display_id: action?.display_id ?? args.display_id });
+      // Depois de agir numa janela, o print de conferência é da mesma janela, não do monitor.
+      const res = await window.electronAPI.captureScreen(action
+        ? (action.window_id ? { window: action.window_id } : { display_id: action.display_id })
+        : { display_id: args.display_id, window: args.window, offscreen: args.offscreen });
       if (!res.success) return JSON.stringify(action ? { ...action, observation_error: res.error, note: 'The action ran, but its result has not been visually verified. Capture the screen before the next action.' } : res);
       const { dataUrl, path, ...observation } = res;
       return { text: JSON.stringify({ ...observation, ...(action ? { action: args.action, operation_status: 'completed' } : {}),
-        screenshot: 'The monitor image is attached. Coordinates use these image dimensions. Inspect it before deciding the next action.' }),
+        screenshot: `The ${res.window_id ? 'window' : 'monitor'} image is attached. Coordinates use these image dimensions. Inspect it before deciding the next action.` }),
         image: { path, dataUrl, width: res.width, height: res.height } };
     }
     if (name === 'capture_page') {

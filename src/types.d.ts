@@ -306,7 +306,7 @@ interface ElectronAPI {
   getDiff(snapshotId: string): Promise<any>;
   httpRequest(url: string, opts?: any): Promise<any>;
   capturePage(url: string, opts?: any): Promise<any>;
-  captureScreen(opts?: { display_id?: string }): Promise<any>;
+  captureScreen(opts?: { display_id?: string; window?: string; offscreen?: boolean }): Promise<any>;
   computerAction(args: { action: 'click' | 'double_click' | 'move' | 'scroll' | 'key' | 'type'; screenshot_id: string; x?: number; y?: number; button?: 'left' | 'right' | 'middle'; direction?: 'up' | 'down' | 'left' | 'right'; amount?: number; keys?: string[]; text?: string }): Promise<any>;
   cancelComputer(): Promise<any>;
   onComputerStopped(fn: () => void): () => void;

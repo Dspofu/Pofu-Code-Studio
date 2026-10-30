@@ -1112,6 +1112,10 @@ function getDesktopComputer() {
       }
     })),
     sources: () => desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: COMPUTER_IMAGE_MAX_SIDE, height: COMPUTER_IMAGE_MAX_SIDE }, fetchWindowIcons: false }),
+    windowSources: size => desktopCapturer.getSources({ types: ['window'], thumbnailSize: size, fetchWindowIcons: false }),
+    // Inclui os que já saíram: o "start" do cmd.exe termina na hora, e o Windows guarda o PID
+    // do pai mesmo depois que ele morre — é por ele que a janela do programa é reconhecida.
+    ownPids: () => [...procs.keys()],
     save: (png, id) => { const file = join(shotsDir(), `screen-${id}.png`); writeFileSync(file, png); pruneShots(); return file; },
     input: windowsComputer
   });
