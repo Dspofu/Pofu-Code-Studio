@@ -76,6 +76,15 @@ test('write-file cria, grava snapshot e diff', async () => {
   assert.ok(r.diff.linhas.length > 0);
 });
 
+test('write-file ao sobrescrever diz overwritten, sem created: false', async () => {
+  writeFileSync(join(data, 'sobrescrito.txt'), 'antes\n');
+  const r = await pool.run('write-file', { filePath: join(data, 'sobrescrito.txt'), content: 'depois\n', opts: {} });
+  assert.equal(r.success, true);
+  assert.equal(r.overwritten, true);
+  assert.equal('created' in r, false);
+  assert.equal(readFileSync(join(data, 'sobrescrito.txt'), 'utf-8'), 'depois\n');
+});
+
 test('write-file recusa sobrescrever sem leitura (requireRead)', async () => {
   const r = await pool.run('write-file', { filePath: join(data, 'a.ts'), content: 'x', opts: { requireRead: true } });
   assert.equal(r.success, false);

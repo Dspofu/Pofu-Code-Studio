@@ -444,7 +444,10 @@ function opWriteFile(args) {
   writeFileSync(filePath, content, 'utf-8');
   const lines = String(content).split('\n').length;
   return {
-    success: true, created: !existed, lines, previousLines,
+    // Sobrescrita diz `overwritten`, nunca `created: false`: o modelo leu o false como "não
+    // gravou" em 5 sobrescritas seguidas de um chat real e gastou 7 chamadas relendo,
+    // apagando e recriando um arquivo que já estava certo.
+    success: true, ...(existed ? { overwritten: true } : { created: true }), lines, previousLines,
     bytes: Buffer.byteLength(content, 'utf-8'), mtimeMs: mtimeDe(filePath),
     ...dicaDeReescrita(anterior, String(content)),
     snapshotId: salvaInstantaneo(filePath, anterior, existed, String(content)),

@@ -3582,7 +3582,7 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
       // Um arquivo que já existia e encolheu muito quase sempre veio de uma reescrita
       // feita a partir de leitura parcial. Avisar aqui é o último ponto em que dá
       // para o modelo perceber e restaurar o conteúdo.
-      if (res.success && !res.created && res.previousLines > 20 && res.lines < res.previousLines * 0.5) {
+      if (res.success && res.overwritten && res.previousLines > 20 && res.lines < res.previousLines * 0.5) {
         res.warning = `WARNING: the file had ${res.previousLines} lines and now has ${res.lines}. ` +
           `If you did not mean to remove that much, read the whole file again (read_file with offset) and restore what is missing.`;
       }
