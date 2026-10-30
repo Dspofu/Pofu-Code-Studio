@@ -2022,6 +2022,8 @@ function summarizeToolResult(name, resultStr) {
       if (data.error) return erroParaTela(data.error);
       const partes = [`${data.title || data.titulo || '(sem título)'} · HTTP ${data.status ?? '?'} · ${data.size || data.tamanho || ''}`];
       if ((data.selector_found ?? data.seletor_encontrado) === false) partes.push('⚠ seletor não apareceu');
+      if (data.not_settled) partes.push('⚠ a página ainda carregava ou mudava na hora do print');
+      if (data.horizontal_overflow) partes.push('⚠ o conteúdo passa da largura da tela');
       if (data.script_error || data.erro_no_script) partes.push(`⚠ erro no script: ${data.script_error || data.erro_no_script}`);
       const scriptResult = data.script_result ?? data.resultado_do_script;
       if (scriptResult !== undefined) partes.push(`script → ${typeof scriptResult === 'object' ? JSON.stringify(scriptResult) : scriptResult}`);
@@ -3131,16 +3133,17 @@ const tools = [
     type: 'function',
     function: {
       name: 'capture_page',
-      description: 'Opens a URL in a hidden browser, takes a SCREENSHOT and returns title, visible text, console ' +
+      description: 'Opens a URL in a hidden browser, waits for the page to settle (requests done, no loading ' +
+        'indicator, animations over; up to 8 s), takes a SCREENSHOT and returns title, visible text, console ' +
         'errors and failed requests. Use it to verify pages you built and to catch JS errors that never reach the ' +
         'terminal. The server must be running.',
       parameters: {
         type: 'object',
         properties: {
-          url: { type: 'string' },
+          url: { type: 'string', description: 'http(s) URL, or the path of an HTML file in the project.' },
           width: { type: 'number', description: 'Default 1280.' },
           height: { type: 'number', description: 'Default 800.' },
-          wait_ms: { type: 'number', description: 'Extra wait after load (default 700).' },
+          wait_ms: { type: 'number', description: 'Extra wait after the page settles (default 0).' },
           full_page: { type: 'boolean', description: 'Whole page instead of the first fold — needed to validate a layout.' },
           crop_selector: { type: 'string', description: 'CSS element to crop and send at FULL size. Use it for detail (alignment, spacing, overlap): such defects vanish in the scaled-down full screenshot.' },
           selector: { type: 'string', description: 'Wait for this CSS selector before capturing.' },
@@ -3706,7 +3709,7 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
       const res = await window.electronAPI.capturePage(args.url, {
         width: args.width, height: args.height, waitMs: args.wait_ms,
         selector: args.selector, script: args.script, fullPage: !!args.full_page,
-        cropSelector: args.crop_selector
+        cropSelector: args.crop_selector, workspace
       });
       if (!res.success) {
         // Página que travou: o console, a rede e o texto que ela já mostrava são a pista
@@ -3730,6 +3733,7 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
         console_errors: (res.console || []).filter(c => c.level === 'error').map(c => c.text).slice(0, 15),
         console_warnings: (res.console || []).filter(c => c.level === 'warning').map(c => c.text).slice(0, 5),
         network_failures: (res.netErrors || []).slice(0, 10),
+        ...res.notas,
         visible_text: res.text
       };
       if (args.selector) resumo.selector_found = res.selectorFound;

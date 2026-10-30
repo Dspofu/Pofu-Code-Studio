@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage, safeStorage, desktopCapturer, screen, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, Notification, nativeImage, safeStorage, desktopCapturer, screen, globalShortcut, session } from 'electron';
 import { dirname, join, relative, resolve, isAbsolute } from 'path';
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync, realpathSync, openSync, fstatSync, closeSync, readSync } from 'fs';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +27,7 @@ import { RemoteControl } from './remote-control.js';
 import { baixaInstalador, detectaMetodo, escolheAsset, iniciaInstaladorWindows, instalaPacoteLinux, type AssetRelease } from './updater.js';
 import { DesktopComputer } from './computer.js';
 import { windowsComputer } from './computer-windows.js';
-import { CAPTURE_FRAME_MS, CAPTURE_SCRIPT_MS, CAPTURE_STEP_MS, CAPTURE_TOTAL_MS, COMPUTER_IMAGE_MAX_SIDE } from './constants.js';
+import { CAPTURE_FRAME_MS, CAPTURE_MAX_PAGE_HEIGHT, CAPTURE_QUIET_MS, CAPTURE_SCRIPT_MS, CAPTURE_SETTLE_MS, CAPTURE_STEP_MS, CAPTURE_TOTAL_MS, COMPUTER_IMAGE_MAX_SIDE } from './constants.js';
 import { fileOps, type FileWorkerPool } from './fileworker.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1172,23 +1172,194 @@ function imagemDoResultadoMcp(r) {
   return null;
 }
 
-// Abre a URL oculta, coleta console e rede, roda um script opcional e devolve o PNG.
-// É assim que o agente vê o que construiu, em vez de deduzir pelo código.
+// Rede de cada captura, pelo id do webContents. O webRequest aceita UM ouvinte por evento em
+// cada sessão: registrado a cada captura, como era, duas capturas simultâneas (subagentes)
+// trocavam o ouvinte uma da outra e a primeira perdia o status e as falhas de rede.
+interface RedeDaCaptura {
+  pendentes: Map<number, string>;
+  ultimaAtividade: number;
+  httpStatus: number | null;
+  netErrors: { url: string; error: string }[];
+}
+const redesDeCaptura = new Map<number, RedeDaCaptura>();
+let sessaoCaptura: Electron.Session = null;
+function sessaoDeCaptura() {
+  if (sessaoCaptura) return sessaoCaptura;
+  sessaoCaptura = session.fromPartition('capture-session'); // isolada: não mistura cookies/cache com o app
+  const wr = sessaoCaptura.webRequest;
+  const termina = d => {
+    const rede = redesDeCaptura.get(d.webContentsId);
+    if (rede) { rede.pendentes.delete(d.id); rede.ultimaAtividade = Date.now(); }
+    return rede;
+  };
+  // O WebSocket do HMR (Vite, webpack) e um stream SSE ficam abertos para sempre: contados
+  // como pendentes, nenhuma página de servidor de desenvolvimento assentaria.
+  wr.onSendHeaders(d => {
+    const rede = redesDeCaptura.get(d.webContentsId);
+    if (!rede || d.resourceType === 'webSocket') return;
+    rede.pendentes.set(d.id, d.url);
+    rede.ultimaAtividade = Date.now();
+  });
+  wr.onResponseStarted(d => {
+    const tipo = Object.entries(d.responseHeaders || {}).find(([nome]) => nome.toLowerCase() === 'content-type')?.[1];
+    if (/text\/event-stream/i.test(String(tipo))) termina(d);
+  });
+  wr.onCompleted(d => {
+    const rede = termina(d);
+    if (!rede) return;
+    if (d.resourceType === 'mainFrame' && rede.httpStatus == null) rede.httpStatus = d.statusCode;
+    if (d.statusCode >= 400 && rede.netErrors.length < 30) rede.netErrors.push({ url: String(d.url).slice(0, 200), error: `HTTP ${d.statusCode}` });
+  });
+  wr.onErrorOccurred(termina);
+  return sessaoCaptura;
+}
+
+// Sonda de atividade, chamada a cada 100 ms até a página assentar. O estado mora na própria
+// página, então uma recarga recomeça a contagem. Canvas não gera mutação de DOM: o gráfico
+// (o Chart.js anima por 1 s) é comparado por uma miniatura de 16 px. Animação infinita
+// (spinner) fica de fora, senão página com spinner nunca assentaria — mas um "Loading..."
+// visível segura a captura, porque era exatamente esse o print errado.
+const SONDA_DE_ATIVIDADE = `(() => {
+  let s = window.__pofuCaptura;
+  if (!s) {
+    s = window.__pofuCaptura = { mudou: Date.now(), telas: '', mini: document.createElement('canvas') };
+    s.mini.width = s.mini.height = 16;
+    new MutationObserver(() => { s.mudou = Date.now(); })
+      .observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  }
+  const visivel = el => el.checkVisibility ? el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) : el.getClientRects().length > 0;
+  const ctx = s.mini.getContext('2d', { willReadFrequently: true });
+  const telas = [...document.querySelectorAll('canvas')].filter(visivel).slice(0, 6).map(c => {
+    try { ctx.clearRect(0, 0, 16, 16); ctx.drawImage(c, 0, 0, 16, 16); return ctx.getImageData(0, 0, 16, 16).data.join(','); } catch { return ''; }
+  }).join('|');
+  const animacoes = document.getAnimations().filter(a => a.playState === 'running' && Number.isFinite(a.effect?.getComputedTiming().endTime)).length;
+  if (telas !== s.telas || animacoes || document.fonts?.status === 'loading') { s.telas = telas; s.mudou = Date.now(); }
+  let carregando = [...document.querySelectorAll('[aria-busy="true"]')].some(visivel) ? 'aria-busy' : '';
+  if (!carregando && document.body) {
+    const textos = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n; !carregando && (n = textos.nextNode());) {
+      const t = n.data.trim();
+      if (t.length < 20 && /^(loading|carregando|cargando)\\b/i.test(t) && n.parentElement && visivel(n.parentElement)) carregando = t;
+    }
+  }
+  return { paradaHa: Date.now() - s.mudou, animacoes, carregando };
+})()`;
+
+// Prepara o print de página inteira. Painel com rolagem INTERNA (html/body a 100% e um <main>
+// com overflow:auto) não tem documento para medir, e o print saía só com a primeira dobra: a
+// maior área de rolagem é desenrolada junto com os ancestrais. Depois a página é percorrida
+// até o fim, para o IntersectionObserver revelar as seções e as imagens lazy carregarem.
+const PREPARA_PAGINA_INTEIRA = `(async (teto) => {
+  const espera = ms => new Promise(r => setTimeout(r, ms));
+  const raiz = document.scrollingElement || document.documentElement;
+  let desenrolada = null;
+  if (raiz.scrollHeight <= innerHeight + 2 && document.body) {
+    let alvo = null, area = 0;
+    for (const el of document.body.querySelectorAll('*')) {
+      if (el.scrollHeight <= el.clientHeight + 20 || !/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) continue;
+      if (el.clientWidth * el.clientHeight > area) { area = el.clientWidth * el.clientHeight; alvo = el; }
+    }
+    if (alvo && area >= innerWidth * innerHeight / 4) {
+      const classes = typeof alvo.className === 'string' ? alvo.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2) : [];
+      desenrolada = alvo.tagName.toLowerCase() + (alvo.id ? '#' + alvo.id : '') + classes.map(c => '.' + c).join('');
+      for (let el = alvo; el; el = el.parentElement) {
+        const posicao = getComputedStyle(el).position;
+        el.style.setProperty('overflow', 'visible', 'important');
+        el.style.setProperty('height', 'auto', 'important');
+        el.style.setProperty('max-height', 'none', 'important');
+        // fixed não entra na altura do documento; absolute entra, e no topo fica no mesmo lugar
+        if (posicao === 'fixed') el.style.setProperty('position', 'absolute', 'important');
+        if (posicao === 'fixed' || posicao === 'absolute') el.style.setProperty('bottom', 'auto', 'important');
+      }
+    }
+  }
+  const passo = Math.max(200, Math.floor(innerHeight * 0.8));
+  for (let y = passo; y < Math.min(raiz.scrollHeight, teto); y += passo) {
+    scrollTo({ top: y, behavior: 'instant' });
+    await espera(60);
+  }
+  scrollTo({ top: 0, behavior: 'instant' });
+  return desenrolada;
+})`;
+
+// O print além da janela mantém cada elemento fixed onde ele está na primeira tela: o fundo
+// fixo (gradiente no body::before, canvas de partículas) cobria só os primeiros 800 px e o
+// resto saía branco, como se o fundo estivesse quebrado. O fundo passa a cobrir a página toda
+// e a barra presa embaixo (cookies, navegação) vai para o fim, onde o usuário a veria.
+const FIXOS_NA_PAGINA_INTEIRA = `((altura) => {
+  const fixa = (s, topo, alto) => {
+    s.setProperty('position', 'absolute', 'important');
+    s.setProperty('top', topo + 'px', 'important');
+    s.setProperty('bottom', 'auto', 'important');
+    if (alto) s.setProperty('height', alto + 'px', 'important');
+  };
+  const regras = [];
+  for (const el of [document.documentElement, ...document.querySelectorAll('body, body *')]) {
+    if (getComputedStyle(el).position === 'fixed') {
+      const r = el.getBoundingClientRect();
+      if (r.top <= 1 && r.height >= innerHeight - 1 && r.width >= innerWidth - 1) fixa(el.style, 0, altura);
+      else if (r.top > innerHeight / 2) fixa(el.style, altura - (innerHeight - r.top));
+    }
+    for (const pseudo of ['before', 'after']) {
+      const p = getComputedStyle(el, '::' + pseudo);
+      if (p.position !== 'fixed' || parseFloat(p.height) < innerHeight - 1 || parseFloat(p.width) < innerWidth - 1) continue;
+      el.setAttribute('data-pofu-fundo-' + pseudo, '');
+      regras.push('[data-pofu-fundo-' + pseudo + ']::' + pseudo + '{position:absolute!important;top:0!important;bottom:auto!important;height:' + altura + 'px!important}');
+    }
+  }
+  if (regras.length) document.head.appendChild(Object.assign(document.createElement('style'), { textContent: regras.join('') }));
+})`;
+
+// O print além da janela sai com o canvas 2D EM BRANCO quando ele não está sendo redesenhado:
+// medido com um gráfico desenhado uma vez, o recorte mostrava só a borda. A borda e o fundo
+// da caixa aparecem, então o desenho vai para o fundo dele. WebGL sai certo e fica como está
+// (getContext('2d') devolve null nele); canvas com imagem de outra origem não se lê e também fica.
+const CANVAS_NO_FUNDO = `(() => {
+  for (const c of document.querySelectorAll('canvas')) {
+    if (!c.width || !c.height || !c.getClientRects().length) continue;
+    try {
+      if (!c.getContext('2d')) continue;
+      c.style.setProperty('background-image', 'url(' + c.toDataURL() + ')', 'important');
+    } catch { continue; }
+    c.style.setProperty('background-size', '100% 100%', 'important');
+    c.style.setProperty('background-origin', 'content-box', 'important');
+    c.style.setProperty('background-clip', 'content-box', 'important');
+    c.style.setProperty('background-repeat', 'no-repeat', 'important');
+  }
+})()`;
+
+// O agente passa o caminho do HTML que acabou de escrever tanto quanto uma URL, e o loadURL
+// recusava o relativo ("index.html") com ERR_INVALID_URL.
+function enderecoDaCaptura(alvo: string, workspace?: string) {
+  const texto = String(alvo || '').trim();
+  if (!texto) throw new Error('capture_page requires a url.');
+  if (/^[\w.-]+:\d+(?:[/?#]|$)/.test(texto)) return 'http://' + texto; // "localhost:5173/x"
+  if (/^[a-z][a-z\d+.-]+:/i.test(texto)) return texto; // esquema tem 2+ letras: "C:\" é caminho
+  const [, arquivo, resto] = texto.match(/^([^?#]*)(.*)$/s);
+  const caminho = isAbsolute(arquivo) || !workspace ? arquivo : resolve(workspace, arquivo);
+  if (!existsSync(caminho)) throw new Error(`File not found: ${caminho}. capture_page takes a URL (http://localhost:PORT/...) or the path of an HTML file.`);
+  return pathToFileURL(caminho).href + resto;
+}
+
+// Abre a URL oculta, coleta console e rede, espera a página assentar, roda um script opcional
+// e devolve o PNG. É assim que o agente vê o que construiu, em vez de deduzir pelo código.
 ipcMain.handle('capture-page', async (event, url, opts = {}) => {
   const width = clamp(opts.width || 1280, 320, 2560);
   const height = clamp(opts.height || 800, 240, 2000);
-  const waitMs = clamp(opts.waitMs ?? 700, 0, 20000);
+  const waitMs = clamp(opts.waitMs ?? 0, 0, 20000);
   const prazoScript = prazoDe('POFU_CAPTURE_SCRIPT_MS', CAPTURE_SCRIPT_MS);
   const prazoEtapa = prazoDe('POFU_CAPTURE_STEP_MS', CAPTURE_STEP_MS);
   const prazoQuadro = prazoDe('POFU_CAPTURE_FRAME_MS', CAPTURE_FRAME_MS);
   const prazoTotal = prazoDe('POFU_CAPTURE_TOTAL_MS', CAPTURE_TOTAL_MS);
+  const prazoAssentar = prazoDe('POFU_CAPTURE_SETTLE_MS', CAPTURE_SETTLE_MS);
+  const semQuadro = `The page did not produce a frame to capture within ${prazoQuadro / 1000} s (a script on it is probably stuck).`;
 
   const logs = [];
-  const netErrors = [];
+  const rede: RedeDaCaptura = { pendentes: new Map(), ultimaAtividade: Date.now(), httpStatus: null, netErrors: [] };
   // O que já se leu da página volta mesmo quando o print falha: o texto e o título dizem ao
   // agente onde a página parou.
   const parcial: { title?: string; text?: string } = {};
-  let win: BrowserWindow = null;
+  let win: BrowserWindow = null, idCaptura: number;
   // Página que estourou um prazo está com a thread presa: as leituras seguintes estourariam
   // também, cinco segundos cada, sem trazer nada — e no fim o processo dela é derrubado,
   // porque um laço infinito segue queimando CPU depois de a janela ser destruída.
@@ -1197,6 +1368,12 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
   // Cada etapa que depende da página tem prazo próprio (ver comPrazo); o teto geral pega o
   // que escapar delas, e o finally lá embaixo destrói a janela nos dois casos.
   const captura = async () => {
+    const endereco = enderecoDaCaptura(url, opts.workspace);
+    // O cache da sessão de captura sobrevive entre os prints. Medido com um CSS servido com
+    // max-age: o agente mudava a cor, capturava de novo e recebia a cor antiga — e concluía
+    // que a correção não funcionou. Service worker de PWA faz o mesmo com a página inteira.
+    const ses = sessaoDeCaptura();
+    await Promise.all([ses.clearCache(), ses.clearStorageData({ storages: ['serviceworkers', 'cachestorage'] })]);
     win = new BrowserWindow({
       width, height, show: false, frame: false, skipTaskbar: true,
       webPreferences: {
@@ -1204,7 +1381,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
         offscreen: true,
         nodeIntegration: false, contextIsolation: true, sandbox: true,
         backgroundThrottling: false,
-        partition: 'capture-session', // sessão isolada: não mistura cookies/cache com o app
+        partition: 'capture-session',
         // alert/confirm/prompt da janela invisível viram DIÁLOGOS NATIVOS na tela do usuário,
         // e a página fica parada até alguém clicar (medido: o load de uma página com alert()
         // passou de 6 s esperando). Desligados, alert volta na hora e confirm responde false.
@@ -1212,6 +1389,8 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
       }
     });
     const wc = win.webContents;
+    idCaptura = wc.id;
+    redesDeCaptura.set(idCaptura, rede);
 
     const lePagina = async (codigo: string, padrao) => {
       if (travada) return padrao;
@@ -1224,26 +1403,47 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     wc.on('console-message', (...a) => {
       const d = (a[1] && typeof a[1] === 'object') ? a[1] : { level: a[1], message: a[2], lineNumber: a[3], sourceId: a[4] };
       const lvl = typeof d.level === 'number' ? ['debug', 'info', 'warning', 'error'][d.level] || 'info' : String(d.level || 'info');
+      // Aviso do próprio Electron fora do app empacotado: não é da página e entrava em toda captura.
+      if (/Electron Security Warning/.test(String(d.message))) return;
       if (logs.length < 100) logs.push({ level: lvl, text: String(d.message || '').slice(0, 500), line: d.lineNumber, source: d.sourceId });
     });
     wc.on('did-fail-load', (e, code, desc, failedUrl, isMainFrame) => {
-      if (!isMainFrame && netErrors.length < 30) netErrors.push({ url: failedUrl, error: `${desc} (${code})` });
+      if (!isMainFrame && rede.netErrors.length < 30) rede.netErrors.push({ url: failedUrl, error: `${desc} (${code})` });
     });
 
-    let httpStatus = null;
-    wc.session.webRequest.onCompleted({ urls: ['*://*/*'] }, (details) => {
-      if (details.resourceType === 'mainFrame' && httpStatus == null) httpStatus = details.statusCode;
-      if (details.statusCode >= 400 && netErrors.length < 30) {
-        netErrors.push({ url: String(details.url).slice(0, 200), error: `HTTP ${details.statusCode}` });
+    // Assentou = nenhuma requisição aberta e a página sem mudar há CAPTURE_QUIET_MS, sem
+    // indicador de carregamento na tela. Página que não para estoura o teto uma vez só: as
+    // esperas seguintes da mesma captura (depois do script, da rolagem) ficam curtas.
+    let limiteAssentar = prazoAssentar, naoAssentou: string;
+    const assenta = async () => {
+      const fim = Date.now() + limiteAssentar;
+      let pagina = null;
+      for (;;) {
+        pagina = await lePagina(SONDA_DE_ATIVIDADE, null);
+        if (travada) return;
+        const redeParada = rede.pendentes.size === 0 && Date.now() - rede.ultimaAtividade >= CAPTURE_QUIET_MS;
+        if (pagina && redeParada && pagina.paradaHa >= CAPTURE_QUIET_MS && !pagina.carregando) { naoAssentou = undefined; return; }
+        if (Date.now() >= fim) break;
+        await sleep(100); // sonda que falhou (página navegando) também tenta de novo
       }
-    });
+      pagina ||= {};
+      const motivos = [];
+      if (rede.pendentes.size) motivos.push(`${rede.pendentes.size} request(s) still pending: ${[...rede.pendentes.values()].slice(0, 3).map(u => u.slice(0, 120)).join(', ')}`);
+      else if (Date.now() - rede.ultimaAtividade < CAPTURE_QUIET_MS) motivos.push('network requests kept starting');
+      if (pagina.carregando) motivos.push(`a loading indicator is still on screen ("${pagina.carregando}")`);
+      if (pagina.animacoes) motivos.push(`${pagina.animacoes} animation(s) still running`);
+      else if (pagina.paradaHa < CAPTURE_QUIET_MS) motivos.push('the DOM or a canvas kept changing');
+      naoAssentou = `Captured after waiting ${limiteAssentar / 1000} s, but the page had not settled: ${motivos.join('; ') || 'it kept changing'}. ` +
+        'If this is not the final state, look for the cause in console_errors, network_failures or the server log before capturing again.';
+      limiteAssentar = Math.min(limiteAssentar, 1500);
+    };
 
     // Com limite de tempo: numa página que nunca termina de carregar (anúncio pendurado,
     // websocket aberto) o loadURL fica preso para sempre e o tool call nunca retorna.
     // Estourando o prazo, captura o que já renderizou em vez de falhar.
     let expirouCarga = false;
     await Promise.race([
-      wc.loadURL(url).catch(e => { if (!/ERR_ABORTED/.test(String(e.message || e))) throw e; }),
+      wc.loadURL(endereco).catch(e => { if (!/ERR_ABORTED/.test(String(e.message || e))) throw e; }),
       sleep(clamp(opts.loadTimeoutMs || 20000, 2000, 60000)).then(() => { expirouCarga = true; })
     ]);
     if (expirouCarga && wc.isLoading()) wc.stop();
@@ -1259,6 +1459,7 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
         await sleep(150);
       }
     }
+    await assenta();
     if (waitMs) await sleep(waitMs);
 
     // Script opcional na página: permite interagir (clicar, preencher) antes do print
@@ -1267,7 +1468,6 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
       try {
         const r = await comPrazo(wc.executeJavaScript(`(async () => { ${opts.script} })()`, true), prazoScript, 'prazo-do-script');
         scriptResult = typeof r === 'string' ? r : JSON.stringify(r ?? null);
-        if (waitMs) await sleep(Math.min(waitMs, 800)); // deixa a UI reagir ao script
       } catch (e) {
         const estourou = String(e && e.message) === 'prazo-do-script';
         if (estourou) travada = true;
@@ -1275,72 +1475,89 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
           ? `The script did not finish within ${prazoScript / 1000} s: it is waiting for something that never happens, or stuck in a loop. The page was captured as it is.`
           : String(e && e.message || e).slice(0, 500);
       }
+      await assenta(); // o clique costuma disparar requisição e animação
+    }
+
+    // O print além da janela é feito sem a barra de rolagem, e a página se reorganiza com 15 px
+    // a mais: medido com ela, o recorte perdia a borda direita do elemento. Escondida antes de
+    // medir, medida e print usam a mesma largura.
+    if (opts.fullPage || opts.cropSelector) {
+      await lePagina(`document.documentElement.style.setProperty('scrollbar-width', 'none', 'important')`, null);
+    }
+    let desenrolada = null;
+    if (opts.fullPage) {
+      desenrolada = await lePagina(`${PREPARA_PAGINA_INTEIRA}(${CAPTURE_MAX_PAGE_HEIGHT})`, null);
+      await assenta();
+    }
+
+    // O recorte é feito pelo próprio Chromium, em coordenadas do documento: elemento maior que
+    // a janela sai inteiro. A página inteira é reduzida para caber no orçamento de visão, e
+    // detalhe fino (alinhamento, sobreposição de poucos pixels) some na redução.
+    let clip = null, recorteFalhou = null;
+    if (opts.cropSelector) {
+      const seletor = JSON.stringify(opts.cropSelector);
+      const achou = await lePagina(`(() => { const el = document.querySelector(${seletor}); if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' }); return !!el; })()`, false);
+      if (achou) await assenta();
+      const r = achou && await lePagina(`(() => {
+        const r = document.querySelector(${seletor})?.getBoundingClientRect();
+        return r && { x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height };
+      })()`, null);
+      if (!r || r.width < 1 || r.height < 1) {
+        recorteFalhou = `Element "${opts.cropSelector}" not found (or has no size) — captured the ${opts.fullPage ? 'whole page' : 'visible area'} instead.`;
+      } else {
+        const folga = 8; // uma margem ajuda a julgar alinhamento em relação ao redor
+        const x = Math.max(0, Math.floor(r.x - folga)), y = Math.max(0, Math.floor(r.y - folga));
+        clip = { x, y, width: Math.ceil(r.x + r.width + folga) - x, height: Math.min(CAPTURE_MAX_PAGE_HEIGHT, Math.ceil(r.y + r.height + folga) - y) };
+      }
     }
 
     const title = parcial.title = await lePagina('document.title', '');
     const text = parcial.text = await lePagina(
       '(document.body ? document.body.innerText : "").replace(/\\n{3,}/g, "\\n\\n")', ''
     );
-
-    // Página inteira: sem isto o agente vê só a primeira dobra e conclui que "está tudo
-    // certo" sem nunca ter olhado o rodapé. Aumentar a janela até a altura do documento
-    // também faz o IntersectionObserver disparar em tudo, revelando animações de rolagem
-    // que ficariam invisíveis numa captura só do topo.
-    let alturaTotal = height;
-    if (opts.fullPage) {
-      const medida = await lePagina(
-        'Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)', height
-      );
-      alturaTotal = clamp(medida, height, 6000);
-      if (alturaTotal > height) {
-        win.setSize(width, Math.round(alturaTotal));
-        await sleep(600); // deixa o layout reagir e as animações de entrada rodarem
-      }
+    const medida = await lePagina(`(() => {
+      const r = document.scrollingElement || document.documentElement;
+      return { largura: r.clientWidth, altura: r.scrollHeight, conteudo: r.scrollWidth };
+    })()`, null);
+    const notas: Record<string, string> = {};
+    if (opts.fullPage && !clip && medida) {
+      clip = { x: 0, y: 0, width: medida.largura, height: Math.min(medida.altura, CAPTURE_MAX_PAGE_HEIGHT) };
+      await lePagina(`${FIXOS_NA_PAGINA_INTEIRA}(${medida.altura})`, null);
+      if (desenrolada) notas.full_page_note = `The page scrolls inside ${desenrolada}; that area was expanded so the screenshot shows all of it.`;
+      if (medida.altura > CAPTURE_MAX_PAGE_HEIGHT) notas.full_page_note = `The page is ${medida.altura} px tall; the screenshot stops at ${CAPTURE_MAX_PAGE_HEIGHT} px. Use crop_selector for content further down.`;
     }
-
-    // Recorte de um elemento: a página inteira é reduzida para caber no orçamento de
-    // visão, e detalhe fino (alinhamento, sobreposição de poucos pixels) some na
-    // redução. Capturando só o elemento, ele chega ao modelo em tamanho cheio.
-    let rect = null, recorteFalhou = null;
-    if (opts.cropSelector) {
-      const medida = await lePagina(`(() => {
-        const el = document.querySelector(${JSON.stringify(opts.cropSelector)});
-        if (!el) return null;
-        el.scrollIntoView({ block: 'center' });
-        const r = el.getBoundingClientRect();
-        return { x: r.x, y: r.y, width: r.width, height: r.height };
-      })()`, null);
-      if (!medida || medida.width < 1 || medida.height < 1) {
-        recorteFalhou = `Element "${opts.cropSelector}" not found (or has no size) — captured the whole page instead.`;
-      } else {
-        await sleep(250); // o scrollIntoView precisa assentar antes de medir de novo
-        const r2 = await lePagina(`(() => {
-          const el = document.querySelector(${JSON.stringify(opts.cropSelector)});
-          const r = el.getBoundingClientRect();
-          return { x: r.x, y: r.y, width: r.width, height: r.height };
-        })()`, medida);
-        const folga = 8; // uma margem ajuda a julgar alinhamento em relação ao redor
-        rect = {
-          x: Math.max(0, Math.floor(r2.x - folga)),
-          y: Math.max(0, Math.floor(r2.y - folga)),
-          width: Math.ceil(r2.width + folga * 2),
-          height: Math.ceil(r2.height + folga * 2)
-        };
-      }
+    // Conteúdo além da borda direita não aparece em print nenhum, e é o defeito típico de
+    // layout responsivo (largura 390): o agente precisa saber que ele existe.
+    if (medida && medida.conteudo > medida.largura + 1) {
+      notas.horizontal_overflow = `Content is ${medida.conteudo} px wide in a ${medida.largura} px viewport: the page scrolls sideways and the screenshot shows only the left part.`;
     }
+    if (naoAssentou) notas.not_settled = naoAssentou;
 
-    // Recorta dentro do bitmap para não solicitar pixels fora da superfície capturada.
-    // O invalidate pede um quadro novo ao modo offscreen: sem quadro pintado, o capturePage
-    // pode esperar para sempre.
-    wc.invalidate();
-    let image = await comPrazo(wc.capturePage(), prazoQuadro,
-      `The page did not produce a frame to capture within ${prazoQuadro / 1000} s (a script on it is probably stuck).`);
+    const fotografa = async () => {
+      if (clip) {
+        await lePagina(CANVAS_NO_FUNDO, null);
+        try {
+          if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+          // captureBeyondViewport desenha além da janela SEM mudar a viewport, então 100vh
+          // continua sendo a altura da janela. Antes a janela era esticada até a altura do
+          // documento, e um hero de 100vh esticava junto: o print inteiro era o hero e as seções
+          // de baixo nunca apareciam (medido). O debugger só entra depois da navegação e sem
+          // Page.enable, que numa janela offscreen nunca responde.
+          const r = await comPrazo(wc.debugger.sendCommand('Page.captureScreenshot',
+            { format: 'png', captureBeyondViewport: true, clip: { ...clip, scale: 1 } }), prazoQuadro, semQuadro);
+          return nativeImage.createFromBuffer(Buffer.from(r.data, 'base64'));
+        } catch (e) {
+          if (String(e?.message) === semQuadro) throw e;
+          notas.capture_warning = `The full-size capture failed (${String(e?.message || e).slice(0, 200)}); this screenshot shows only the visible area.`;
+        }
+      }
+      // O invalidate pede um quadro novo ao modo offscreen: sem quadro pintado, o capturePage
+      // pode esperar para sempre.
+      wc.invalidate();
+      return comPrazo(wc.capturePage(), prazoQuadro, semQuadro);
+    };
+    const image = await fotografa();
     if (image.isEmpty()) return { success: false, error: 'The capture came out empty (the page never rendered).' };
-    if (rect) {
-      const size = image.getSize();
-      const x = Math.min(rect.x, size.width - 1), y = Math.min(rect.y, size.height - 1);
-      image = image.crop({ x, y, width: Math.min(rect.width, size.width - x), height: Math.min(rect.height, size.height - y) });
-    }
 
     const file = join(shotsDir(), `shot-${Date.now()}.png`);
     writeFileSync(file, image.toPNG());
@@ -1349,14 +1566,15 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     const size = image.getSize();
     // Recorte vai em tamanho cheio: reduzir a imagem é justamente o que apagava o
     // detalhe que o recorte foi pedido para mostrar.
-    const forModel = (!rect && size.width > SHOT_MODEL_WIDTH) ? image.resize({ width: SHOT_MODEL_WIDTH }) : image;
+    const recortada = clip && opts.cropSelector && !recorteFalhou && !notas.capture_warning;
+    const forModel = (!recortada && size.width > SHOT_MODEL_WIDTH) ? image.resize({ width: SHOT_MODEL_WIDTH }) : image;
 
     return {
-      success: true, url, path: file, title, httpStatus,
+      success: true, url: endereco, path: file, title, httpStatus: rede.httpStatus,
       width: size.width, height: size.height,
       dataUrl: 'data:image/png;base64,' + forModel.toPNG().toString('base64'),
-      console: logs, netErrors, text, selectorFound, scriptResult, scriptError,
-      recorte: rect ? opts.cropSelector : undefined, recorteFalhou: recorteFalhou || undefined
+      console: logs, netErrors: rede.netErrors, text, selectorFound, scriptResult, scriptError, notas,
+      recorte: recortada ? opts.cropSelector : undefined, recorteFalhou: recorteFalhou || undefined
     };
   };
 
@@ -1371,8 +1589,9 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
         : undefined;
     if (/did not (finish|produce)|stopped responding/i.test(msg)) travada = true;
     // O console e a rede que já chegaram são a melhor pista de por que a página travou.
-    return { success: false, url, error: msg, hint, console: logs, netErrors, ...parcial };
+    return { success: false, url, error: msg, hint, console: logs, netErrors: rede.netErrors, ...parcial };
   } finally {
+    redesDeCaptura.delete(idCaptura);
     if (win && !win.isDestroyed()) {
       if (travada) win.webContents.forcefullyCrashRenderer();
       win.destroy();

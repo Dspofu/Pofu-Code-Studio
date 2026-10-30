@@ -1,6 +1,6 @@
 // Exercita o app real com preload, IPC e renderer; perfil e arquivos são isolados.
-const { app, BrowserWindow, Notification } = require('electron');
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, utimesSync } = require('node:fs');
+const { app, BrowserWindow, Notification, nativeImage } = require('electron');
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, utimesSync, unlinkSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { dirname, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -28,6 +28,8 @@ const thinkingBodies = [];
 let agenteRoteiro = null;
 const agenteCorpos = [];
 const pendurados = []; // respostas que o servidor nunca termina (/pendurada)
+let corCss = '#f00';
+const pagina = (res, corpo) => { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end('<!doctype html><html><body>' + corpo + '</body></html>'); };
 const server = createServer((req, res) => {
   providerRequests.push({ url: req.url, authorization: req.headers.authorization });
   if (req.url === '/v1/chat/completions') completions++;
@@ -62,6 +64,15 @@ const server = createServer((req, res) => {
   if (req.url === '/trava-alert') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end('<html><title>Alerta</title><body><h1>Página com alerta</h1><script>alert("ALERTA_FIXTURE")</script></body></html>'); }
   if (req.url === '/trava-laco') { res.setHeader('Content-Type', 'text/html'); return res.end('<html><title>Laço</title><body><h1>Página que trava</h1><script>setTimeout(() => { for (;;) {} }, 30)</script></body></html>'); }
   if (req.url === '/pendurada') { pendurados.push(res); return; }
+  // Prints que saíam errados: dado que chega depois do load, hero de 100vh na página inteira,
+  // painel que rola por dentro, "Loading..." que nunca sai e CSS que o cache reaproveitava.
+  if (req.url === '/assenta') return pagina(res, '<div id="app">Loading...</div><script>fetch("/assenta-dados").then(r => r.text()).then(t => document.getElementById("app").textContent = t)</script>');
+  if (req.url === '/assenta-dados') return setTimeout(() => res.end('DADOS_CHEGARAM'), 900);
+  if (req.url === '/hero') return pagina(res, '<style>body{margin:0}</style><header style="height:100vh;background:#036">HERO</header><section style="height:600px;background:#c00">SECAO</section>');
+  if (req.url === '/painel') return pagina(res, '<style>html,body{height:100%;margin:0;overflow:hidden}</style><main style="height:100%;overflow:auto"><div style="height:2000px">PAINEL</div></main>');
+  if (req.url === '/sem-fim') return pagina(res, '<p>Loading...</p>');
+  if (req.url === '/cache') return pagina(res, '<link rel="stylesheet" href="/cache.css"><div class="c" style="width:200px;height:200px"></div>');
+  if (req.url === '/cache.css') { res.setHeader('Content-Type', 'text/css'); res.setHeader('Cache-Control', 'max-age=3600'); return res.end('.c{background:' + corCss + '}'); }
   res.statusCode = 404; res.end('{}');
 });
 let passed = 0;
@@ -639,6 +650,46 @@ async function main() {
       assert.ok(Date.now() - inicio < 15000, 'demorou ' + (Date.now() - inicio) + 'ms');
       assert.ok(result.ok || /did not produce a frame/.test(result.error), JSON.stringify(result).slice(0, 300));
     } finally { delete process.env.POFU_CAPTURE_STEP_MS; delete process.env.POFU_CAPTURE_FRAME_MS; }
+  });
+  const pixel = (arquivo, x, y) => {
+    const img = nativeImage.createFromPath(arquivo), b = img.toBitmap(), i = (y * img.getSize().width + x) * 4;
+    return [b[i + 2], b[i + 1], b[i]];
+  };
+  await check('capture_page espera a página assentar em vez de fotografar "Loading..."', async () => {
+    const result = data(await tool('capture_page', { url: url + '/assenta' }));
+    assert.match(result.visible_text, /DADOS_CHEGARAM/); assert.equal(result.not_settled, undefined);
+  });
+  await check('capture_page diz o que ainda carregava quando a página não assenta', async () => {
+    process.env.POFU_CAPTURE_SETTLE_MS = '1200';
+    try {
+      const inicio = Date.now();
+      const result = data(await tool('capture_page', { url: url + '/sem-fim' }));
+      assert.match(result.not_settled, /loading indicator is still on screen \("Loading\.\.\."\)/);
+      assert.ok(Date.now() - inicio < 6000, 'demorou ' + (Date.now() - inicio) + 'ms');
+    } finally { delete process.env.POFU_CAPTURE_SETTLE_MS; }
+  });
+  await check('capture_page de página inteira não estica o hero de 100vh', async () => {
+    const result = await tool('capture_page', { url: url + '/hero', full_page: true });
+    assert.deepEqual([result.image.width, result.image.height], [1280, 1400]);
+    assert.deepEqual(pixel(result.image.path, 50, 1000), [204, 0, 0]);
+  });
+  await check('capture_page de página inteira desenrola o painel que rola por dentro', async () => {
+    const result = await tool('capture_page', { url: url + '/painel', full_page: true });
+    assert.equal(result.image.height, 2000); assert.match(data(result).full_page_note, /scrolls inside main/);
+  });
+  await check('capture_page não reaproveita CSS antigo do cache', async () => {
+    corCss = '#f00'; const antes = await tool('capture_page', { url: url + '/cache' });
+    corCss = '#00f'; const depois = await tool('capture_page', { url: url + '/cache' });
+    assert.deepEqual([pixel(antes.image.path, 50, 50), pixel(depois.image.path, 50, 50)], [[255, 0, 0], [0, 0, 255]]);
+  });
+  await check('capture_page abre HTML do projeto pelo caminho e recorta canvas desenhado uma vez', async () => {
+    const arquivo = join(workspace, 'grafico.html');
+    writeFileSync(arquivo, '<canvas width="300" height="150"></canvas><script>const x = document.querySelector("canvas").getContext("2d"); x.fillStyle = "#f00"; x.fillRect(0, 0, 300, 150)</script>');
+    try {
+      const result = await tool('capture_page', { url: 'grafico.html', crop_selector: 'canvas' });
+      assert.match(data(result).url, /^file:.*grafico\.html$/);
+      assert.deepEqual(pixel(result.image.path, 100, 60), [255, 0, 0]); // em branco antes do fundo
+    } finally { unlinkSync(arquivo); }
   });
   await check('ask_user aguarda seleção e devolve a escolha', async () => {
     const pending = tool('ask_user', { question: 'Escolha uma opção de teste', options: ['Primeira', 'Segunda'] });

@@ -214,10 +214,37 @@ que a ausência dele.
   para `userData/screenshots`; no histórico fica só o **caminho** (o base64 mora em `shotCache`,
   em memória) — persistir o base64 inflaria o `app-store.json`. O reenvio ao modelo só acontece
   quando o `/v1/models` anuncia `capabilities: multimodal` (`detectVision`): mandar `image_url`
-  para modelo de texto derruba a requisição inteira. `full_page` aumenta a janela até a altura do
-  documento antes de capturar — sem ele o agente valida só a primeira dobra e declara "tudo
-  certo" sem ter visto o rodapé. Só os `MAX_VISION_IMAGES` prints mais
-  recentes voltam, porque cada imagem custa milhares de tokens de visão.
+  para modelo de texto derruba a requisição inteira. `full_page` existe porque sem ele o agente
+  valida só a primeira dobra e declara "tudo certo" sem ter visto o rodapé. Só os
+  `MAX_VISION_IMAGES` prints mais recentes voltam, porque cada imagem custa milhares de tokens
+  de visão.
+- **Print da página inteira NÃO estica a janela**: era assim, e todo elemento de `100vh` esticava
+  junto — o hero ocupava o print inteiro e as seções de baixo nunca apareciam (medido). Agora o
+  `Page.captureScreenshot` do protocolo de depuração desenha além da janela
+  (`captureBeyondViewport`) sem mudar a viewport; o debugger entra DEPOIS da navegação e sem
+  `Page.enable`, que numa janela offscreen nunca responde. Quatro armadilhas desse modo, todas
+  medidas: (1) ele desenha sem a barra de rolagem, e a página se reorganiza 15 px mais larga —
+  por isso `scrollbar-width: none` vai ANTES de medir, senão o recorte perde a borda direita;
+  (2) canvas 2D que não está sendo redesenhado sai EM BRANCO (gráfico desenhado uma vez,
+  partículas de fundo) — `CANVAS_NO_FUNDO` copia o desenho para o fundo CSS dele, que é pintado;
+  WebGL sai certo; (3) elemento `fixed` fica onde está na primeira tela — `FIXOS_NA_PAGINA_INTEIRA`
+  estica o fundo que cobre a tela e leva a barra de baixo para o fim, senão o resto da página saía
+  branco; (4) painel que rola por DENTRO (html/body a 100%, `main` com `overflow:auto`) não tem
+  documento para medir — a maior área de rolagem é desenrolada com os ancestrais. A rolagem até o
+  fim antes do print é o que dispara o `IntersectionObserver` das seções reveladas e as imagens
+  lazy. O recorte (`crop_selector`) usa o mesmo caminho, em coordenadas do documento: elemento
+  maior que a janela sai inteiro.
+- **`capture_page` espera a página ASSENTAR**, não um tempo fixo: os 700 ms de antes fotografavam
+  "Loading..." e animação de entrada pela metade — num chat real o agente subiu o `wait_ms` até
+  8 s e o dashboard continuou em "loading...". Assentou = nenhuma requisição aberta (rastreada
+  pelo `webRequest`, menos WebSocket e SSE, que ficam abertos para sempre no HMR) e a página sem
+  mudança de DOM, canvas, animação finita ou fonte por `CAPTURE_QUIET_MS`, sem "Loading..." ou
+  `aria-busy` na tela, até `CAPTURE_SETTLE_MS`. Estourou → o print sai assim mesmo e
+  `not_settled` diz o que ainda mudava. O `webRequest` aceita UM ouvinte por evento e por sessão:
+  o ouvinte é registrado uma vez e despacha pelo `webContentsId` — registrar a cada captura
+  fazia capturas simultâneas trocarem o ouvinte uma da outra. Cada captura limpa o cache HTTP e
+  os service workers da sessão: com CSS servido com `max-age`, o agente corrigia a cor e recebia
+  a cor antiga no print seguinte.
 - **HTTP 500 do llama.cpp**: tool call malformado é transitório; existem `MAX_REQUEST_RETRIES`
   e limpeza do histórico. Preserve esse tratamento ao mexer no loop de request.
 - **Novas tentativas** (`RetryPolicy`, `src/retry-policy.ts`): eram 3 com espera fixa de 10 s,

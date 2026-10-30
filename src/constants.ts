@@ -249,6 +249,18 @@ export const CAPTURE_SCRIPT_MS = 20000;
 export const CAPTURE_STEP_MS = 5000;
 export const CAPTURE_FRAME_MS = 15000;
 export const CAPTURE_TOTAL_MS = 120000;
+// Quanto o capture_page espera a página ASSENTAR (rede sem requisição, DOM, canvas e animações
+// parados) antes do print. A espera fixa de 700 ms fotografava "Loading..." e animação de
+// entrada pela metade; num chat real o agente subiu o wait_ms de 2,5 s até 8 s e a página do
+// dashboard continuou saindo em "loading...". Página que nunca para (relógio, carrossel,
+// polling) estoura este teto, e o resultado diz ao agente o que ainda mudava.
+export const CAPTURE_SETTLE_MS = 8000;
+// Tempo sem atividade que conta como "assentou". Conteúdo que entra até meio segundo depois de
+// uma animação terminar ainda é esperado; menos que isso pegava o vão entre etapas da página.
+export const CAPTURE_QUIET_MS = 500;
+// Altura máxima do print de página inteira: além disso a imagem custa visão demais e o modelo
+// ainda a recebe reduzida.
+export const CAPTURE_MAX_PAGE_HEIGHT = 6000;
 
 // Trava de segurança ALTA apenas contra loop verdadeiramente infinito; o controle
 // real é o botão "Parar". Tarefas longas e legítimas rodam sem serem bloqueadas.
