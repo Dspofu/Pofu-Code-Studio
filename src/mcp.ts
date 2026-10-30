@@ -292,10 +292,12 @@ export class McpServidor {
 
 // O que o modelo recebe de um tools/call: texto como está, o resto descrito. Imagem e áudio
 // não vão como base64 no texto — seriam milhares de tokens de lixo para um modelo de texto.
-export function textoDoResultado(r: any) {
+// `anexada` é o índice da imagem que segue à parte como pixels para um modelo com visão.
+export function textoDoResultado(r: any, anexada = -1) {
   const partes: string[] = [];
-  for (const c of r?.content || []) {
+  for (const [i, c] of (r?.content || []).entries()) {
     if (c.type === 'text') partes.push(c.text);
+    else if (i === anexada) partes.push(`[image attached to this result (${c.mimeType || 'unknown type'}): inspect its pixels]`);
     else if (c.type === 'image' || c.type === 'audio') partes.push(`[${c.type}: ${c.mimeType || 'unknown type'}, ${Math.round((c.data || '').length * 0.75 / 1024)} KB — not shown as text]`);
     else if (c.type === 'resource') partes.push(c.resource?.text ?? `[resource: ${c.resource?.uri || '?'}]`);
     else if (c.type === 'resource_link') partes.push(`[resource link: ${c.uri}${c.name ? ' — ' + c.name : ''}]`);

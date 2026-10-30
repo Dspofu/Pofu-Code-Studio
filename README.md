@@ -206,11 +206,11 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
 | `web_search` / `fetch_url` | Pesquisa na web, lê as páginas encontradas e extrai o conteúdo. |
 | `ask_user` | Pede uma escolha ou esclarecimento e aguarda sua resposta. |
-| `mcp__servidor__ferramenta` | Executa ferramentas dos servidores MCP configurados. |
+| `mcp__servidor__ferramenta` | Executa ferramentas dos servidores MCP configurados. Imagens devolvidas por elas aparecem no card e chegam ao modelo com visão. |
 
 ### Imagens e controle do computador
 
-O envio de imagens reconhece tanto `capabilities` quanto as modalidades de entrada anunciadas pelo endpoint, incluindo `architecture.input_modalities` do llama.cpp. `view_image` abre imagens dentro do projeto e guarda uma cópia da versão observada; os pixels seguem pelo mesmo fluxo dos anexos e prints de páginas.
+O envio de imagens reconhece tanto `capabilities` quanto as modalidades de entrada anunciadas pelo endpoint, incluindo `architecture.input_modalities` do llama.cpp. `view_image` abre imagens dentro do projeto e guarda uma cópia da versão observada; os pixels seguem pelo mesmo fluxo dos anexos e prints de páginas. O mesmo vale para a imagem que uma ferramenta MCP devolve (o print da janela de um servidor do Blender, por exemplo): ela aparece no card da ferramenta e, com um modelo de visão, vai ao agente como pixels.
 
 Para interagir com programas do PC, ative **Configurações → Ajustes → Ferramentas → Controle do computador**, com **Enviar prints para o modelo** ligado e um modelo que anuncie visão. A opção começa desligada. `capture_screen` informa os monitores e um `screenshot_id`; o agente usa as coordenadas da imagem para clicar, mover o ponteiro, rolar, digitar texto Unicode ou acionar atalhos. Mouse e teclado estão implementados para **Windows**; a captura depende das permissões de tela do sistema.
 

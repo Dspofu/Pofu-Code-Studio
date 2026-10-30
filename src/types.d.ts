@@ -295,7 +295,7 @@ interface ElectronAPI {
   mcpStatus(): Promise<McpEstado[]>;
   mcpLogin(server: string): Promise<{ success: boolean; error?: string; estado: McpEstado[] }>;
   mcpLogout(server: string): Promise<{ success: boolean; estado: McpEstado[] }>;
-  mcpCall(server: string, tool: string, args: any): Promise<{ success: boolean; isError?: boolean; text?: string; error?: string }>;
+  mcpCall(server: string, tool: string, args: any, opts?: { vision?: boolean }): Promise<{ success: boolean; isError?: boolean; text?: string; error?: string; image?: { path: string; dataUrl: string; width: number; height: number } }>;
   readFile(filePath: string, opts?: any): Promise<any>;
   writeFile(filePath: string, content: string, opts?: any): Promise<any>;
   editFile(filePath: string, oldText: string, newText: string, replaceAll?: boolean, opts?: any): Promise<any>;

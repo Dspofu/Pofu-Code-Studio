@@ -3763,12 +3763,13 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
     }
     const rotaMcp = mcpRota.get(name);
     if (rotaMcp) {
-      const res = await window.electronAPI.mcpCall(rotaMcp.server, rotaMcp.tool, args);
+      const res = await window.electronAPI.mcpCall(rotaMcp.server, rotaMcp.tool, args, { vision: visionEnabled() });
       // isError é a FERRAMENTA dizendo que falhou (o servidor respondeu): o texto explica o
       // quê e vai inteiro ao modelo. Sem success e sem isError é o transporte que caiu.
       if (res.isError) return JSON.stringify({ error: res.text || 'The MCP tool reported an error.' });
       if (!res.success) return JSON.stringify({ error: res.error });
-      return encodeToolResult(res.text ?? '');
+      const texto = encodeToolResult(res.text ?? '');
+      return res.image ? { text: texto, image: res.image } : texto;
     }
     return JSON.stringify({ error: `Unknown tool: ${name}.`, hint: 'Use one of the tools provided in this request.' });
   } catch (err) {

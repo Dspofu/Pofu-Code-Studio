@@ -382,6 +382,12 @@ que a ausência dele.
   modal esperam. `isError` é erro da FERRAMENTA (vai ao modelo com o texto do servidor); sem
   `success` e sem `isError` é o transporte que caiu. Ferramenta MCP não segue o fluxo de
   quatro passos: o schema vem do servidor e o `TOOL_META` é preenchido na hora.
+  Imagem no resultado vira print, pelo mesmo `gravaImagemParaModelo` do `view_image`: a
+  primeira que decodifica vai para `screenshots/`, aparece no card e volta como pixels com
+  visão. Antes ela virava só "[image … not shown as text]", e o agente de um servidor do
+  Blender modelava às cegas, salvando render em disco para abrir com `view_image`. O texto só
+  a anuncia como anexada quando o renderer manda `vision: true`; sem visão a descrição antiga
+  fica, para o modelo não procurar pixels que não vai receber.
 - **Processos longos**: comandos que passam de `cmdTimeout` viram background e retornam PID,
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava

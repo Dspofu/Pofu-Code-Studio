@@ -682,12 +682,16 @@ ipcMain.handle('mcp-logout', async (event, nome: string) => {
   getMcpOAuth().sair(e.url); await e.srv.conectar();
   return { success: true, estado: estadoMcp() };
 });
-ipcMain.handle('mcp-call', async (event, server, tool, args) => {
+// A imagem é gravada mesmo sem visão, como o print do capture_page: o usuário a vê no card.
+// Só o texto muda com `vision`, para não dizer ao modelo que há pixels que ele não vai receber.
+ipcMain.handle('mcp-call', async (event, server, tool, args, opts: { vision?: boolean } = {}) => {
   const e = mcp.get(server);
   if (!e) return { success: false, error: `Unknown MCP server: ${server}` };
   try {
     const r = await e.srv.chamar(tool, args);
-    return { success: !r?.isError, isError: !!r?.isError, text: textoDoResultado(r) };
+    if (r?.isError) return { success: false, isError: true, text: textoDoResultado(r) };
+    const anexo = imagemDoResultadoMcp(r);
+    return { success: true, isError: false, text: textoDoResultado(r, anexo && opts?.vision ? anexo.indice : -1), ...(anexo ? { image: anexo.image } : {}) };
   } catch (err) {
     return { success: false, error: String(err && err.message || err) };
   }
@@ -1137,17 +1141,36 @@ ipcMain.handle('view-image', (event, filePath, opts) => {
     let offset = 0;
     while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) break; offset += count; }
     if (offset !== bytes.length) throw new Error('The image changed while being read. Retry view_image.');
-    if (!tipoDaImagem(bytes)) throw new Error('Unsupported image format. Use PNG, JPEG, GIF, BMP or WebP.');
-    let image = nativeImage.createFromBuffer(bytes);
-    if (image.isEmpty()) throw new Error('The file could not be decoded as an image.');
-    const size = image.getSize(), scale = Math.min(1, COMPUTER_IMAGE_MAX_SIDE / Math.max(size.width, size.height));
-    if (scale < 1) image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) });
-    const png = image.toPNG(), path = join(shotsDir(), `image-${randomUUID()}.png`);
-    writeFileSync(path, png); pruneShots();
-    return { success: true, path, dataUrl: 'data:image/png;base64,' + png.toString('base64'), ...image.getSize(), original_width: size.width, original_height: size.height };
+    return { success: true, ...gravaImagemParaModelo(bytes, 'image') };
   } catch (error) { return { success: false, error: String(error?.message || error) }; }
   finally { if (fd !== undefined) closeSync(fd); }
 });
+
+// Imagem que chega de fora (arquivo do projeto, resultado de ferramenta MCP) vira o PNG que
+// segue como pixels: gravado em screenshots/, de onde o hydrateShots relê ao reabrir o chat.
+function gravaImagemParaModelo(bytes: Buffer, prefixo: string) {
+  if (!tipoDaImagem(bytes)) throw new Error('Unsupported image format. Use PNG, JPEG, GIF, BMP or WebP.');
+  let image = nativeImage.createFromBuffer(bytes);
+  if (image.isEmpty()) throw new Error('The file could not be decoded as an image.');
+  const size = image.getSize(), scale = Math.min(1, COMPUTER_IMAGE_MAX_SIDE / Math.max(size.width, size.height));
+  if (scale < 1) image = image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) });
+  const png = image.toPNG(), path = join(shotsDir(), `${prefixo}-${randomUUID()}.png`);
+  writeFileSync(path, png); pruneShots();
+  return { path, dataUrl: 'data:image/png;base64,' + png.toString('base64'), ...image.getSize(), original_width: size.width, original_height: size.height };
+}
+
+// O histórico guarda uma imagem por resultado de ferramenta, então só a primeira que decodifica
+// vira print; as outras seguem descritas no texto.
+function imagemDoResultadoMcp(r) {
+  for (const [indice, c] of (r?.content || []).entries()) {
+    if (c?.type !== 'image' || typeof c.data !== 'string') continue;
+    try {
+      const { path, dataUrl, width, height } = gravaImagemParaModelo(Buffer.from(c.data, 'base64'), 'mcp');
+      return { indice, image: { path, dataUrl, width, height } };
+    } catch { /* não decodifica: fica só descrita, como antes */ }
+  }
+  return null;
+}
 
 // Abre a URL oculta, coleta console e rede, roda um script opcional e devolve o PNG.
 // É assim que o agente vê o que construiu, em vez de deduzir pelo código.

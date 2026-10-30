@@ -2,7 +2,7 @@
 const { app, BrowserWindow, Notification } = require('electron');
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, utimesSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join, resolve } = require('node:path');
+const { dirname, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createServer } = require('node:http');
 const assert = require('node:assert/strict');
@@ -472,12 +472,22 @@ async function main() {
     const esperaMcp = (condicao, erro) => js(`new Promise((resolve, reject) => { let n = 0; const poll = () => import('./out/renderer.js').then(m => { const nomes = m.activeTools().map(t => t.function.name); (${condicao}) ? resolve(true) : ++n > 300 ? reject(new Error(${JSON.stringify(erro)} + ': ' + document.getElementById('mcp-status').innerText)) : setTimeout(poll, 50); }); poll(); })`);
     await salvaMcp(JSON.stringify({ mcpServers: { fake: { command: 'node', args: [resolve('scripts/fixtures/mcp-fake.mjs')] } } }, null, 2));
     await esperaMcp(`nomes.includes('mcp__fake__somar')`, 'MCP did not connect');
-    assert.deepEqual(await mcpNomes(), ['mcp__fake__somar', 'mcp__fake__anotar', 'mcp__fake__falhar']);
+    assert.deepEqual(await mcpNomes(), ['mcp__fake__somar', 'mcp__fake__anotar', 'mcp__fake__falhar', 'mcp__fake__print']);
     assert.equal(await tool('mcp__fake__somar', { a: 2, b: 3 }), '5');
     assert.match(data(await tool('mcp__fake__falhar', {})).error, /falha proposital/);
+    const print = await tool('mcp__fake__print', {});
+    assert.equal(typeof print, 'object', 'imagem do MCP volta como print, não só texto');
+    assert.match(print.text, /^tela\n\[image/);
+    assert.equal(dirname(print.image.path), join(profile, 'screenshots'));
+    assert.equal(readFileSync(print.image.path).subarray(1, 4).toString('ascii'), 'PNG');
+    assert.match(print.image.dataUrl, /^data:image\/png;base64,/);
+    assert.deepEqual([print.image.width, print.image.height], [1, 1]);
+    const quebrada = await tool('mcp__fake__print', { quebrada: true });
+    assert.equal(typeof quebrada, 'string', 'imagem que não decodifica fica só descrita');
+    assert.match(quebrada, /^tela\n\[image: image\/png, 0 KB — not shown as text\]$/);
     const schema = await js(`import('./out/renderer.js').then(m => m.activeTools().find(t => t.function.name === 'mcp__fake__somar').function.parameters)`);
     assert.equal(schema.$schema, undefined); assert.deepEqual(schema.required, ['a', 'b']);
-    assert.match(await js(`document.getElementById('mcp-status').innerText`), /● fake — 3 ferramenta\(s\), ~\d+ tokens por mensagem/);
+    assert.match(await js(`document.getElementById('mcp-status').innerText`), /● fake — 4 ferramenta\(s\), ~\d+ tokens por mensagem/);
     if (captures) { await js(`document.getElementById('btn-open-settings').click(); document.querySelector('[data-tab="tab-personalizacao"]').click(); document.getElementById('input-mcp').scrollIntoView()`); await capture('studio-mcp.png'); await js(`document.getElementById('btn-save-settings').click()`); }
     await salvaMcp('{ quebrado');
     assert.match(await js(`document.getElementById('settings-dirty').innerText`), /MCP: o JSON não é válido/);

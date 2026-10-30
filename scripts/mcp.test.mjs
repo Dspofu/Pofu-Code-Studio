@@ -11,7 +11,7 @@ test('stdio: conecta, pagina a lista, chama e separa erro da ferramenta', async 
   const s = new McpServidor('fake', { command: process.execPath, args: [fake] }, '1.0.0', matar);
   await s.conectar();
   assert.equal(s.estado, 'ok', s.erro);
-  assert.deepEqual(s.ferramentas.map(f => f.name), ['somar', 'anotar', 'falhar']);
+  assert.deepEqual(s.ferramentas.map(f => f.name), ['somar', 'anotar', 'falhar', 'print']);
   assert.equal(textoDoResultado(await s.chamar('somar', { a: 2, b: 3 })), '5');
   const falha = await s.chamar('falhar', {});
   assert.equal(falha.isError, true); assert.equal(textoDoResultado(falha), 'falha proposital');
@@ -70,6 +70,12 @@ test('resultado: texto como está, binário descrito, estrutura como JSON', () =
   assert.equal(textoDoResultado({ content: [{ type: 'resource', resource: { uri: 'file:///x', text: 'conteúdo' } }, { type: 'resource_link', uri: 'file:///y', name: 'y' }] }),
     'conteúdo\n[resource link: file:///y — y]');
   assert.equal(textoDoResultado({ content: [], structuredContent: { ok: 1 } }), '{"ok":1}');
+});
+
+test('resultado: a imagem que segue como pixels é anunciada, as outras continuam descritas', () => {
+  const r = { content: [{ type: 'text', text: 'a' }, { type: 'image', mimeType: 'image/png', data: 'x'.repeat(4096) }, { type: 'image', mimeType: 'image/jpeg', data: 'y'.repeat(2048) }] };
+  assert.equal(textoDoResultado(r, 1),
+    'a\n[image attached to this result (image/png): inspect its pixels]\n[image: image/jpeg, 2 KB — not shown as text]');
 });
 
 test('Streamable HTTP entrega SSE fragmentado sem esperar o servidor fechar a conexão', async t => {
