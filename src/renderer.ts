@@ -4592,8 +4592,18 @@ async function agentTurns(chat) {
 
     // Elementos de streaming (criados sob demanda quando o primeiro token chega)
     let liveBody = null, liveReason = null;
-    let escritorBody = null, escritorReason = null;
+    let escritorBody = null, escritorReason = null, raciocinioFechado = false;
     let cardsVivos = [];  // índice do tool_call -> card mostrando os argumentos chegarem
+    // Fecha no PRIMEIRO token de resposta ou de ferramenta, não no fim do stream: esperar o
+    // fim deixava "pensando…" aberto enquanto a resposta inteira (ou um write_file grande) chegava.
+    const fechaRaciocinio = () => {
+      if (!liveReason || raciocinioFechado) return;
+      raciocinioFechado = true;
+      escritorReason.encerra();
+      const { details, summary } = liveReason;
+      summary.innerText = 'Raciocínio do modelo';
+      setTimeout(() => details.open = false, 500);
+    };
     const limpaCardsVivos = () => {
       for (const c of cardsVivos) if (c) c.remove();
       cardsVivos = [];
@@ -4609,6 +4619,7 @@ async function agentTurns(chat) {
     };
     const onContent = (delta) => {
       hideTyping();
+      fechaRaciocinio();
       setAppTitle('gerando resposta…');
       if (!liveBody) {
         liveBody = createLiveAgentBody();
@@ -4621,6 +4632,7 @@ async function agentTurns(chat) {
     // write_file grande são dezenas de segundos que parecem travamento.
     const onToolCall = (i, nome, argsBrutos) => {
       hideTyping();
+      fechaRaciocinio();
       if (!cardsVivos[i]) cardsVivos[i] = criaCardFerramentaViva();
       cardsVivos[i].atualiza(nome, argsBrutos);
       const titulo = cardsVivos[i].tituloApp();
@@ -4635,7 +4647,7 @@ async function agentTurns(chat) {
     // Joga fora o que a tentativa perdida já tinha desenhado (texto, raciocínio e cards de
     // ferramenta) — sem isso o parcial da falha fica na tela junto com o da tentativa boa.
     const descartaParcial = () => {
-      if (liveReason) { escritorReason.descarta(); liveReason.details.remove(); liveReason = null; escritorReason = null; }
+      if (liveReason) { escritorReason.descarta(); liveReason.details.remove(); liveReason = null; escritorReason = null; raciocinioFechado = false; }
       if (liveBody) { escritorBody.descarta(); liveBody.parentElement.remove(); liveBody = null; escritorBody = null; }
       limpaCardsVivos();
     };
@@ -4782,8 +4794,7 @@ async function agentTurns(chat) {
       logSystem('A conexão fechou antes do fim da resposta (sem o sinal de término do servidor): o texto pode estar incompleto.');
     }
 
-    // Recolhe o bloco de raciocínio ao terminar
-    if (liveReason) { liveReason.summary.innerText = 'Raciocínio do modelo'; setTimeout(() => liveReason.details.open = false, 500) }
+    fechaRaciocinio();
 
     // Se foi interrompido, NÃO guarda tool_calls (ficariam órfãos, sem resposta → erro no próximo turno)
     const hasContent = !!(message.content && message.content.trim());
