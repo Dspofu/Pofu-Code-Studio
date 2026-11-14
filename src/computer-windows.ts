@@ -7,15 +7,13 @@ import { COMPUTER_INPUT_TIMEOUT_MS } from './constants.js';
 // O programa é fixo; texto e teclas atravessam stdin como JSON, nunca como PowerShell.
 export const WINDOWS_COMPUTER_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-public class PofuJanela { public string handle { get; set; } public uint pid { get; set; } public string title { get; set; } public int x { get; set; } public int y { get; set; } public int width { get; set; } public int height { get; set; } public bool minimized { get; set; } }
+public class PofuJanela { public string handle { get; set; } public uint pid { get; set; } public string title { get; set; } public int x { get; set; } public int y { get; set; } public int width { get; set; } public int height { get; set; } public bool minimized { get; set; } public int[] frame { get; set; } public int[] inset { get; set; } }
 public static class PofuInput {
   [StructLayout(LayoutKind.Sequential)] public struct Mouse { public int x, y; public uint data, flags, time; public UIntPtr extra; }
   [StructLayout(LayoutKind.Sequential)] public struct Key { public ushort code, scan; public uint flags, time; public UIntPtr extra; }
@@ -57,11 +55,26 @@ public static class PofuInput {
     if (GetForegroundWindow() != w) { Send(new Input[] { KeyEvent(18,0,0), KeyEvent(18,0,2) }); SetForegroundWindow(w); Thread.Sleep(80); }
     if (GetForegroundWindow() != w) throw new Exception("Could not focus the observed window. Focus it manually and capture the screen again.");
   }
-  // Retângulo VISÍVEL (sem as bordas invisíveis de redimensionar): é o que a captura da janela mostra.
-  static Rect Bounds(IntPtr w) { Rect r; if (DwmGetWindowAttribute(w, 9, out r, Marshal.SizeOf(typeof(Rect))) != 0) GetWindowRect(w, out r); return r; }
+  [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr window);
+  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr window, int index);
+  [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+  [StructLayout(LayoutKind.Sequential)] public struct Monitor { public uint size; public Rect area, work; public uint flags; }
+  [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref Monitor info);
+  // Retângulo VISÍVEL (sem as bordas invisíveis de redimensionar). A janela maximizada passa uns
+  // 8 px de cada lado da tela, e essa sobra não é desenhada: fica só o que cabe no monitor.
+  static Rect Bounds(IntPtr w) {
+    Rect r; if (DwmGetWindowAttribute(w, 9, out r, Marshal.SizeOf(typeof(Rect))) != 0) GetWindowRect(w, out r);
+    Monitor m = new Monitor(); m.size = (uint)Marshal.SizeOf(typeof(Monitor));
+    if (IsZoomed(w) && GetMonitorInfo(MonitorFromWindow(w, 2), ref m)) { r.left = Math.Max(r.left, m.work.left); r.top = Math.Max(r.top, m.work.top); r.right = Math.Min(r.right, m.work.right); r.bottom = Math.Min(r.bottom, m.work.bottom); }
+    return r;
+  }
   static PofuJanela Info(IntPtr w) {
     StringBuilder text = new StringBuilder(512); GetWindowText(w, text, 512); uint pid; GetWindowThreadProcessId(w, out pid); Rect r = Bounds(w);
-    return new PofuJanela { handle = w.ToInt64().ToString(), pid = pid, title = text.ToString(), x = r.left, y = r.top, width = r.right - r.left, height = r.bottom - r.top, minimized = IsIconic(w) };
+    Rect f; GetWindowRect(w, out f);
+    // O capturador do Chromium tira da janela redimensionável a borda de redimensionar dos lados
+    // e embaixo, e 1 px em cima; a de tamanho fixo vem inteira (conferido com régua nas duas).
+    bool thick = (GetWindowLong(w, -16) & 0x40000) != 0;
+    return new PofuJanela { inset = new int[] { thick ? GetSystemMetrics(32) : 0, thick ? GetSystemMetrics(6) : 0 }, handle = w.ToInt64().ToString(), pid = pid, title = text.ToString(), x = r.left, y = r.top, width = r.right - r.left, height = r.bottom - r.top, minimized = IsIconic(w), frame = new int[] { f.left, f.top, f.right - f.left, f.bottom - f.top } };
   }
   // Janela "cloaked" é a que o DWM não desenha (outra área de trabalho virtual, app UWP suspenso): não sai em captura.
   public static PofuJanela[] Windows() {
@@ -163,12 +176,20 @@ try {
 } catch { @{success=$false; error=$_.Exception.Message} | ConvertTo-Json -Compress; exit 1 }
 `;
 
+// O programa entra pelo stdin, e não pela linha de comando: em -EncodedCommand ele já ocupava
+// 31,6 mil dos 32.767 caracteres que o Windows aceita, e a função seguinte que entrou fez todo
+// spawn falhar com ENAMETOOLONG. A codificação é definida AQUI, antes da primeira leitura:
+// trocar o InputEncoding depois recria o leitor e joga fora o que ele já tinha lido do pedido.
+const WINDOWS_COMPUTER_BOOT = "[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false); " +
+  "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); " +
+  "Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadLine())))";
+
 export function windowsComputer(request: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
   if (process.platform !== 'win32') return Promise.reject(new Error('Computer input is currently supported on Windows only.'));
   if (signal?.aborted) return Promise.reject(new Error('Computer action cancelled.'));
   return new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
-      Buffer.from(WINDOWS_COMPUTER_SCRIPT, 'utf16le').toString('base64')], { windowsHide: true, detached: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      Buffer.from(WINDOWS_COMPUTER_BOOT, 'utf16le').toString('base64')], { windowsHide: true, detached: false, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '', errors = '', settled = false;
     const finish = (error?: Error, value?: any) => {
       if (settled) return;
@@ -186,7 +207,7 @@ export function windowsComputer(request: Record<string, unknown>, signal?: Abort
       try { const result = JSON.parse(output.replace(/^\uFEFF/, '').trim()); finish(result.success ? undefined : new Error(result.error || 'Windows input failed.'), result); }
       catch { finish(new Error(errors ? 'Windows input helper failed to initialize.' : 'Windows input helper returned no result.')); }
     });
-    child.stdin.end(JSON.stringify(request), 'utf8');
+    child.stdin.end(Buffer.from(WINDOWS_COMPUTER_SCRIPT, 'utf8').toString('base64') + '\n' + JSON.stringify(request), 'utf8');
     if (signal?.aborted) abort();
   });
 }

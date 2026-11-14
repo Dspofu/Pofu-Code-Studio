@@ -231,6 +231,26 @@ test('limite de turnos encerra ciclos com resultado parcial e não depende da tr
   assert.match(result.agents[0].error, /turn limit reached \(2\)/);
 });
 
+test('no limite de turnos o subagente escreve o relatório do que achou em vez de perder tudo', async () => {
+  const pedidos = [];
+  const result = await runSubagents(tasks, {
+    tools: [tool('read_file')], execute: noop,
+    complete: async ({ messages, tools }) => {
+      pedidos.push({ ultima: messages.at(-1), tools: tools.length });
+      return /used all your turns/.test(messages.at(-1).content || '')
+        ? { message: { content: 'RELATORIO: função em src/a.ts:10; não cheguei a ler b.ts.' } }
+        : { message: { content: 'Vou conferir:', tool_calls: [call('read_file', { filename: String(pedidos.length) })] } };
+    }
+  }, { maxTurns: 2 });
+  assert.equal(result.success, true);
+  assert.equal(result.agents[0].status, 'completed');
+  assert.match(result.agents[0].result, /^RELATORIO/);
+  assert.match(result.agents[0].note, /Turn limit reached \(2\).*incomplete/);
+  assert.equal(pedidos.length, 3);
+  assert.equal(pedidos[2].ultima.role, 'user');
+  assert.equal(pedidos[2].tools, 1); // as ferramentas seguem no payload: o prefixo em cache não muda
+});
+
 test('resposta com ferramentas demais ou lista malformada não dispara o executor', async () => {
   for (const toolCalls of [Array.from({ length: 13 }, () => call('read_file')), {}]) {
     let executions = 0;

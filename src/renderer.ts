@@ -3572,7 +3572,23 @@ function localToolScope(): ToolExecutionScope {
     readFiles: arquivosLidos, deliveredReads: leiturasEntregues, budget: toolBudget() };
 }
 
+// O modelo manda booleano e número como TEXTO ("full_page": "True", visto no Qwen em execução
+// real): "True" passava por sorte e "False" era lido como verdadeiro. O schema da ferramenta diz
+// o tipo; o que não converte fica como veio, para a validação de cada ferramenta acusar.
+function ajustaTipos(name: string, args: any) {
+  const props = tools.find(t => t.function?.name === name)?.function?.parameters?.properties;
+  if (!props || !args || typeof args !== 'object') return args;
+  for (const [chave, valor] of Object.entries(args)) {
+    if (typeof valor !== 'string') continue;
+    const tipo = props[chave]?.type, texto = valor.trim();
+    if (tipo === 'boolean' && /^(true|false)$/i.test(texto)) args[chave] = texto.toLowerCase() === 'true';
+    else if (tipo === 'number' && texto !== '' && Number.isFinite(Number(texto))) args[chave] = Number(texto);
+  }
+  return args;
+}
+
 async function runTool(name, args, workspace, toolCallId = '', execution?: ToolExecutionScope) {
+  args = ajustaTipos(name, args);
   const scope = execution || localToolScope();
   const resultStore = scope.store;
   const arquivosLidos = scope.readFiles;
@@ -3611,7 +3627,10 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
         const tree = await window.electronAPI.listTree(dir);
         return encodeToolResult(formatTree(tree.files, { capped: tree.capped, pattern: args.pattern }));
       }
-      return encodeToolResult(formatListing(await window.electronAPI.listFiles(dir), args.pattern));
+      const entradas = await window.electronAPI.listFiles(dir);
+      // Pasta que não existe volta como { success: false, error }, e não como lista.
+      if (!Array.isArray(entradas)) return JSON.stringify({ error: entradas?.error || `Could not list ${args.subpath || '.'}.`, hint: 'Check the path with list_files on the parent folder.' });
+      return encodeToolResult(formatListing(entradas, args.pattern));
     }
     if (name === 'read_file') {
       const budget = toolBudget();

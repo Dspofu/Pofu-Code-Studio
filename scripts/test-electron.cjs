@@ -71,6 +71,12 @@ const server = createServer((req, res) => {
   if (req.url === '/hero') return pagina(res, '<style>body{margin:0}</style><header style="height:100vh;background:#036">HERO</header><section style="height:600px;background:#c00">SECAO</section>');
   if (req.url === '/painel') return pagina(res, '<style>html,body{height:100%;margin:0;overflow:hidden}</style><main style="height:100%;overflow:auto"><div style="height:2000px">PAINEL</div></main>');
   if (req.url === '/sem-fim') return pagina(res, '<p>Loading...</p>');
+  // Recortes que saíam errados: elemento mais alto que o log com rolagem própria (o cabeçalho
+  // vinha por cima), barra fixa sobre elemento maior que a janela e lateral fixa na página inteira.
+  if (req.url === '/chat') return pagina(res, '<style>html,body{height:100%;margin:0}body{display:flex;flex-direction:column}header{height:58px;background:#036;flex:none}#log{flex:1;overflow:auto;min-height:0}footer{height:90px;background:#060;flex:none}</style><header></header><div id="log"><p style="height:240px;margin:0"></p><div id="msg" style="background:#f0f;width:500px;height:1500px;margin-left:60px"></div><p style="height:240px;margin:0"></p></div><footer></footer>');
+  if (req.url === '/barra') return pagina(res, '<style>body{margin:0}header{position:fixed;top:0;left:0;right:0;height:70px;background:#036}</style><header></header><p style="height:400px;margin:0"></p><div id="alto" style="background:#f0f;width:300px;height:1800px"></div><p style="height:400px;margin:0"></p>');
+  if (req.url === '/lateral') return pagina(res, '<style>body{margin:0}aside{position:fixed;left:0;top:0;bottom:0;width:200px;background:#f0f}main{margin-left:200px;height:3000px}</style><aside></aside><main></main>');
+  if (req.url === '/cartoes') return pagina(res, '<style>body{margin:0}.card{background:#f0f;width:200px;height:100px;margin:20px}</style><div class="card"></div><div class="card"></div><div class="card"></div>');
   if (req.url === '/cache') return pagina(res, '<link rel="stylesheet" href="/cache.css"><div class="c" style="width:200px;height:200px"></div>');
   if (req.url === '/cache.css') { res.setHeader('Content-Type', 'text/css'); res.setHeader('Cache-Control', 'max-age=3600'); return res.end('.c{background:' + corCss + '}'); }
   res.statusCode = 404; res.end('{}');
@@ -721,6 +727,46 @@ async function main() {
   await check('capture_page de página inteira desenrola o painel que rola por dentro', async () => {
     const result = await tool('capture_page', { url: url + '/painel', full_page: true });
     assert.equal(result.image.height, 2000); assert.match(data(result).full_page_note, /scrolls inside main/);
+  });
+  await check('capture_page recorta inteiro o elemento maior que a área de rolagem em que está', async () => {
+    const result = await tool('capture_page', { url: url + '/chat', crop_selector: '#msg' });
+    // 16 px de folga em volta: o elemento ocupa o recorte todo, sem o cabeçalho por cima.
+    assert.deepEqual([result.image.width, result.image.height], [532, 1532]);
+    for (const [x, y] of [[20, 20], [510, 20], [20, 1510], [510, 1510], [266, 766]]) assert.deepEqual(pixel(result.image.path, x, y), [255, 0, 255], `${x},${y}`);
+    assert.match(data(result).crop_note, /larger than its scroll area \(div#log\)/);
+  });
+  await check('capture_page tira do recorte a barra fixa que ficaria sobre um elemento maior que a janela', async () => {
+    const result = await tool('capture_page', { url: url + '/barra', crop_selector: '#alto' });
+    assert.equal(result.image.height, 1832);
+    for (const y of [20, 400, 916, 1400, 1810]) assert.deepEqual(pixel(result.image.path, 150, y), [255, 0, 255], `y=${y}`);
+    assert.match(data(result).crop_note, /pinned over the element: header/);
+  });
+  await check('capture_page de página inteira leva a lateral fixa até o fim', async () => {
+    const result = await tool('capture_page', { url: url + '/lateral', full_page: true });
+    assert.equal(result.image.height, 3000);
+    assert.deepEqual(pixel(result.image.path, 100, 2900), [255, 0, 255]);
+  });
+  await check('capture_page avisa o que ficou abaixo da dobra e quantos elementos o seletor casou', async () => {
+    assert.match(data(await tool('capture_page', { url: url + '/lateral' })).below_the_fold, /first 800 px of 3000 px of the page.*full_page: true/);
+    assert.match(data(await tool('capture_page', { url: url + '/chat' })).below_the_fold, /inside div#log/);
+    assert.equal(data(await tool('capture_page', { url: url + '/cache' })).below_the_fold, undefined);
+    assert.match(data(await tool('capture_page', { url: url + '/cartoes', crop_selector: '.card' })).crop_note, /matches 3 elements/);
+  });
+  await check('booleano e número enviados como texto pelo modelo são convertidos pelo schema', async () => {
+    const primeira = await tool('capture_page', { url: url + '/lateral', full_page: 'False', width: '800' });
+    assert.deepEqual([primeira.image.width, primeira.image.height], [800, 800]);
+    assert.equal((await tool('capture_page', { url: url + '/lateral', full_page: 'True' })).image.height, 3000);
+  });
+  await check('list_files de pasta que não existe devolve erro legível', async () => {
+    const result = data(await tool('list_files', { subpath: 'pasta-que-nao-existe' }));
+    assert.match(result.error, /ENOENT|no such file/i); assert.doesNotMatch(result.error, /is not a function/);
+  });
+  await check('execute_command com a linha inteira em command ignora args em vez de dar ENOENT', async () => {
+    for (const args of [[], ['-e', 'console.log(40+2)']]) {
+      const result = data(await tool('execute_command', { command: 'node -e "console.log(40+2)"', args }));
+      assert.match(JSON.stringify(result), /42/); assert.doesNotMatch(JSON.stringify(result), /ENOENT/);
+    }
+    assert.match(JSON.stringify(data(await tool('execute_command', { command: 'node', args: ['-e', 'console.log("a b".length)'] }))), /3/);
   });
   await check('capture_page não reaproveita CSS antigo do cache', async () => {
     corCss = '#f00'; const antes = await tool('capture_page', { url: url + '/cache' });

@@ -16,9 +16,13 @@ interface ComputerImage {
   isEmpty(): boolean;
   getSize(): { width: number; height: number };
   toPNG(): Buffer;
+  crop?(rect: { x: number; y: number; width: number; height: number }): ComputerImage;
+  resize?(size: { width: number; height: number }): ComputerImage;
 }
-// Retângulo visível da janela, em pixels físicos, como o helper do Windows devolve.
-export interface ComputerWindow { handle: string; pid: number; title: string; x: number; y: number; width: number; height: number; minimized: boolean }
+// Retângulo visível da janela, em pixels físicos, como o helper do Windows devolve. `frame` é o
+// retângulo inteiro [x, y, largura, altura], com as bordas invisíveis de redimensionar, e `inset`
+// [lados e base, topo] é quanto o capturador tira dele.
+export interface ComputerWindow { handle: string; pid: number; title: string; x: number; y: number; width: number; height: number; minimized: boolean; frame?: number[]; inset?: number[] }
 interface ComputerDependencies {
   platform: string;
   displays(): ComputerDisplay[];
@@ -61,6 +65,25 @@ export function chooseWindow(query: string, windows: ComputerWindow[], processes
     if (achadas.some(w => w.title.toLowerCase() === busca)) achadas = achadas.filter(w => w.title.toLowerCase() === busca);
   }
   return achadas.sort((a, b) => Number(a.minimized) - Number(b.minimized) || b.width * b.height - a.width * a.height);
+}
+
+// O capturador não entrega o retângulo visível da janela: entrega o retângulo inteiro menos uma
+// borda que depende do estilo dela (medido: 4 px dos lados e embaixo e 1 em cima na janela
+// redimensionável, nada na de tamanho fixo), com faixas PRETAS no lugar das bordas invisíveis,
+// e ainda ajusta isso ao tamanho pedido. Pedindo o tamanho visível, o print saía reduzido ~1%
+// (texto borrado, régua de 100 px medindo 99) e com as faixas, e o clique caía até 4 px fora.
+// O helper prevê a borda; quando a previsão erra, daqui saem os tamanhos de origem compatíveis
+// com a miniatura recebida, do mais provável ao menos.
+export function sourceInsets(frame: { width: number; height: number }, thumb: { width: number; height: number }) {
+  const achados: Array<{ lado: number; topo: number; width: number; height: number; erro: number }> = [];
+  for (let lado = 0; lado <= 16; lado++) for (const topo of new Set([0, 1, lado])) {
+    const width = frame.width - 2 * lado, height = frame.height - lado - topo;
+    if (width < 1 || height < 1) continue;
+    const escala = Math.min(frame.width / width, frame.height / height);
+    const erro = Math.abs(width * escala - thumb.width) + Math.abs(height * escala - thumb.height);
+    if (erro <= 2) achados.push({ lado, topo, width, height, erro });
+  }
+  return achados.sort((a, b) => a.erro - b.erro);
 }
 
 const sobrepoe = (w: { x: number; y: number; width: number; height: number }, d: ComputerDisplay) => {
@@ -212,8 +235,13 @@ export class DesktopComputer {
       // A miniatura é AMPLIADA até o tamanho pedido (uma janela de 586 px voltava com 1600):
       // pedir o tamanho real dá pixels fiéis e coordenadas sem escala.
       const escala = Math.min(1, COMPUTER_IMAGE_MAX_SIDE / Math.max(janela.width, janela.height, 1));
-      const fontes = await this.limited(this.deps.windowSources({ width: Math.max(1, Math.round(janela.width * escala)), height: Math.max(1, Math.round(janela.height * escala)) }), signal);
-      fonte = fontes.find(f => f.id.startsWith(`window:${janela.handle}:`));
+      const pede = async (size: { width: number; height: number }) =>
+        (await this.limited(this.deps.windowSources(size), signal)).find(f => f.id.startsWith(`window:${janela.handle}:`));
+      const exata = janela.frame?.length === 4 ? await this.exactWindow(janela, pede) : undefined;
+      if (exata) {
+        const alvo = { width: Math.max(1, Math.round(janela.width * escala)), height: Math.max(1, Math.round(janela.height * escala)) };
+        fonte = { ...exata.fonte, thumbnail: escala < 1 ? exata.imagem.resize(alvo) : exata.imagem };
+      } else fonte = await pede({ width: Math.max(1, Math.round(janela.width * escala)), height: Math.max(1, Math.round(janela.height * escala)) });
     } else {
       if (opts.offscreen !== undefined) throw new Error('offscreen is supported on Windows only.');
       // Sem o helper do Windows, a janela é achada pelo título na lista do próprio capturador.
@@ -234,6 +262,38 @@ export class DesktopComputer {
       screenshot_id: id, window_id: janela && 'window:' + janela.handle, title: janela?.title ?? fonte.name, pid: janela?.pid,
       offscreen: janela ? !visivel : undefined, input_supported: windows && visivel,
       note: ['This image shows only that window. Coordinates use this image, with (0, 0) at its top-left. screenshot_id expires in 120 seconds and after one action.', ...notas].join(' ') };
+  }
+  // Pixels reais do retângulo visível: pede ao capturador exatamente o tamanho de origem dele
+  // (só assim a miniatura volta sem escala) e recorta as faixas. O tamanho só é aceito quando a
+  // miniatura volta idêntica ao pedido; o palpite alternativo é conferido AMPLIADO, porque dois
+  // tamanhos de proporção quase igual voltam idênticos em escala 1 (592x395 passava por 594x396).
+  // Sem certeza, devolve undefined e a captura segue pelo pedido simples.
+  private async exactWindow(janela: ComputerWindow, pede: (size: { width: number; height: number }) => Promise<{ id: string; name: string; thumbnail: ComputerImage } | undefined>) {
+    const [fx, fy, width, height] = janela.frame, [lado, topo] = janela.inset?.length === 2 ? janela.inset : [0, 0];
+    const igual = (a: { width: number; height: number }, b: { width: number; height: number }) => a.width === b.width && a.height === b.height;
+    const usavel = (f?: { thumbnail: ComputerImage }) => !!f && !f.thumbnail.isEmpty() && !!f.thumbnail.crop && !!f.thumbnail.resize;
+    let origem = { lado, topo, width: width - 2 * lado, height: height - lado - topo };
+    if (origem.width < 1 || origem.height < 1) return undefined;
+    let fonte = await pede({ width: origem.width, height: origem.height });
+    if (!usavel(fonte)) return undefined;
+    if (!igual(fonte.thumbnail.getSize(), origem)) {
+      const inteira = await pede({ width, height });
+      if (!usavel(inteira)) return undefined;
+      const vezes = Math.max(1, Math.min(8, Math.floor(6000 / Math.max(width, height))));
+      origem = undefined;
+      for (const candidata of sourceInsets({ width, height }, inteira.thumbnail.getSize()).slice(0, 3)) {
+        const ampliada = await pede({ width: candidata.width * vezes, height: candidata.height * vezes });
+        if (!usavel(ampliada) || !igual(ampliada.thumbnail.getSize(), { width: candidata.width * vezes, height: candidata.height * vezes })) continue;
+        fonte = vezes === 1 ? ampliada : await pede({ width: candidata.width, height: candidata.height });
+        if (usavel(fonte) && igual(fonte.thumbnail.getSize(), candidata)) origem = candidata;
+        break;
+      }
+      if (!origem) return undefined;
+    }
+    const x = Math.max(0, janela.x - fx - origem.lado), y = Math.max(0, janela.y - fy - origem.topo);
+    const recorte = { x, y, width: Math.min(janela.width, origem.width - x), height: Math.min(janela.height, origem.height - y) };
+    if (recorte.width !== janela.width || recorte.height !== janela.height) return undefined;
+    return { fonte, imagem: fonte.thumbnail.crop(recorte) };
   }
   async action(args: any) {
     if (this.busy) return this.result(new Error('Another computer operation is still running.'));

@@ -234,6 +234,27 @@ que a ausência dele.
   fim antes do print é o que dispara o `IntersectionObserver` das seções reveladas e as imagens
   lazy. O recorte (`crop_selector`) usa o mesmo caminho, em coordenadas do documento: elemento
   maior que a janela sai inteiro.
+- **Recorte (`crop_selector`) é do DOCUMENTO, não do elemento**: o `Page.captureScreenshot` com
+  `clip` desenha o que está naquele retângulo do documento. Elemento mais alto que a área de
+  rolagem em que mora (mensagem longa no log de um chat) saía com o cabeçalho da página por cima
+  e sem o próprio começo — visto nos prints reais do app, e era o "print recortado errado". O
+  `PREPARA_RECORTE` desenrola a área de rolagem que não mostra o elemento inteiro, reduz o
+  recorte ao visível quando o corte é de propósito (`overflow: hidden`, carrossel) e esconde a
+  barra fixa/sticky presa no topo ou embaixo que ficou sobre um elemento maior que a janela;
+  cada caso sai em `crop_note`. Overlay grande (modal, backdrop) não é escondido: ali a
+  sobreposição é o que o usuário vê. Roda duas vezes, antes e depois de assentar.
+- **O modelo não pede `full_page` sozinho**: em 20 capturas reais, nenhuma — com a regra no
+  prompt. Por isso o resultado diz `below_the_fold` (quanto da página, ou do painel com rolagem
+  própria, ficou fora) em vez de mais uma linha no prompt. Lateral `fixed`/`sticky` de altura
+  cheia é esticada até o fim na página inteira: parava nos primeiros 800 px.
+- **GPU ocupada derruba a captura**: com a GPU a 99% (jogo aberto, modelo local gerando), o
+  print offscreen voltava `UnknownVizError` ou não respondia em 9 a 17 de cada 32 capturas, e a
+  mesma captura passava em seguida; a 45% não falhou nenhuma. Daí as três tentativas do
+  `comQuadro` (soltando o debugger antes de repetir, senão o pedido antigo ainda mexe na
+  viewport) e o `CAPTURE_STEP_MS` de 10 s. Página dada como travada no meio NÃO pode degradar
+  calada: o resultado diz que aquilo é a primeira dobra, e não o recorte ou a página pedidos.
+  `enableDeviceEmulation` numa janela offscreen derruba o processo — a viewport maior que a
+  tela vira só o aviso `viewport_note`.
 - **Captura de UMA janela** (`capture_screen` com `window`): o print do monitor inteiro trazia o
   que o usuário estava fazendo, e o programa testado precisava ficar na frente dele. A fonte
   `window:<HWND>:0` do `desktopCapturer` desenha a janela mesmo coberta e mesmo FORA da tela
@@ -241,7 +262,11 @@ que a ausência dele.
   minimizada não tem pixels, por isso é restaurada sem ativar antes. Três armadilhas medidas:
   (1) a miniatura é AMPLIADA até o `thumbnailSize` pedido (586 px viravam 1600) — pede-se o
   tamanho real da janela, que vem do retângulo do DWM (`DWMWA_EXTENDED_FRAME_BOUNDS`, sem as
-  bordas invisíveis); (2) o `execute_command` devolve o PID do `cmd.exe`, e a janela é de um
+  bordas invisíveis) — e NÃO é isso que se pede ao capturador: ele entrega o retângulo inteiro
+  menos a borda de redimensionar (4 px dos lados e embaixo, 1 em cima; nada na janela de tamanho
+  fixo), com faixas pretas, ajustado ao tamanho pedido. Pedindo o visível, a régua de 100 px
+  media 99 e o texto saía borrado; o `exactWindow` pede o tamanho de origem (`inset`, previsto
+  pelo helper) e recorta; (2) o `execute_command` devolve o PID do `cmd.exe`, e a janela é de um
   filho — a busca por PID sobe a árvore de processos (`Process32`), e um pai que já saiu continua
   valendo porque o Windows guarda o PID dele; (3) com o usuário em outro programa o
   `SetForegroundWindow` é recusado, e o clique caía no programa errado — o helper solta um ALT
@@ -430,6 +455,17 @@ que a ausência dele.
   Blender modelava às cegas, salvando render em disco para abrir com `view_image`. O texto só
   a anuncia como anexada quando o renderer manda `vision: true`; sem visão a descrição antiga
   fica, para o modelo não procurar pixels que não vai receber.
+- **O helper do Windows entra pelo stdin** (`src/computer-windows.ts`): em `-EncodedCommand` o
+  programa já ocupava 31,6 mil dos 32.767 caracteres da linha de comando, e uma função a mais fez
+  todo spawn falhar com `ENAMETOOLONG`. A codificação do console é definida no bootstrap, antes
+  da primeira leitura: trocá-la depois recria o leitor e perde o pedido já lido.
+- **`execute_command` com `args` e a linha inteira em `command`**: o modelo faz isso (`args: []`
+  ou os mesmos pedaços de novo) e o spawn sem shell devolvia `ENOENT` — 5 vezes nas conversas
+  reais, com o agente concluindo que o `git` não existia. Linha com espaço que não é um arquivo
+  roda no shell e `args` é ignorado.
+- **Subagente no limite de turnos escreve o relatório**: antes voltava só a última frase solta
+  ("Let me verify…") e as leituras se perdiam; em conversas reais, 8 de 12 pararam assim. O
+  turno final mantém as ferramentas no payload (prefixo em cache) e proíbe chamá-las.
 - **Processos longos**: comandos que passam de `cmdTimeout` viram background e retornam PID,
   acompanhados por `read_process_output`/`stop_process`. Não converta isso em execução bloqueante.
   `wait_for_process` existe para o agente ESPERAR num turno só: sem ele, o modelo chamava

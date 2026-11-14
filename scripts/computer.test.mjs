@@ -209,3 +209,35 @@ test('a parte em PowerShell do helper roda no Windows PowerShell 5.1', async () 
   assert.ok(powershell.includes('[PofuInput]::Keys('));
   assert.doesNotMatch(powershell, /\[(ushort|short|ulong|uint|sbyte)(\[\])?\]/i);
 });
+
+test('captura de janela pede o tamanho de origem do capturador e recorta as faixas pretas', async () => {
+  const { sourceInsets } = await import('../out/computer.js');
+  // Janela redimensionável de 600x400: visível 586x393, e o capturador entrega 592x395.
+  const sizable = { handle: '700', pid: 30, title: 'Régua', x: 107, y: 100, width: 586, height: 393, minimized: false, frame: [100, 100, 600, 400], inset: [4, 1] };
+  const real = { width: 592, height: 395 }, pedidos = [], recortes = [];
+  const miniatura = pedido => {
+    const escala = Math.min(pedido.width / real.width, pedido.height / real.height);
+    const size = { width: Math.round(real.width * escala), height: Math.round(real.height * escala) };
+    const imagem = tamanho => ({ isEmpty: () => false, getSize: () => tamanho, toPNG: () => Buffer.from('janela'),
+      crop: r => { recortes.push(r); return imagem({ width: r.width, height: r.height }); }, resize: t => imagem(t) });
+    return imagem(size);
+  };
+  const cria = janela => {
+    const computer = new DesktopComputer({ platform: 'win32', displays: () => [tela], primaryDisplay: () => 'p', sources: async () => [], ownPids: () => [],
+      windowSources: async size => { pedidos.push(size); return [{ id: `window:${janela.handle}:0`, name: janela.title, thumbnail: miniatura(size) }]; },
+      save: (bytes, id) => '/shots/' + id + '.png', input: async () => ({ success: true, windows: [janela], processes: arvore }) });
+    computer.setEnabled(true);
+    return computer;
+  };
+  const certa = await cria(sizable).capture({ window: 'Régua' });
+  assert.deepEqual([certa.width, certa.height], [586, 393]);
+  assert.deepEqual(pedidos, [{ width: 592, height: 395 }]);
+  assert.deepEqual(recortes, [{ x: 3, y: 0, width: 586, height: 393 }]);
+
+  // Previsão errada do helper: o tamanho real sai da miniatura e é conferido ampliado.
+  pedidos.length = recortes.length = 0;
+  const outra = await cria({ ...sizable, inset: [0, 0] }).capture({ window: 'Régua' });
+  assert.deepEqual([outra.width, outra.height], [586, 393]);
+  assert.deepEqual(recortes, [{ x: 3, y: 0, width: 586, height: 393 }]);
+  assert.deepEqual(sourceInsets({ width: 600, height: 400 }, { width: 600, height: 400 })[0], { lado: 0, topo: 0, width: 600, height: 400, erro: 0 });
+});

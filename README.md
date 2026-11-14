@@ -97,7 +97,7 @@ O endereço é o endpoint compatível com OpenAI, geralmente terminado em `/v1`.
 
 Peça, por exemplo: “Use dois subagentes: um revisa a autenticação e outro procura problemas nos testes”. O modelo pode chamar `delegate_tasks` para criar até três análises em paralelo no mesmo projeto e provedor. Cada análise tem seu próprio contexto, consulta arquivos e, quando habilitada, pesquisa na web. O card mostra o andamento e permite abrir cada resultado.
 
-O agente principal recebe os resultados e aplica as alterações. Os subagentes são de leitura: não executam comandos, não editam arquivos e não controlam o computador. **Parar** interrompe todas as análises. O consumo soma as requisições de todos os agentes; o indicador de contexto continua mostrando a conversa principal. Cada análise tem limite de 12 etapas. Servidores locais com poucos slots podem processar as requisições em sequência.
+O agente principal recebe os resultados e aplica as alterações. Os subagentes são de leitura: não executam comandos, não editam arquivos e não controlam o computador. **Parar** interrompe todas as análises. O consumo soma as requisições de todos os agentes; o indicador de contexto continua mostrando a conversa principal. Cada análise tem limite de 20 etapas; ao chegar nele, ela ainda entrega um relatório do que encontrou. Servidores locais com poucos slots podem processar as requisições em sequência.
 
 ### Durante a conversa
 
@@ -201,10 +201,10 @@ Exemplo: `/revisar src/main.ts` prepara uma revisão desse arquivo. Comandos loc
 | `wait_for_process` / `read_process_output` | Aguarda tarefas demoradas e consulta sua saída. |
 | `list_processes` / `stop_process` | Lista ou encerra processos acompanhados pelo Studio. |
 | `http_request` | Consulta APIs com status, cabeçalhos e corpo separados. |
-| `capture_page` | Renderiza uma página (URL ou arquivo HTML do projeto) numa janela oculta, espera ela terminar de carregar (requisições, "Loading...", animações; até 8 s), captura a imagem e informa erros de console/rede. A página inteira inclui painéis com rolagem interna sem esticar seções de `100vh`, e cada captura começa sem cache. Cada etapa tem prazo: página travada, script que nunca termina ou `alert()` não prendem o agente. |
+| `capture_page` | Renderiza uma página (URL ou arquivo HTML do projeto) numa janela oculta, espera ela terminar de carregar (requisições, "Loading...", animações; até 8 s), captura a imagem e informa erros de console/rede. A página inteira inclui painéis com rolagem interna e barras laterais fixas sem esticar seções de `100vh`, e cada captura começa sem cache. O recorte por seletor mostra o elemento inteiro mesmo quando ele é maior que a área de rolagem em que está, e a captura da primeira dobra avisa quanto da página ficou de fora. Cada etapa tem prazo: página travada, script que nunca termina ou `alert()` não prendem o agente. |
 | `view_image` | Abre imagens do projeto e envia os pixels ao modelo com visão. |
 | `view_attachment` | Lista as imagens anexadas na conversa e reabre uma delas para o modelo com visão. Só as imagens recentes vão a cada requisição; com ela o agente volta a olhar um anexo antigo sem pedir que você reenvie. |
-| `capture_screen` | Captura um monitor real, ou só a janela de um programa (pelo título ou pelo PID), e informa as dimensões para interação. A janela de um programa aberto pelo agente pode rodar fora da tela, sem cobrir o seu trabalho. |
+| `capture_screen` | Captura um monitor real, ou só a janela de um programa (pelo título ou pelo PID), e informa as dimensões para interação. A janela sai nos pixels reais, sem redução nem faixas pretas nas bordas. A janela de um programa aberto pelo agente pode rodar fora da tela, sem cobrir o seu trabalho. |
 | `computer_action` | Usa mouse e teclado no Windows e devolve uma nova captura após a ação. |
 | `web_search` / `fetch_url` | Pesquisa na web, lê as páginas encontradas e extrai o conteúdo. |
 | `ask_user` | Pede uma escolha ou esclarecimento e aguarda sua resposta. |

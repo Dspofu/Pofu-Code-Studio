@@ -410,7 +410,14 @@ function killTree(pid, { force = false } = {}) {
 }
 
 ipcMain.handle('execute-command', async (event, command, cwd, opts = {}) => {
-  const direct = opts.args !== undefined;
+  // args existe para passar argumento literal sem shell, mas o modelo manda a linha INTEIRA em
+  // command e ainda preenche args ([] ou os mesmos pedaços de novo): o spawn procurava um
+  // executável chamado "git log --pretty=oneline -20 -- x.rs" e devolvia ENOENT (5 vezes nas
+  // conversas reais, e o agente concluía que o git não estava instalado). Linha com espaço que
+  // não é um arquivo é linha de shell, e args é ignorado.
+  const linhaDeShell = typeof command === 'string' && /\s/.test(command.trim()) && !existsSync(command.trim());
+  const direct = opts.args !== undefined && !linhaDeShell;
+  if (typeof cwd === 'string' && cwd && !existsSync(cwd)) return { success: false, finished: true, error: `Working directory does not exist: ${cwd}` };
   if (typeof command !== 'string' || !command.trim() || command.includes('\0') ||
       (direct && (!Array.isArray(opts.args) || opts.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))))) {
     return { success: false, finished: true, error: 'Invalid command or args. command must be a nonempty string; args must be an array of strings without NUL characters.' };
@@ -1299,10 +1306,21 @@ const FIXOS_NA_PAGINA_INTEIRA = `((altura) => {
   };
   const regras = [];
   for (const el of [document.documentElement, ...document.querySelectorAll('body, body *')]) {
-    if (getComputedStyle(el).position === 'fixed') {
+    const posicao = getComputedStyle(el).position;
+    if (posicao === 'fixed') {
       const r = el.getBoundingClientRect();
-      if (r.top <= 1 && r.height >= innerHeight - 1 && r.width >= innerWidth - 1) fixa(el.style, 0, altura);
+      // Largura não entra na conta: a barra lateral fixa (dashboard) parava nos primeiros
+      // 800 px e o resto da coluna saía vazio, como se o menu tivesse sido cortado (medido).
+      if (r.top <= 1 && r.height >= innerHeight - 1) fixa(el.style, 0, altura);
       else if (r.top > innerHeight / 2) fixa(el.style, altura - (innerHeight - r.top));
+    } else if (posicao === 'sticky' && el.parentElement) {
+      // A lateral sticky de 100vh tem o mesmo defeito, mas está no fluxo: cresce até o fim do pai.
+      const r = el.getBoundingClientRect(), fim = el.parentElement.getBoundingClientRect().bottom;
+      if (r.height >= innerHeight - 1 && r.width < innerWidth - 1 && fim - r.top > r.height + 1) {
+        el.style.setProperty('box-sizing', 'border-box', 'important');
+        el.style.setProperty('max-height', 'none', 'important');
+        el.style.setProperty('height', (fim - r.top) + 'px', 'important');
+      }
     }
     for (const pseudo of ['before', 'after']) {
       const p = getComputedStyle(el, '::' + pseudo);
@@ -1312,6 +1330,73 @@ const FIXOS_NA_PAGINA_INTEIRA = `((altura) => {
     }
   }
   if (regras.length) document.head.appendChild(Object.assign(document.createElement('style'), { textContent: regras.join('') }));
+})`;
+
+// Prepara o recorte e devolve o retângulo do elemento em coordenadas do documento. O print além
+// da janela desenha o que está NAQUELE ponto do documento, não o elemento: medido em prints
+// reais, a mensagem de um chat (dentro de um log com rolagem própria e mais alta que ele) saía
+// com o cabeçalho da página por cima e sem o próprio começo. Três casos, na ordem:
+// (1) área de rolagem que não mostra o elemento inteiro é desenrolada com os ancestrais;
+// (2) o que continua cortado de propósito (overflow hidden: carrossel) reduz o recorte ao
+//     visível, com aviso; (3) barra fixa/sticky presa no topo ou embaixo que ficou por cima de um
+//     elemento maior que a janela é escondida. Overlay grande (modal, backdrop) fica: ali a
+//     sobreposição é o que o usuário vê.
+const PREPARA_RECORTE = `((seletor) => {
+  const todos = document.querySelectorAll(seletor), el = todos[0];
+  if (!el) return null;
+  const notas = [];
+  const nome = e => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') +
+    (typeof e.className === 'string' ? e.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2).map(c => '.' + c).join('') : '');
+  const centra = () => el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  const caixa = a => { const r = a.getBoundingClientRect(); return { left: r.left + a.clientLeft, top: r.top + a.clientTop, right: r.left + a.clientLeft + a.clientWidth, bottom: r.top + a.clientTop + a.clientHeight }; };
+  const fora = (r, c) => r.left < c.left - 1 || r.top < c.top - 1 || r.right > c.right + 1 || r.bottom > c.bottom + 1;
+  centra();
+  let externo = null;
+  for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+    if (a === document.body && document.scrollingElement !== a && getComputedStyle(document.documentElement).overflowY === 'visible') continue;
+    const s = getComputedStyle(a);
+    const rola = (/(auto|scroll|overlay)/.test(s.overflowY) && a.scrollHeight > a.clientHeight + 1) || (/(auto|scroll|overlay)/.test(s.overflowX) && a.scrollWidth > a.clientWidth + 1);
+    if (rola && fora(el.getBoundingClientRect(), caixa(a))) externo = a;
+  }
+  if (externo) {
+    for (let a = externo; a; a = a.parentElement) {
+      const posicao = getComputedStyle(a).position;
+      a.style.setProperty('overflow', 'visible', 'important');
+      a.style.setProperty('height', 'auto', 'important');
+      a.style.setProperty('max-height', 'none', 'important');
+      if (posicao === 'fixed') a.style.setProperty('position', 'absolute', 'important');
+      if (posicao === 'fixed' || posicao === 'absolute') a.style.setProperty('bottom', 'auto', 'important');
+    }
+    notas.push('The element is larger than its scroll area (' + nome(externo) + '); that area was expanded so the crop shows all of it.');
+    centra();
+  }
+  let r = el.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return null;
+  let v = { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, cortador = null;
+  for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+    const s = getComputedStyle(a);
+    if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
+    if (a === document.body && document.scrollingElement !== a && getComputedStyle(document.documentElement).overflowY === 'visible') continue;
+    const c = caixa(a);
+    if (fora(v, c)) cortador = cortador || a;
+    v = { left: Math.max(v.left, c.left), top: Math.max(v.top, c.top), right: Math.min(v.right, c.right), bottom: Math.min(v.bottom, c.bottom) };
+  }
+  if (cortador && v.right - v.left >= 1 && v.bottom - v.top >= 1) {
+    notas.push('Part of the element is hidden by ' + nome(cortador) + ' (overflow); the crop shows only the visible ' + Math.round(v.right - v.left) + 'x' + Math.round(v.bottom - v.top) + ' px of its ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' px.');
+  } else v = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  const barras = [];
+  for (const b of document.querySelectorAll('body *')) {
+    if (b === el || b.contains(el) || el.contains(b)) continue;
+    const posicao = getComputedStyle(b).position;
+    if (posicao !== 'fixed' && posicao !== 'sticky') continue;
+    const q = b.getBoundingClientRect();
+    if (q.height < 1 || q.height >= innerHeight / 2 || (q.top > 1 && q.bottom < innerHeight - 1)) continue;
+    if (q.left < v.right && q.right > v.left && q.top < v.bottom && q.bottom > v.top) barras.push(b);
+  }
+  for (const b of barras) b.style.setProperty('visibility', 'hidden', 'important');
+  if (barras.length) notas.push('Hidden for this crop because it was pinned over the element: ' + barras.slice(0, 3).map(nome).join(', ') + '.');
+  if (todos.length > 1) notas.push('The selector matches ' + todos.length + ' elements; this is the first. Use a more specific selector (or :nth-of-type) for another one.');
+  return { x: v.left + scrollX, y: v.top + scrollY, width: v.right - v.left, height: v.bottom - v.top, notas };
 })`;
 
 // O print além da janela sai com o canvas 2D EM BRANCO quando ele não está sendo redesenhado:
@@ -1497,21 +1582,24 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
     // O recorte é feito pelo próprio Chromium, em coordenadas do documento: elemento maior que
     // a janela sai inteiro. A página inteira é reduzida para caber no orçamento de visão, e
     // detalhe fino (alinhamento, sobreposição de poucos pixels) some na redução.
-    let clip = null, recorteFalhou = null;
+    let clip = null, recorteFalhou = null, notaRecorte = '';
     if (opts.cropSelector) {
-      const seletor = JSON.stringify(opts.cropSelector);
-      const achou = await lePagina(`(() => { const el = document.querySelector(${seletor}); if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' }); return !!el; })()`, false);
-      if (achou) await assenta();
-      const r = achou && await lePagina(`(() => {
-        const r = document.querySelector(${seletor})?.getBoundingClientRect();
-        return r && { x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height };
-      })()`, null);
-      if (!r || r.width < 1 || r.height < 1) {
-        recorteFalhou = `Element "${opts.cropSelector}" not found (or has no size) — captured the ${opts.fullPage ? 'whole page' : 'visible area'} instead.`;
+      const preparo = `${PREPARA_RECORTE}(${JSON.stringify(opts.cropSelector)})`;
+      // Duas vezes: desenrolar a área de rolagem dispara imagem lazy e mudança de layout, e a
+      // medida que vale é a de depois de a página assentar (a segunda não desenrola de novo).
+      let r = await lePagina(preparo, null);
+      if (r) { const antes = r.notas; await assenta(); r = await lePagina(preparo, null); if (r) r.notas = [...new Set([...antes, ...r.notas])]; }
+      if (!r) {
+        recorteFalhou = travada
+          ? `The page stopped responding before "${opts.cropSelector}" could be measured — this is the visible area, NOT the crop. Capture again.`
+          : `Element "${opts.cropSelector}" not found (or has no size) — captured the ${opts.fullPage ? 'whole page' : 'visible area'} instead.`;
       } else {
-        const folga = 8; // uma margem ajuda a julgar alinhamento em relação ao redor
+        // Folga para julgar o alinhamento com o que está em volta e para a sombra não sair cortada.
+        const folga = 16;
         const x = Math.max(0, Math.floor(r.x - folga)), y = Math.max(0, Math.floor(r.y - folga));
         clip = { x, y, width: Math.ceil(r.x + r.width + folga) - x, height: Math.min(CAPTURE_MAX_PAGE_HEIGHT, Math.ceil(r.y + r.height + folga) - y) };
+        if (r.notas.length) notaRecorte = r.notas.join(' ');
+        if (Math.ceil(r.y + r.height + folga) - y > CAPTURE_MAX_PAGE_HEIGHT) notaRecorte = `${notaRecorte ? notaRecorte + ' ' : ''}The element is ${Math.round(r.height)} px tall; the crop stops at ${CAPTURE_MAX_PAGE_HEIGHT} px.`;
       }
     }
 
@@ -1530,35 +1618,72 @@ ipcMain.handle('capture-page', async (event, url, opts = {}) => {
       if (desenrolada) notas.full_page_note = `The page scrolls inside ${desenrolada}; that area was expanded so the screenshot shows all of it.`;
       if (medida.altura > CAPTURE_MAX_PAGE_HEIGHT) notas.full_page_note = `The page is ${medida.altura} px tall; the screenshot stops at ${CAPTURE_MAX_PAGE_HEIGHT} px. Use crop_selector for content further down.`;
     }
+    if (notaRecorte) notas.crop_note = notaRecorte;
+    // Em 20 capturas reais o modelo não pediu full_page nenhuma vez, com a regra no prompt: o
+    // print da primeira dobra parecia a página toda. Dito no resultado, ele vê na hora que há mais.
+    if (!clip && medida) {
+      const rolagem = await lePagina(`(() => {
+        const raiz = document.scrollingElement || document.documentElement;
+        if (raiz.scrollHeight > innerHeight + 40) return { altura: raiz.scrollHeight, visivel: innerHeight };
+        let alvo = null, area = 0;
+        for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+          if (el.scrollHeight <= el.clientHeight + 40 || !/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) continue;
+          if (el.clientWidth * el.clientHeight > area) { area = el.clientWidth * el.clientHeight; alvo = el; }
+        }
+        return alvo && area >= innerWidth * innerHeight / 4 ? { altura: alvo.scrollHeight, visivel: alvo.clientHeight, dentro: alvo.tagName.toLowerCase() + (alvo.id ? '#' + alvo.id : '') } : null;
+      })()`, null);
+      if (rolagem) notas.below_the_fold = `Only the first ${rolagem.visivel} px of ${rolagem.altura} px ${rolagem.dentro ? `inside ${rolagem.dentro} (it scrolls on its own)` : 'of the page'} are in this screenshot. Capture with full_page: true to see the rest.`;
+    }
     // Conteúdo além da borda direita não aparece em print nenhum, e é o defeito típico de
     // layout responsivo (largura 390): o agente precisa saber que ele existe.
     if (medida && medida.conteudo > medida.largura + 1) {
       notas.horizontal_overflow = `Content is ${medida.conteudo} px wide in a ${medida.largura} px viewport: the page scrolls sideways and the screenshot shows only the left part.`;
     }
     if (naoAssentou) notas.not_settled = naoAssentou;
+    if (travada && opts.fullPage && !clip) notas.capture_warning = 'The page stopped responding before it could be measured — this is the first fold, NOT the whole page. Capture again.';
 
+    // O Windows não deixa a janela passar do tamanho da tela: height: 2000 parava em 1392 num
+    // monitor de 1440 (medido), calado, e o agente lia o print como se fosse a altura pedida.
+    // enableDeviceEmulation derruba o processo numa janela offscreen, então fica o aviso.
+    const [larguraReal, alturaReal] = win.getContentSize();
+    if (larguraReal < width || alturaReal < height) notas.viewport_note = `The screen limits the hidden browser to ${larguraReal}x${alturaReal}; the requested ${width}x${height} viewport was not applied. Use full_page: true for a taller view.`;
+    // O print depende de a GPU entregar um quadro, e com ela ocupada (jogo aberto, modelo local
+    // gerando) ele falha à toa: medido a 99% de uso, 9 a 17 de cada 32 prints voltavam
+    // "UnknownVizError" ou não respondiam, e o mesmo print passava na tentativa seguinte. São
+    // três tentativas dentro do mesmo prazo, cada uma pedindo um quadro novo (sem quadro
+    // pintado, o modo offscreen pode esperar para sempre).
+    const comQuadro = async <T>(foto: (tentativa: number) => Promise<T>) => {
+      for (let tentativa = 1; ; tentativa++) {
+        wc.invalidate();
+        const pedido = foto(tentativa);
+        pedido.catch(() => {}); // o que perdeu o prazo pode falhar depois, sem ninguém esperando
+        try { return await comPrazo(pedido, prazoQuadro / 3, semQuadro); }
+        catch (e) { if (tentativa === 3 || wc.isDestroyed()) throw e; }
+      }
+    };
     const fotografa = async () => {
       if (clip) {
         await lePagina(CANVAS_NO_FUNDO, null);
         try {
-          if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
           // captureBeyondViewport desenha além da janela SEM mudar a viewport, então 100vh
           // continua sendo a altura da janela. Antes a janela era esticada até a altura do
           // documento, e um hero de 100vh esticava junto: o print inteiro era o hero e as seções
           // de baixo nunca apareciam (medido). O debugger só entra depois da navegação e sem
           // Page.enable, que numa janela offscreen nunca responde.
-          const r = await comPrazo(wc.debugger.sendCommand('Page.captureScreenshot',
-            { format: 'png', captureBeyondViewport: true, clip: { ...clip, scale: 1 } }), prazoQuadro, semQuadro);
+          const r = await comQuadro(tentativa => {
+            // O pedido que perdeu o prazo segue na fila do protocolo e mexe na viewport quando
+            // roda: soltar o debugger o cancela antes de pedir de novo.
+            if (tentativa > 1 && wc.debugger.isAttached()) wc.debugger.detach();
+            if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+            return wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { ...clip, scale: 1 } });
+          });
           return nativeImage.createFromBuffer(Buffer.from(r.data, 'base64'));
         } catch (e) {
           if (String(e?.message) === semQuadro) throw e;
           notas.capture_warning = `The full-size capture failed (${String(e?.message || e).slice(0, 200)}); this screenshot shows only the visible area.`;
         }
       }
-      // O invalidate pede um quadro novo ao modo offscreen: sem quadro pintado, o capturePage
-      // pode esperar para sempre.
-      wc.invalidate();
-      return comPrazo(wc.capturePage(), prazoQuadro, semQuadro);
+      return comQuadro(() => wc.capturePage());
     };
     const image = await fotografa();
     if (image.isEmpty()) return { success: false, error: 'The capture came out empty (the page never rendered).' };

@@ -35,6 +35,7 @@ export interface SubagentWorker extends SubagentTask {
   error?: string;
   turns: number;
   tool_calls: number;
+  note?: string;
 }
 export interface SubagentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -218,7 +219,24 @@ export async function runSubagents(tasks: unknown, deps: SubagentDependencies, o
           deps.onToolResult?.(toolMessage, { ...worker });
         }
       }
-      throw new Error(`Subagent turn limit reached (${maxTurns}). The task is incomplete; review any partial findings before continuing.`);
+      // Sem este turno, o que voltava ao agente era a última frase solta do subagente ("Let me
+      // verify the line numbers:") e tudo que ele tinha lido se perdia: em conversas reais, 8 de
+      // 12 subagentes pararam no limite assim. As ferramentas seguem no payload para o prefixo em
+      // cache não mudar; quem insistir em chamá-las cai no erro de sempre.
+      checkSignal(signal);
+      messages.push({ role: 'user', content: '[System: you have used all your turns. Do not call tools. Write your final report now from what you have already found, with file paths and line numbers, and say plainly which parts of the task you could not finish.]' });
+      const fecho = await interruptible(() => deps.complete({ messages: payloadMessages(messages, tools, maxContextChars), tools: structuredClone(tools), signal, worker: { ...worker } }), signal);
+      checkSignal(signal);
+      if (fecho?.usage) deps.onUsage?.(fecho.usage);
+      const relatorio = typeof fecho?.message?.content === 'string' ? fecho.message.content.trim() : '';
+      if (fecho?.aborted) throw aborted();
+      if (!relatorio || fecho?.message?.tool_calls?.length)
+        throw new Error(`Subagent turn limit reached (${maxTurns}). The task is incomplete; review any partial findings before continuing.`);
+      worker.result = relatorio;
+      worker.note = `Turn limit reached (${maxTurns}): this report covers only what was found so far and may be incomplete.`;
+      worker.status = 'completed';
+      emit(worker);
+      return worker;
     } catch (error) {
       worker.status = signal.aborted || error?.name === 'AbortError' ? 'cancelled' : 'failed';
       worker.error = errorText(error);

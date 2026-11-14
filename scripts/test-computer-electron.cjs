@@ -33,7 +33,7 @@ for (const method of ['spawn', 'execFile']) {
       let raw = '';
       child.stdin = new Writable({ write(chunk, _, done) { raw += chunk.toString('utf8'); done(); } });
       child.stdin.on('finish', () => {
-        const request = JSON.parse(raw);
+        const request = JSON.parse(raw.slice(raw.indexOf('\n') + 1)); // 1ª linha: o programa do helper
         if (request.action !== 'observe') simulatedInputs.push(request);
         setImmediate(() => { child.stdout.write(JSON.stringify(request.action === 'observe' ? { success: true, handle: '123', pid: 99 } : { success: true })); child.emit('close', 0); });
       });

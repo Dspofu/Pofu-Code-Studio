@@ -245,8 +245,11 @@ export const COMPUTER_IMAGE_MAX_SIDE = 1600;
 // ferramenta pendurada para sempre — e o turno junto, até fechar o app. O script do agente
 // ganha mais tempo porque costuma clicar e esperar a interface reagir; o quadro, porque uma
 // página inteira de 6000 px demora a pintar. O teto geral pega o que escapar das etapas.
+// A etapa eram 5 s, e com a GPU ocupada (jogo aberto, modelo local gerando) a página SADIA
+// demorava mais que isso para responder a uma leitura (medido a 99% de uso): ela era dada como
+// travada e o recorte ou a página inteira pedidos saíam, calados, como a primeira dobra.
 export const CAPTURE_SCRIPT_MS = 20000;
-export const CAPTURE_STEP_MS = 5000;
+export const CAPTURE_STEP_MS = 10000;
 export const CAPTURE_FRAME_MS = 15000;
 export const CAPTURE_TOTAL_MS = 120000;
 // Quanto o capture_page espera a página ASSENTAR (rede sem requisição, DOM, canvas e animações
@@ -267,7 +270,10 @@ export const CAPTURE_MAX_PAGE_HEIGHT = 6000;
 export const MAX_LOOP_ITERATIONS = 100;
 
 // Cada análise tem escopo curto; este teto limita custo e loops sem desativar a proteção do pai.
-export const MAX_SUBAGENT_TURNS = 12;
+// Eram 12, e em conversas reais 8 de 12 subagentes bateram no teto com 16 a 32 leituras feitas
+// (mapear um arquivo de 3 mil linhas em janelas não cabe em 12 turnos). No teto, o subagente
+// ainda escreve o relatório do que achou (src/subagents.ts).
+export const MAX_SUBAGENT_TURNS = 20;
 
 // Tentativas por requisição (a primeira incluída) quando a falha é passageira: 500 de um
 // tool_call malformado no llama.cpp, conexão que caiu, túnel que fechou o stream. Eram 3
