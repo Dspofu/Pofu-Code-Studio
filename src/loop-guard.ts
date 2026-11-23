@@ -7,7 +7,32 @@
 // sobe. Visto num chat real: `cat package.json` e `ls -la` falhando no cmd.exe, a mesma
 // dupla repetida depois de read_file, sem o modelo mudar de abordagem.
 
-type Registro = { chave: string; assinatura: string; efeito: boolean } | null;
+type Registro = { chave: string; assinatura: string; efeito: boolean; emAndamento: boolean } | null;
+
+// Acompanhar uma operação remota repete a MESMA consulta e recebe o MESMO "running" até ela
+// terminar: o tempo muda a resposta, não os argumentos. Visto com o render do Higgsfield (3D
+// Jutsu): três get_operation com waitSeconds:30 voltaram "running", a trava bloqueou a quarta,
+// e o modelo passou a dormir com `python -c "time.sleep(75)"` no terminal para esperar. Esse
+// resultado ganha um teto maior em vez de nenhum: operação que nunca sai de "running" ainda
+// é looping.
+export const LIMITE_EM_ANDAMENTO = 12;
+const ESTADOS_EM_ANDAMENTO = /^(running|pending|queued|starting|in[_ -]?progress|processing|checkpointing|waiting|submitted|scheduled|active)$/i;
+
+export function resultadoEmAndamento(resultado: string) {
+  const texto = String(resultado ?? '');
+  const procura = (v: any, nivel: number): boolean => {
+    if (!v || typeof v !== 'object' || nivel > 3) return false;
+    for (const [k, x] of Object.entries(v)) {
+      if (/^(status|state)$/i.test(k) && typeof x === 'string' && ESTADOS_EM_ANDAMENTO.test(x.trim())) return true;
+      if (x && typeof x === 'object' && procura(x, nivel + 1)) return true;
+    }
+    return false;
+  };
+  try { return procura(JSON.parse(texto), 0); } catch { /* texto */ }
+  // Em texto, só um status curto no fim ("Job 187d… — in_progress"): "running" no meio de um
+  // log de teste não é operação em andamento.
+  return texto.length <= 300 && /(^|[\s—:-])(running|pending|queued|in[_ ]progress|processing)\s*\.?\s*$/im.test(texto);
+}
 
 // Campos que mudam a cada execução sem que o resultado mude de verdade: sem tirá-los, dois
 // `cat` que falham igual teriam PIDs diferentes e nunca contariam como repetição.
@@ -53,7 +78,11 @@ export class LoopGuard {
   // (depois de um npm install, rodar o mesmo teste de novo é legítimo). Chamadas sem efeito
   // no meio (leituras, buscas) não zeram a contagem — é isso que pega o A, B, A, B.
   repeticoes(chave: string) {
-    let vezes = 0, assinatura: string | null = null;
+    return this.contagem(chave).vezes;
+  }
+
+  private contagem(chave: string) {
+    let vezes = 0, assinatura: string | null = null, emAndamento = true;
     for (let i = this.hist.length - 1; i >= 0; i--) {
       const r = this.hist[i];
       if (r === null) break;
@@ -61,17 +90,18 @@ export class LoopGuard {
       if (assinatura === null) assinatura = r.assinatura;
       else if (r.assinatura !== assinatura) break;
       vezes++;
+      emAndamento = emAndamento && r.emAndamento;
     }
-    return vezes;
+    return { vezes, emAndamento: vezes > 0 && emAndamento };
   }
 
   bloqueia(chave: string) {
-    const vezes = this.repeticoes(chave);
-    return vezes >= this.limite ? vezes : 0;
+    const { vezes, emAndamento } = this.contagem(chave);
+    return vezes >= (emAndamento ? Math.max(this.limite, LIMITE_EM_ANDAMENTO) : this.limite) ? vezes : 0;
   }
 
   registra(chave: string, resultado: string, efeito: boolean) {
-    this.guarda({ chave, assinatura: assinaturaDoResultado(resultado), efeito });
+    this.guarda({ chave, assinatura: assinaturaDoResultado(resultado), efeito, emAndamento: resultadoEmAndamento(resultado) });
   }
 
   private guarda(r: Registro) {

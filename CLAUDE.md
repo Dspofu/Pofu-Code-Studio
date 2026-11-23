@@ -428,7 +428,11 @@ que a ausência dele.
   o que evita o falso positivo de esperar um servidor subir (mesmo `capture_page`, resposta
   que muda). A assinatura tira campos voláteis (`pid`, `result_id`, `uptimeSec`…): sem isso
   dois `cat` que falham igual nunca contariam. Ferramenta MCP conta como efeito colateral,
-  exceto a que o servidor declara `readOnlyHint`.
+  exceto a que o servidor declara `readOnlyHint`. Resultado "em andamento" (`status`/`state`
+  `running`, `queued`, `in_progress`…) tem teto próprio, `LIMITE_EM_ANDAMENTO` (12): acompanhar
+  um render do Higgsfield repete o mesmo `get_operation` e recebe o mesmo `running` até ele
+  terminar. Com o teto de 2, a trava bloqueou o acompanhamento e o modelo foi dormir com
+  `time.sleep(75)` no terminal.
 - **Orçamento de contexto**: `reservaTokens` desconta resposta, prompt de sistema, definições
   das ferramentas (`ultimoToolsChars` — antes ficavam de fora, ~3 mil tokens) e folga. A
   resposta reserva no máximo `RESPOSTA_MAX_FRACAO` do `n_ctx`: com o `maxTokens` de 650 mil de

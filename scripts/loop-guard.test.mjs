@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LoopGuard, chaveDaChamada, assinaturaDoResultado, temEfeito } from '../out/loop-guard.js';
+import { LoopGuard, chaveDaChamada, assinaturaDoResultado, temEfeito, resultadoEmAndamento, LIMITE_EM_ANDAMENTO } from '../out/loop-guard.js';
 
 const falha = pid => JSON.stringify({ pid, stderr: "'cat' não é reconhecido", success: false, exitCode: 1 });
 
@@ -73,4 +73,30 @@ test('o que tem efeito colateral', () => {
   assert.equal(temEfeito('computer_action', { action: 'click' }), true);
   assert.equal(temEfeito('capture_screen', {}), false);
   assert.equal(temEfeito('view_image', { filename: 'a.png' }), false);
+});
+
+test('acompanhar operação em andamento não é loop até o teto maior', () => {
+  const g = new LoopGuard();
+  const k = chaveDaChamada('mcp__higgsfield__scene_builder_3d_get_operation', { operationId: 'query-render-preview-03', waitSeconds: 30 });
+  const rodando = JSON.stringify({ ok: true, operation: { id: 'query-render-preview-03', status: 'running', finishedAt: null } });
+  for (let i = 0; i < LIMITE_EM_ANDAMENTO - 1; i++) { g.registra(k, rodando, false); assert.equal(g.bloqueia(k), 0, `polling ${i + 1}`); }
+  g.registra(k, rodando, false);
+  assert.equal(g.bloqueia(k), LIMITE_EM_ANDAMENTO, 'operação que nunca termina ainda é looping');
+});
+
+test('resultado terminado repetido continua bloqueando na terceira', () => {
+  const g = new LoopGuard();
+  const k = chaveDaChamada('mcp__x__get_operation', { id: 1 });
+  const ok = JSON.stringify({ operation: { status: 'succeeded' } });
+  g.registra(k, ok, false); g.registra(k, ok, false);
+  assert.equal(g.bloqueia(k), 2);
+});
+
+test('detecção de em andamento: JSON aninhado e status curto em texto, não log longo', () => {
+  assert.equal(resultadoEmAndamento('{"operation":{"status":"checkpointing"}}'), true);
+  assert.equal(resultadoEmAndamento('{"jobs":[{"state":"queued"}]}'), true);
+  assert.equal(resultadoEmAndamento('{"status":"completed"}'), false);
+  assert.equal(resultadoEmAndamento('Job 187d504f-69b1-4a14-a982-91a0f113cfdc — in_progress'), true);
+  assert.equal(resultadoEmAndamento('PASS a\nrunning tests in parallel\nFAIL b\n' + 'x'.repeat(400)), false);
+  assert.equal(resultadoEmAndamento('build ok'), false);
 });
