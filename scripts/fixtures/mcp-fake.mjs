@@ -2,10 +2,20 @@
 // ferramenta que falha, ferramenta que devolve imagem e um log fora do protocolo no stdout,
 // que o cliente deve ignorar.
 // Com --mudo, nunca responde (para testar o prazo de inicialização).
+// Com --muitas, imita um servidor grande (o Higgsfield tem 184 ferramentas): 180 ferramentas
+// de schema farto, para o app carregar sob demanda, e uma só que responde (check_balance).
 import { createInterface } from 'node:readline';
 
 const mudo = process.argv.includes('--mudo');
-const ferramentas = [
+const muitas = process.argv.includes('--muitas');
+const areas = ['image', 'video', 'audio', 'scene', 'layer', 'clip', 'mask', 'camera', 'light', 'material', 'track', 'effect'];
+const verbos = ['create', 'list', 'delete', 'update', 'export', 'render', 'duplicate', 'inspect', 'animate', 'apply', 'move', 'rename', 'trim', 'split', 'merge'];
+const grandes = areas.flatMap(a => verbos.map(v => ({ name: `${v}_${a}`,
+  description: `${v[0].toUpperCase() + v.slice(1)} a ${a} in the hosted studio project. ` + 'Accepts the project id, the target and many optional settings. '.repeat(6),
+  inputSchema: { type: 'object', properties: Object.fromEntries(['project_id', 'target', 'name', 'width', 'height', 'duration', 'seed', 'quality', 'format', 'preset']
+    .map(p => [p, { type: 'string', description: `The ${p.replace('_', ' ')} for this ${a} operation; see the studio documentation for accepted values.` }])), required: ['project_id'] } })));
+grandes.splice(40, 0, { name: 'check_balance', description: 'Returns the remaining credit balance of the account. Free, spends nothing.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: {} } });
+const ferramentas = muitas ? grandes : [
   { name: 'somar', description: 'Adds two numbers.', annotations: { readOnlyHint: true },
     inputSchema: { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { a: { type: 'number' }, b: { type: 'number' } }, required: ['a', 'b'] } },
   { name: 'anotar', description: 'Stores a note.', inputSchema: { type: 'object', properties: { texto: { type: 'string' } } } },
@@ -24,6 +34,8 @@ createInterface({ input: process.stdin }).on('line', (linha) => {
     return responde(msg.id, { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } });
   if (msg.method === 'tools/list')
     return responde(msg.id, msg.params?.cursor ? { tools: ferramentas.slice(2) } : { tools: ferramentas.slice(0, 2), nextCursor: 'p2' });
+  if (muitas && msg.method === 'tools/call')
+    return responde(msg.id, msg.params.name === 'check_balance' ? { content: [{ type: 'text', text: 'Credits: 77 | Plan: free' }] } : { content: [{ type: 'text', text: 'ok' }] });
   if (msg.method === 'tools/call') {
     const { name, arguments: a } = msg.params;
     if (name === 'somar') return responde(msg.id, { content: [{ type: 'text', text: String(a.a + a.b) }] });

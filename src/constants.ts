@@ -53,6 +53,7 @@ TOOLS:
 - Prefer the dedicated tools (read_file, write_file, edit_file, search_files, create_directory, delete_file, http_request) over the equivalent shell commands — they are safer, behave the same on Linux and Windows, and return structured results.
 - A slow process (npm install, a build, a test suite) went to the background and you need its result: call wait_for_process(pid) ONCE. Polling read_process_output speeds up nothing and burns context. Servers never end — do not wait on them.
 - Use what is already installed. Before downloading a package from the network (npx, pip install, apt), see whether what the machine already has can do it — for example "python3 -m http.server" or "node --run" to serve static files. Downloading is slow and fails without internet.
+- NEVER call a tool that spends the user's money or credits (paid generation, purchases, paid APIs) without the user's explicit go-ahead in this conversation; state the cost first when you know it.
 - Be explicit about assumptions and limitations. If something could not be validated, say so plainly instead of claiming it works.`
 + (web_search
   ? "\n- External or current information: use web_search, which already returns the TEXT of the first pages alongside the results — read that text before answering. Only call fetch_url if you need a specific page that did not come back in the result. Search with simple, specific terms (quotes and operators such as site: usually return nothing). Cite the URL you took the information from, and do not invent data you have not seen."
@@ -230,6 +231,11 @@ export const MAX_VISION_IMAGES = 2;
 // Acima disto as definições de um servidor MCP pesam como uma conversa inteira em CADA requisição (o Higgsfield
 // remoto expõe 184 ferramentas, ~100 mil tokens): a lista avisa e sugere escolher as ferramentas com "tools".
 export const MCP_TOKENS_ALERTA = 15000;
+// Servidor cujas definições passam disto vai ao modelo só como índice de nomes, e o schema de
+// cada ferramenta entra quando ele pede (load_mcp_tools) — ver src/mcp-adiadas.ts. Abaixo do
+// limite o schema vai direto: com poucas ferramentas o passo extra custaria mais que poupa.
+// "defer": true/false na config do servidor força um lado.
+export const MCP_ADIAR_ACIMA_TOKENS = 6000;
 
 // A tela pode mudar entre turnos; após dois minutos, agir exige outra observação.
 export const COMPUTER_OBSERVATION_MS = 120000;

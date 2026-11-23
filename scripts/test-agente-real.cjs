@@ -53,6 +53,11 @@ const cenarios = [
   { nome: 'ferramenta de servidor MCP',
     prompt: 'Use a ferramenta de soma do servidor MCP (não calcule de cabeça) para somar 17 e 25. Responda apenas com o resultado.',
     confere: (r) => r.chamadas.some(c => c.nome === 'mcp__fake__somar') && /42/.test(r.resposta) },
+  // Servidor de 181 ferramentas: o schema dele fica fora do payload e o agente precisa achar e
+  // carregar a certa (load_mcp_tools) antes de chamar.
+  { nome: 'servidor MCP grande carregado sob demanda',
+    prompt: 'Quantos créditos ainda tenho na minha conta do servidor MCP studio? Responda só com o número.',
+    confere: (r) => r.chamadas.some(c => c.nome === 'mcp__studio__check_balance') && /77/.test(r.resposta) },
   { nome: 'duas trocas no mesmo arquivo',
     prompt: "Em src/config.ts, troque a porta 3000 por 8080 e o host 'localhost' por '0.0.0.0'. Não mude mais nada.",
     confere: () => readFileSync(join(workspace, 'src', 'config.ts'), 'utf8') === "export const config = {\n  host: '0.0.0.0',\n  port: 8080,\n  debug: false\n};\n" }
@@ -63,7 +68,8 @@ async function main() {
   const model = process.env.POFU_TEST_MODEL || models.data?.[0]?.id;
   let memoryStore = {
     settings: { apiUrl: endpoint, apiKey: key, model, execMode: 'auto', thinkLevel: 'padrao', maxTokens: 8192,
-      mcpConfig: JSON.stringify({ mcpServers: { fake: { command: 'node', args: [resolve('scripts/fixtures/mcp-fake.mjs')] } } }) },
+      mcpConfig: JSON.stringify({ mcpServers: { fake: { command: 'node', args: [resolve('scripts/fixtures/mcp-fake.mjs')] },
+        studio: { command: 'node', args: [resolve('scripts/fixtures/mcp-fake.mjs'), '--muitas'] } } }) },
     chats: { real: { id: 'real', name: 'Teste real', path: workspace, messages: [] } }, activeChatId: 'real'
   };
   // O renderer persiste a cada turno; mantenha também esses salvamentos só na memória.
@@ -79,13 +85,13 @@ async function main() {
   win.hide();
   if (win.webContents.isLoading()) await new Promise(r => win.webContents.once('did-finish-load', r));
   const js = (code) => win.webContents.executeJavaScript(code);
-  await js(`new Promise((ok, falha) => { let n = 0; const poll = () => import('./out/renderer.js').then(m => m.activeTools().some(t => t.function.name.startsWith('mcp__')) ? ok(true) : ++n > 600 ? falha(new Error('MCP não conectou')) : setTimeout(poll, 100)); poll(); })`);
+  await js(`new Promise((ok, falha) => { let n = 0; const poll = () => import('./out/renderer.js').then(m => m.activeTools().some(t => t.function.name.startsWith('mcp__')) && m.activeTools().some(t => t.function.name === 'load_mcp_tools') ? ok(true) : ++n > 600 ? falha(new Error('MCP não conectou')) : setTimeout(poll, 100)); poll(); })`);
 
   const custoFixo = await js(`Promise.all([import('./out/renderer.js'), import('./out/constants.js')]).then(([m, c]) => ({ferramentas: m.activeTools().length, ferramentasChars: JSON.stringify(m.activeTools()).length, promptChars: c.system_prompt(m.activeChat().path, false, false).length}))`);
   console.log('Custo fixo: ' + JSON.stringify(custoFixo));
   const relatorio = [];
   for (const c of cenarios) {
-    await js(`import('./out/renderer.js').then(m => { const chat = m.activeChat(); chat.messages = []; chat.podaManualAte = 0; chat.podaAutoAte = 0; })`);
+    await js(`import('./out/renderer.js').then(m => { const chat = m.activeChat(); chat.messages = []; chat.podaManualAte = 0; chat.podaAutoAte = 0; chat.mcpCarregadas = []; })`);
     const inicio = Date.now();
     await js(`(() => { const i = document.getElementById('user-input'); i.value = ${JSON.stringify(c.prompt)}; i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); })()`);
     // Terminou quando a última mensagem é do assistente, sem chamadas, e o input destravou.

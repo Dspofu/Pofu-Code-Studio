@@ -8,6 +8,7 @@ import { consumptionKind, consumptionNames, type ConsumptionPeriod, type Consump
 import { mountSlashCommands } from './slash-commands.js';
 import { RemoteHistory } from './remote-history.js';
 import { parseMcpConfig } from './mcp-config.js';
+import { descricaoDoCarregador, desembrulhaArgs, resolveCarga, respostaDaCarga, SCHEMA_CARREGADOR, type FerramentaAdiada } from './mcp-adiadas.js';
 import { formatFileWindow, readFileTool, readResultTool, ToolResultStore } from './tool-results.js';
 import { cleanTerminalOutput, formatListing, formatSearch, formatTree } from './tool-output.js';
 import { LoopGuard, chaveDaChamada, temEfeito } from './loop-guard.js';
@@ -20,7 +21,7 @@ import { iconeSvg, poeIcone } from './icons.js';
 // Licensed under the Apache License, Version 2.0. See /LICENSE and /NOTICE.
 // Source: https://github.com/Dspofu/Pofu-Code-Studio
 
-import { APP_NAME, MCP_TOKENS_ALERTA, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CONTINUE_PROMPT, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_EMPTY_RETRIES, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
+import { APP_NAME, MCP_TOKENS_ALERTA, MCP_ADIAR_ACIMA_TOKENS, ASSUMED_CTX_WHEN_UNKNOWN, CABECALHO_INSTRUCOES, CONTINUE_PROMPT, CABECALHO_SKILLS, CHARS_PER_TOKEN, CLIP_MIN_CHARS, DEFAULT_SETTINGS, SKILL_MAX_CHARS, CONTEXT_MARGIN_TOKENS, HISTORY_MIN_FRACTION, KEEP_RECENT_TOOL_RESULTS, PODA_FOLGA, LIMIAR_CONTEXTO_FRIO, LIMIAR_CONVERSA_LONGA, MAX_EMPTY_RETRIES, MAX_LOOP_ITERATIONS, MAX_REQUEST_RETRIES, MAX_SUBAGENT_TURNS, MAX_RECENT_PATHS, MAX_REASONING_DOM_CHARS, MAX_VISION_IMAGES, MODEL_DISCOVERY_TIMEOUT_MS, RESPONSE_WAIT_NOTICE_MS, readCharBudget, READ_OUTLINE_MIN_CHARS, RESPOSTA_MAX_FRACAO, SERVIDOR_PARADO_MS, system_prompt, THINK_LEVELS } from "./constants.js";
 
 // A UI é DOM imperativo puro: quase tudo é buscado por id e usado logo em seguida como
 // campo (.value, .checked, .disabled). Tipar cada busca no ponto de uso daria uma centena
@@ -1818,7 +1819,8 @@ const TOOL_META: Record<string, MetaFerramenta> = {
   stop_process: { icon: 'circle-stop', label: 'Parar processo', tom: 'perigo' },
   ask_user: { icon: 'message-question', label: 'Pergunta', tom: 'agente' },
   web_search: { icon: 'search', label: 'Buscar na web', tom: 'rede' },
-  fetch_url: { icon: 'globe', label: 'Ler página', tom: 'rede' }
+  fetch_url: { icon: 'globe', label: 'Ler página', tom: 'rede' },
+  load_mcp_tools: { icon: 'puzzle', label: 'Carregar ferramentas MCP', tom: 'agente' }
 };
 
 function poeIconeDaFerramenta(alvo: HTMLElement, meta: MetaFerramenta) {
@@ -1882,6 +1884,7 @@ function summarizeToolCall(name, args) {
     case 'list_processes': return '';
     case 'web_search': return args.query || '';
     case 'fetch_url': return args.url || '';
+    case 'load_mcp_tools': return [Array.isArray(args.names) ? args.names.join(', ') : '', args.query ? `"${args.query}"` : ''].filter(Boolean).join(' · ');
     default: {
       const keys = Object.keys(args);
       return keys.map(k => `${k}: ${String(args[k]).slice(0, 60)}`).join('  ');
@@ -2016,6 +2019,10 @@ function summarizeToolResult(name, resultStr) {
     }
     const lines = resultStr.split('\n').length;
     return `✓ ${lines} linha(s) lidas`;
+  }
+  if (name === 'load_mcp_tools') {
+    const nomes = [...resultStr.matchAll(/^- (mcp__\S+?)(?: \(already loaded\))?:/gm)].map(m => TOOL_META[m[1]]?.label || m[1]);
+    return nomes.length ? `✓ ${nomes.length} ferramenta(s) disponível(is)\n${nomes.join('\n')}` : '↷ Nenhuma ferramenta MCP encontrada com esse nome — o agente vai procurar de outro jeito.';
   }
   let data;
   try { data = JSON.parse(resultStr); } catch { return resultStr; }
@@ -2876,7 +2883,17 @@ function esperaParaRepetir(err, politica: RetryPolicy, apiUrl: string, model: st
 // A espera precisa ser visível também durante a preparação, antes do POST à API.
 let cronometroEspera = 0;
 let atualizaRelogioEspera: (() => void) | null = null;
-function showTyping(contextoTokens = 0, etapa: 'modelo' | 'consulta' | 'preparando' = 'modelo') {
+// Prazo do aviso "sem notícia da API" para ESTE chat. Fixo em 10 s, ele aparecia em 90 de 865
+// pedidos reais (10%) — e em 69 de 533 num chat só, onde 20–60 s até o primeiro token era o
+// normal daquele servidor —, e o amarelo era lido como erro. O dobro do maior tempo até o
+// primeiro token dos últimos pedidos separa "lento como sempre" de "diferente do normal".
+function prazoDoAvisoDeEspera(chat?: Chat) {
+  const recentes = (chat?.messages || []).filter(m => m.role === 'assistant' && m.stats?.ttftSec > 0).slice(-6);
+  const maior = recentes.reduce((max, m) => Math.max(max, m.stats.ttftSec * 1000), 0);
+  return { prazo: Math.max(RESPONSE_WAIT_NOTICE_MS, 2 * maior), tipico: maior };
+}
+
+function showTyping(contextoTokens = 0, etapa: 'modelo' | 'consulta' | 'preparando' = 'modelo', espera = { prazo: RESPONSE_WAIT_NOTICE_MS, tipico: 0 }) {
   hideTyping();
   const chatBox = el('chat-box');
   const div = document.createElement('div');
@@ -2895,6 +2912,8 @@ function showTyping(contextoTokens = 0, etapa: 'modelo' | 'consulta' | 'preparan
   if (contextoTokens > 0) {
     const mil = Math.max(1, Math.round(contextoTokens / 1000));
     detalhe.textContent = `Contexto estimado: ≈ ${mil.toLocaleString('pt-BR')} mil tokens. A API ainda não informou a etapa.`;
+  } else if (etapa === 'modelo' && espera.tipico >= 5000) {
+    detalhe.textContent = `Os últimos pedidos deste chat levaram até ${Math.round(espera.tipico / 1000)}s para começar.`;
   }
   nota.append(titulo, detalhe, relogio); div.appendChild(nota);
   const inicio = Date.now();
@@ -2904,7 +2923,7 @@ function showTyping(contextoTokens = 0, etapa: 'modelo' | 'consulta' | 'preparan
     relogio.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} de espera`;
     const ultimaAtualizacao = Number(div.dataset.progressAt) || inicio;
     if (div.dataset.progressAt) relogio.textContent += ` · atualização há ${Math.floor((Date.now() - ultimaAtualizacao) / 1000)}s`;
-    if (etapa === 'modelo' && Date.now() - ultimaAtualizacao >= RESPONSE_WAIT_NOTICE_MS && !div.classList.contains('typing-slow')) {
+    if (etapa === 'modelo' && Date.now() - ultimaAtualizacao >= (div.dataset.progressAt ? RESPONSE_WAIT_NOTICE_MS : espera.prazo) && !div.classList.contains('typing-slow')) {
       div.classList.add('typing-slow');
       detalhe.textContent = div.dataset.progressAt ? 'Sem novas atualizações de progresso. Use Parar para cancelar.' : 'A API não informou o estado deste pedido. Use Parar para cancelar.';
       scrollChat();
@@ -3292,14 +3311,19 @@ const webTools = [
 let mcpEstado: McpEstado[] = [];
 let mcpFerramentas = [];
 const mcpRota = new Map<string, { server: string; tool: string; readOnly: boolean }>();
+// Ferramentas de servidor grande: ficam fora do payload até o modelo carregá-las.
+const mcpAdiadas = new Map<string, FerramentaAdiada>();
+let mcpDeferCfg: Record<string, boolean | undefined> = {};
 
 const slugMcp = (s) => String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
 function aplicaEstadoMcp(estado: McpEstado[]) {
   mcpEstado = estado || [];
   mcpFerramentas = [];
   mcpRota.clear();
+  mcpAdiadas.clear();
   for (const s of mcpEstado) {
     if (s.status !== 'ok') continue;
+    const inicio = mcpFerramentas.length;
     for (const f of s.tools || []) {
       let nome = `mcp__${slugMcp(s.name)}__${slugMcp(f.name)}`.slice(0, 64);
       for (let n = 2; mcpRota.has(nome); n++) nome = nome.slice(0, 60) + '_' + n;
@@ -3314,8 +3338,40 @@ function aplicaEstadoMcp(estado: McpEstado[]) {
       mcpFerramentas.push({ type: 'function', function: { name: nome, description: desc.length > 1024 ? desc.slice(0, 1023) + '…' : desc, parameters: params } });
       TOOL_META[nome] = { icon: 'puzzle', label: `${s.name} · ${f.annotations?.title || f.name}`, tom: 'agente' };
     }
+    const doServidor = mcpFerramentas.slice(inicio);
+    const tokens = JSON.stringify(doServidor).length / charsPorToken();
+    const forcado = mcpDeferCfg[s.name];
+    if (forcado === true || (forcado !== false && tokens > MCP_ADIAR_ACIMA_TOKENS)) {
+      for (const t of doServidor) {
+        const rota = mcpRota.get(t.function.name);
+        mcpAdiadas.set(t.function.name, { nome: t.function.name, server: s.name, tool: rota.tool, description: t.function.description });
+      }
+    }
   }
   renderMcpStatus();
+}
+
+// Diretas + as adiadas que ESTE chat já carregou, na ordem em que foram carregadas: o que entra
+// vai para o fim da lista, e o começo do prompt (cache de prefixo) não muda.
+function ferramentasMcpDoChat(chat?: Chat) {
+  const diretas = mcpFerramentas.filter(t => !mcpAdiadas.has(t.function.name));
+  if (!mcpAdiadas.size) return diretas;
+  const porNome = new Map(mcpFerramentas.map(t => [t.function.name, t]));
+  const carregadas = (chat?.mcpCarregadas || []).filter(n => mcpAdiadas.has(n)).map(n => porNome.get(n));
+  const carregador = { type: 'function', function: { name: 'load_mcp_tools', description: descricaoDoCarregador([...mcpAdiadas.values()]), parameters: SCHEMA_CARREGADOR } };
+  return [...diretas, carregador, ...carregadas];
+}
+
+function marcaMcpCarregada(chat: Chat, nomes: string[]) {
+  const atuais = chat.mcpCarregadas || (chat.mcpCarregadas = []);
+  for (const n of nomes) if (mcpAdiadas.has(n) && !atuais.includes(n)) atuais.push(n);
+}
+
+function carregaFerramentasMcp(chat: Chat, args) {
+  const { carregar, naoAchadas } = resolveCarga(args || {}, [...mcpAdiadas.values()]);
+  const antes = new Set(chat.mcpCarregadas || []);
+  marcaMcpCarregada(chat, carregar.map(f => f.nome));
+  return respostaDaCarga(carregar, naoAchadas, antes);
 }
 
 let mcpEntrando = '';
@@ -3334,8 +3390,12 @@ function renderMcpStatus(conectando: string[] = []) {
     if (s.status === 'ok') {
       const chars = JSON.stringify(mcpFerramentas.filter(t => mcpRota.get(t.function.name)?.server === s.name)).length;
       const tokens = Math.round(chars / charsPorToken()), qtd = s.total && s.total !== s.tools.length ? `${s.tools.length} de ${s.total} ferramenta(s)` : `${s.tools.length} ferramenta(s)`;
-      const alerta = (tokens > MCP_TOKENS_ALERTA ? ' — caro: escolha só as que usa em "tools"' : '') + (s.missing?.length ? ` · não encontradas: ${s.missing.join(', ')}` : '');
-      linhas.push(linha(`● ${s.name} — ${qtd}, ~${tokens.toLocaleString('pt-BR')} tokens por mensagem${alerta}`,
+      const adiado = [...mcpAdiadas.values()].some(f => f.server === s.name);
+      const custo = adiado
+        ? `carregadas sob demanda (~${Math.round(descricaoDoCarregador([...mcpAdiadas.values()].filter(f => f.server === s.name)).length / charsPorToken()).toLocaleString('pt-BR')} tokens por mensagem em vez de ~${tokens.toLocaleString('pt-BR')})`
+        : `~${tokens.toLocaleString('pt-BR')} tokens por mensagem`;
+      const alerta = (!adiado && tokens > MCP_TOKENS_ALERTA ? ' — caro: escolha só as que usa em "tools"' : '') + (s.missing?.length ? ` · não encontradas: ${s.missing.join(', ')}` : '');
+      linhas.push(linha(`● ${s.name} — ${qtd}, ${custo}${alerta}`,
         s.oauth ? { rotulo: 'Sair', titulo: `Apagar o login guardado de ${s.name}`, fn: () => sairMcp(s.name) } : undefined));
     } else if (s.status === 'desligado') linhas.push(linha(`○ ${s.name} — desligado`));
     else if (s.status === 'login') linhas.push(linha(mcpEntrando === s.name ? `… ${s.name} — aguardando o login no navegador` : `◇ ${s.name} — precisa entrar`,
@@ -3365,6 +3425,7 @@ async function sincronizaMcp() {
   let servers = {};
   try { servers = parseMcpConfig(state.settings.mcpConfig); } catch (e) { logSystem(e.message); return; }
   const nomes = Object.keys(servers);
+  mcpDeferCfg = Object.fromEntries(nomes.map(n => [n, typeof servers[n].defer === 'boolean' ? servers[n].defer : undefined]));
   if (!nomes.length && !mcpEstado.length) return;
   renderMcpStatus(nomes.filter(n => !servers[n].disabled && !mcpEstado.some(s => s.name === n && s.status === 'ok')));
   aplicaEstadoMcp(await window.electronAPI.mcpSync(servers));
@@ -3373,9 +3434,9 @@ async function sincronizaMcp() {
 }
 
 // Monta a lista de ferramentas disponíveis conforme as configurações
-function activeTools() {
+function activeTools(chat?: Chat) {
   const base = [...tools, ...(state.settings.webSearch ? webTools : []), ...(visionEnabled() ? imageTools : []), ...(visionEnabled() && state.settings.computerUse === true ? computerTools : [])];
-  return mcpFerramentas.length ? [...base, ...mcpFerramentas] : base;
+  return mcpFerramentas.length ? [...base, ...ferramentasMcpDoChat(chat)] : base;
 }
 
 // --------------------------------------------------------------------------
@@ -3863,6 +3924,8 @@ async function runTool(name, args, workspace, toolCallId = '', execution?: ToolE
     }
     const rotaMcp = mcpRota.get(name);
     if (rotaMcp) {
+      const schema = mcpFerramentas.find(t => t.function.name === name)?.function.parameters;
+      args = desembrulhaArgs(args, schema).args;
       const res = await window.electronAPI.mcpCall(rotaMcp.server, rotaMcp.tool, args, { vision: visionEnabled() });
       // isError é a FERRAMENTA dizendo que falhou (o servidor respondeu): o texto explica o
       // quê e vai inteiro ao modelo. Sem success e sem isError é o transporte que caiu.
@@ -4567,7 +4630,8 @@ async function agentTurns(chat) {
   };
 
   if (mcpEstado.length) aplicaEstadoMcp(await window.electronAPI.mcpStatus());
-  const toolset = activeTools();
+  // Recalculado a cada etapa: um load_mcp_tools acrescenta schemas para a requisição seguinte.
+  let toolset = activeTools(chat);
   ultimoToolsChars = JSON.stringify(toolset).length;
   const trava = new LoopGuard();
   apertoPoda = 1;
@@ -4591,6 +4655,8 @@ async function agentTurns(chat) {
     // barrar o agente em looping sozinho, não a conversa que o usuário está conduzindo.
     if (drenaFila(chat)) { iterations = 0; trava.novaInstrucao(); await persist(); }
     iterations++;
+    toolset = activeTools(chat);
+    ultimoToolsChars = JSON.stringify(toolset).length;
 
     showTyping(0, 'preparando');
     // ANTES de montar o payload: num chat reaberto o cache de imagens está vazio, e o
@@ -4606,7 +4672,7 @@ async function agentTurns(chat) {
     let apertos = 0;
     const tokensDoPrompt = estimaTokensDoPrompt(mensagensApi);
     const contextoFrio = !chatsAquecidos.has(chat.id) && tokensDoPrompt >= LIMIAR_CONTEXTO_FRIO;
-    showTyping(contextoFrio ? tokensDoPrompt : 0);
+    showTyping(contextoFrio ? tokensDoPrompt : 0, 'modelo', prazoDoAvisoDeEspera(chat));
     setAppTitle('aguardando o modelo…');
 
     // Elementos de streaming (criados sob demanda quando o primeiro token chega)
@@ -4703,7 +4769,7 @@ async function agentTurns(chat) {
           vazias++;
           descartaParcial();
           logSystem(`O modelo terminou sem texto nem ferramenta. Tentando de novo (${vazias}/${MAX_EMPTY_RETRIES}).`);
-          showTyping();
+          showTyping(0, 'modelo', prazoDoAvisoDeEspera(chat));
           continue;
         }
         break;
@@ -4735,7 +4801,7 @@ async function agentTurns(chat) {
           avisaRaciocinioRecusado(nivelThink.rotulo, lastErr);
           nivelThink = { ...nivelThink, payload: null };
         }
-        showTyping();
+        showTyping(0, 'modelo', prazoDoAvisoDeEspera(chat));
         continue; // o reenvio corrige a requisição: não gasta uma das tentativas de erro
       }
       // O servidor recusou o return_progress (gateway estrito): a conversa não falhou,
@@ -4744,7 +4810,7 @@ async function agentTurns(chat) {
       if (lastErr && lastErr.progressoRecusado) {
         descartaParcial();
         logSystem('O servidor recusou o progresso do prompt; reenviando sem o campo.');
-        showTyping();
+        showTyping(0, 'modelo', prazoDoAvisoDeEspera(chat));
         continue;
       }
       // Estouro de contexto: a estimativa errou para menos. Em vez de encerrar o turno
@@ -4760,7 +4826,7 @@ async function agentTurns(chat) {
         descartaParcial();
         mensagensApi = [{ role: 'system', content: buildSystem() }, ...toApiMessages(chat.messages)];
         logSystem(`Contexto excedido. Compactando e reenviando (${apertos}/2).`);
-        showTyping();
+        showTyping(0, 'modelo', prazoDoAvisoDeEspera(chat));
         continue;
       }
       // Repetir só faz sentido para falha transitória; servidor fora do ar ou modelo
@@ -4769,7 +4835,7 @@ async function agentTurns(chat) {
       if (espera === null) break;
       descartaParcial();
       if (!await waitForReconnect(classificaErroDeRequisicao(lastErr, apiUrl, model), politica.falhasAteAgora + 1, espera, tetoDeTentativas(lastErr))) { lastErr = null; break; }
-      showTyping();
+      showTyping(0, 'modelo', prazoDoAvisoDeEspera(chat));
     }
 
     // O stream acabou (ou foi abortado): joga na tela o que ficou no buffer do último
@@ -4937,7 +5003,11 @@ async function agentTurns(chat) {
             logSystem(`Ação rejeitada pelo usuário: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
           } else {
             setAppTitle(`executando: ${(TOOL_META[name] && TOOL_META[name].label) || name}`);
-            const execucao = runTool(name, args, chat.path, toolCall && toolCall.id);
+            // O carregador mexe no chat (quais schemas vão no payload), que o runTool não recebe.
+            // Chamar uma adiada sem carregar também vale: o nome está no índice e o servidor
+            // valida os argumentos; ela passa a ir com o schema dali em diante.
+            if (mcpAdiadas.has(name)) marcaMcpCarregada(chat, [name]);
+            const execucao = name === 'load_mcp_tools' ? Promise.resolve(carregaFerramentasMcp(chat, args)) : runTool(name, args, chat.path, toolCall && toolCall.id);
             // Subagentes e pergunta tratam o Parar por conta própria e devolvem o parcial.
             const saida = TRATAM_PARADA.has(name) ? await execucao : await Promise.race([execucao, sinalDeParada.promessa]);
             // Ferramentas que produzem algo além de texto (print, diff) devolvem objeto;

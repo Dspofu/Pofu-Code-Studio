@@ -36,6 +36,7 @@ são da INTERFACE e continuam em pt-BR.
 | [src/icons.ts](src/icons.ts) | Ícones SVG de traço (estilo Lucide) dos cards de ferramenta, cartões e chips. `poeIcone` não recria o SVG quando o ícone não mudou. |
 | [src/mcp.ts](src/mcp.ts) | Cliente MCP no main: transportes stdio e Streamable HTTP, `initialize`/`tools/list`/`tools/call`. |
 | [src/mcp-oauth.ts](src/mcp-oauth.ts) | Login OAuth dos servidores MCP remotos: descoberta pelo 401 (`resource_metadata`), registro automático do app, PKCE S256 com callback em `127.0.0.1`, tokens cifrados por servidor em `userData/mcp-oauth.json` e renovação. Só abre `https` (ou loopback) no navegador. |
+| [src/mcp-adiadas.ts](src/mcp-adiadas.ts) | Carga sob demanda das ferramentas de servidor MCP grande: índice de nomes, busca do `load_mcp_tools` e o desembrulho de argumento aninhado. Puro, testável em Node. |
 | [src/mcp-config.ts](src/mcp-config.ts) | Leitura do JSON de servidores MCP do formulário (puro, testável em Node): recusa chave repetida, que o `JSON.parse` resolveria apagando a primeira. |
 | [src/updater.ts](src/updater.ts) | Atualização pelo app: escolhe o instalador do release, baixa conferindo o sha256 e instala (NSIS no Windows, `pkexec` no Linux). |
 | [src/atalho-windows.ts](src/atalho-windows.ts) | Repara, ao abrir, o ícone do atalho do Menu Iniciar que ficou apontando para um `.exe` que não existe (pasta movida). |
@@ -412,6 +413,9 @@ que a ausência dele.
   dois valores com `read_file(query)` e ainda rodava `grep` para conferir. Com temperatura 0
   o llama.cpp repete a mesma escolha em sequência, mas o estado do cache de prefixo muda as
   contas o bastante para virar um token: rode a suíte mais de uma vez antes de concluir.
+  Exemplo do 1.12: a regra de não gastar crédito sem aprovação veio com "Free alternatives come
+  first", e o Qwen3.8-35B passou a responder "17 + 25" de cabeça em vez de chamar a ferramenta MCP
+  pedida (fazer a conta é "grátis"). Sem a frase, 5/5 em duas execuções seguidas.
 - **Custo fixo por requisição**: `tools` + `system_prompt` vão em TODA requisição. Eram 21,3
   mil caracteres; a revisão levou a 17,2 mil tirando do prompt o que a descrição da
   ferramenta já dizia. Ao mexer numa descrição, meça (o comprimento de
@@ -449,6 +453,15 @@ que a ausência dele.
   modal esperam. `isError` é erro da FERRAMENTA (vai ao modelo com o texto do servidor); sem
   `success` e sem `isError` é o transporte que caiu. Ferramenta MCP não segue o fluxo de
   quatro passos: o schema vem do servidor e o `TOOL_META` é preenchido na hora.
+  **Servidor grande é carregado sob demanda** (`src/mcp-adiadas.ts`): acima de
+  `MCP_ADIAR_ACIMA_TOKENS` o payload leva só o índice de nomes, na descrição do `load_mcp_tools`, e o
+  schema entra quando o modelo carrega (`chat.mcpCarregadas`, persistido, na ordem — o que entra vai
+  para o FIM da lista, para não mexer no prefixo em cache). Medido num chat real com o Higgsfield: o
+  primeiro pedido, com 543 caracteres de histórico, cobrou 135.900 tokens de prompt. Chamar uma
+  adiada sem carregar também roda (o nome está no índice) e ela passa a ir com o schema. O
+  `toolset` é recalculado a cada etapa do `while` por causa disso. Argumento embrulhado num campo
+  que o schema não tem (`{"prompt":{"preset":…}}`) é desembrulhado (`desembrulhaArgs`): o servidor
+  ignorou o campo e devolveu 53 mil caracteres de lista de presets.
   Imagem no resultado vira print, pelo mesmo `gravaImagemParaModelo` do `view_image`: a
   primeira que decodifica vai para `screenshots/`, aparece no card e volta como pixels com
   visão. Antes ela virava só "[image … not shown as text]", e o agente de um servidor do

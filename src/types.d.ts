@@ -235,6 +235,8 @@ interface Chat {
   /** A última execução do agente terminou antes da resposta final (erro, Parar, corte).
    *  Persistido para o botão de continuar sobreviver a reabrir o app. */
   interrompido?: boolean;
+  /** Ferramentas MCP adiadas que o agente já carregou neste chat (load_mcp_tools), na ordem. */
+  mcpCarregadas?: string[];
 }
 
 interface UsageStats {
